@@ -9,6 +9,7 @@ const ME_URL = '/api/me';
 export interface CurrentUser {
   name?: string;
   email?: string;
+  roles?: string[];
 }
 
 /**

@@ -1,4 +1,6 @@
 import fastifyCookie from '@fastify/cookie';
+import type { AccessConfig } from '@wardenhq/config';
+import { resolveRoles } from '@wardenhq/core';
 import type { Session } from '@wardenhq/pg-adapter';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { LoginChecks, OidcClient } from '../auth/oidc.js';
@@ -8,6 +10,8 @@ declare module 'fastify' {
   interface FastifyRequest {
     /** Set on every /api request; requests without a live session never reach a handler. */
     session: Session | null;
+    /** The session user's roles from config `access` rules; set alongside `session`. */
+    roles: readonly string[] | null;
   }
 }
 
@@ -15,10 +19,13 @@ export interface AuthOptions {
   sessionSecret: string;
   sessions: Sessions;
   oidc: OidcClient;
+  /** Config `access` rules; without them every IdP user signs in with no roles. */
+  access?: AccessConfig;
 }
 
 const LOGIN_TTL_SECONDS = 600;
 const LOGIN_FAILED = '/login?error=login_failed';
+const ACCESS_DENIED = '/login?error=access_denied';
 
 /**
  * Only same-origin paths may be a post-login destination, so a crafted `?returnTo=` can't
@@ -63,21 +70,26 @@ const isApi = (req: FastifyRequest) =>
 
 export async function registerAuth(
   app: FastifyInstance,
-  { sessionSecret, sessions, oidc }: AuthOptions,
+  { sessionSecret, sessions, oidc, access }: AuthOptions,
 ) {
   await app.register(fastifyCookie, { secret: sessionSecret });
   const login = sessions.cookie('warden_login', LOGIN_TTL_SECONDS);
 
   app.decorateRequest('session', null);
+  app.decorateRequest('roles', null);
   app.addHook('onRequest', async (req, reply) => {
     if (!isApi(req)) return;
     const session = await sessions.load(req);
-    if (!session) {
+    // Roles are re-resolved from the stored claims, so a restart with stricter rules applies to
+    // existing sessions too.
+    const roles = session ? resolveRoles(access, session.claims) : undefined;
+    if (!session || !roles) {
       return reply
         .code(401)
         .send({ statusCode: 401, error: 'Unauthorized', message: 'Unauthorized' });
     }
     req.session = session;
+    req.roles = roles;
   });
 
   app.get<{ Querystring: { returnTo?: string } }>('/auth/login', async (req, reply) => {
@@ -115,6 +127,11 @@ export async function registerAuth(
       return reply.redirect(LOGIN_FAILED);
     }
 
+    if (!resolveRoles(access, claims)) {
+      req.log.warn({ sub: claims.sub }, 'login denied: no access rule matches');
+      return reply.redirect(ACCESS_DENIED);
+    }
+
     await sessions.start(reply, {
       subject: claims.sub,
       ...(typeof claims.email === 'string' ? { email: claims.email } : {}),
@@ -137,6 +154,7 @@ export async function registerAuth(
       sub: session.subject,
       ...(session.email ? { email: session.email } : {}),
       ...(session.name ? { name: session.name } : {}),
+      roles: req.roles!,
     };
   });
 }

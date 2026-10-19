@@ -18,6 +18,27 @@ const roleConfigSchema = z.strictObject({
     .default({}),
 });
 
+const roleList = z.array(name).min(1);
+
+const accessConfigSchema = z.strictObject({
+  /** ID token claim holding the user's groups: a list of strings, or one string. */
+  groupsClaim: name.default('groups'),
+  /** Roles for each IdP group. */
+  groups: z.record(name, roleList).default({}),
+  /** Roles for everyone whose email is at each domain (exact match, not subdomains). */
+  emailDomains: z
+    .record(
+      z.string().regex(/^[^@\s]+\.[^@\s]+$/, 'Expected a domain such as "example.com"'),
+      roleList,
+    )
+    .default({}),
+  /**
+   * Only match `emailDomains` when the IdP says the email is verified (`email_verified: true`).
+   * Turn off only for IdPs that never send the claim and don't let users set their own email.
+   */
+  requireVerifiedEmail: z.boolean().default(true),
+});
+
 const columnConfigSchema = z.strictObject({
   /** Never sent to the UI or returned by the API. */
   hidden: z.boolean().optional(),
@@ -87,6 +108,8 @@ export const wardenConfigSchema = z
       .prefault({}),
     tables: z.record(tableKey, tableConfigSchema).default({}),
     roles: z.record(name, roleConfigSchema).default({}),
+    /** Who may sign in, and with which roles. Without it, every IdP user signs in with no roles. */
+    access: accessConfigSchema.optional(),
   })
   .superRefine((config, ctx) => {
     const checkSchema = (key: string, path: string[]) => {
@@ -103,10 +126,40 @@ export const wardenConfigSchema = z
     for (const [role, { grants }] of Object.entries(config.roles)) {
       for (const key of Object.keys(grants)) checkSchema(key, ['roles', role, 'grants', key]);
     }
+    const checkRoles = (rules: Record<string, string[]>, section: string) => {
+      for (const [key, roles] of Object.entries(rules)) {
+        roles.forEach((role, i) => {
+          if (!Object.hasOwn(config.roles, role)) {
+            ctx.addIssue({
+              code: 'custom',
+              path: ['access', section, key, i],
+              message: `role "${role}" is not defined in \`roles\``,
+            });
+          }
+        });
+      }
+    };
+    if (config.access) {
+      checkRoles(config.access.groups, 'groups');
+      checkRoles(config.access.emailDomains, 'emailDomains');
+      const domains = new Set<string>();
+      for (const domain of Object.keys(config.access.emailDomains)) {
+        const lower = domain.toLowerCase();
+        if (domains.has(lower)) {
+          ctx.addIssue({
+            code: 'custom',
+            path: ['access', 'emailDomains', domain],
+            message: `domain "${lower}" is listed more than once`,
+          });
+        }
+        domains.add(lower);
+      }
+    }
   });
 
 export type WardenConfig = z.infer<typeof wardenConfigSchema>;
 export type TableConfig = z.infer<typeof tableConfigSchema>;
 export type ColumnConfig = z.infer<typeof columnConfigSchema>;
 export type RoleConfig = z.infer<typeof roleConfigSchema>;
+export type AccessConfig = z.infer<typeof accessConfigSchema>;
 export type Action = (typeof ACTIONS)[number];

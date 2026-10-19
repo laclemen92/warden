@@ -44,6 +44,7 @@ export async function createWarden({
       sessionSecret: authSettings.sessionSecret,
       sessions: createSessions(db, authSettings),
       oidc: createOidcClient(authSettings),
+      ...(config.access ? { access: config.access } : {}),
     };
     const app = await buildApp({ schema, db, auth, logger, ...(webDir ? { webDir } : {}) });
     app.addHook('onClose', close);
