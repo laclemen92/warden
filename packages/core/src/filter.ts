@@ -105,11 +105,16 @@ export const OPERATORS_BY_CATEGORY: Record<FieldCategory, readonly Operator[]> =
 
 const NUMERIC = /^-?(\d+(\.\d*)?|\.\d+)([eE][-+]?\d+)?$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-// ISO 8601 date, date-time (optional fraction and offset), or time of day.
+// ISO 8601 date, date-time, or time of day, each with optional fraction and offset. Also matches
+// Postgres' text output (`2026-01-02 03:04:05.123456+00`), which is how the API returns them.
 const TEMPORAL =
-  /^(\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}(:?\d{2})?)?)?|\d{2}:\d{2}(:\d{2}(\.\d+)?)?)$/;
+  /^(\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}(:?\d{2})?)?)?|\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}(:?\d{2})?)?)$/;
 
-/** Returns an error message when `value` can't be compared against `f`, otherwise undefined. */
+/** Error message when `value` can't be compared against field `f`, otherwise undefined. */
+export function checkFieldValue(f: Field, value: Scalar): string | undefined {
+  return checkValue(f, fieldCategory(f), value);
+}
+
 function checkValue(f: Field, category: FieldCategory, value: Scalar): string | undefined {
   switch (category) {
     case 'text':

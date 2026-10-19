@@ -1,23 +1,43 @@
 import { existsSync } from 'node:fs';
+import { STATUS_CODES } from 'node:http';
 import fastifyStatic from '@fastify/static';
 import type { EffectiveSchema } from '@wardenhq/core';
+import type { Database } from '@wardenhq/pg-adapter';
 import Fastify, { type FastifyServerOptions } from 'fastify';
+import { registerEntityRoutes } from './routes/entities.js';
 
 export interface AppOptions {
   /** Effective schema to serve. Already narrowed by config, so it is safe to send as-is. */
   schema?: EffectiveSchema;
+  /** Data connection; entity routes are registered when both `schema` and `db` are given. */
+  db?: Database;
   /** Directory containing the built web UI. Served with SPA fallback when present. */
   webDir?: string;
   logger?: FastifyServerOptions['logger'];
 }
 
-export async function buildApp({ schema, webDir, logger = false }: AppOptions = {}) {
+export async function buildApp({ schema, db, webDir, logger = false }: AppOptions = {}) {
   const app = Fastify({ logger });
+
+  // Don't leak database errors (SQL, constraint names, values) to clients; they are logged.
+  app.setErrorHandler((err: Error & { statusCode?: number; validation?: unknown }, req, reply) => {
+    const statusCode = err.statusCode ?? 500;
+    if (statusCode < 500) {
+      return reply
+        .code(statusCode)
+        .send({ statusCode, error: STATUS_CODES[statusCode] ?? 'Error', message: err.message });
+    }
+    req.log.error({ err }, 'request failed');
+    return reply
+      .code(500)
+      .send({ statusCode: 500, error: 'Internal Server Error', message: 'Internal Server Error' });
+  });
 
   app.get('/healthz', async () => ({ status: 'ok' }));
 
-  // TODO(#13): require an authenticated session once OIDC login lands.
+  // TODO(#13): require an authenticated session on /api once OIDC login lands.
   if (schema) app.get('/api/schema', async () => schema);
+  if (schema && db) registerEntityRoutes(app, schema, db);
 
   if (webDir && existsSync(webDir)) {
     await app.register(fastifyStatic, { root: webDir });
