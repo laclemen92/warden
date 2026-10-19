@@ -1,0 +1,229 @@
+import { z } from 'zod';
+import type { Entity, Field } from './effective-schema.js';
+
+/**
+ * Filter AST sent by clients. Validate with {@link validateFilter} before compiling: validation
+ * is what guarantees fields are exposed and values fit their column.
+ */
+export type Filter = { and: Filter[] } | { or: Filter[] } | { not: Filter } | Condition;
+
+export type Condition =
+  | { field: string; op: 'eq' | 'neq'; value: Scalar }
+  | { field: string; op: 'in' | 'notIn'; value: Scalar[] }
+  | { field: string; op: 'gt' | 'gte' | 'lt' | 'lte'; value: Scalar }
+  | { field: string; op: 'between'; value: [Scalar, Scalar] }
+  | { field: string; op: 'contains' | 'startsWith' | 'endsWith'; value: string }
+  | { field: string; op: 'isNull' | 'isNotNull' };
+
+export type Scalar = string | number | boolean;
+export type Operator = Condition['op'];
+
+export const FILTER_LIMITS = {
+  maxDepth: 8,
+  maxConditions: 100,
+  maxListLength: 500,
+  maxStringLength: 1000,
+} as const;
+
+const scalar = z.union([z.string().max(FILTER_LIMITS.maxStringLength), z.number(), z.boolean()]);
+const field = z.string().min(1).max(200);
+
+const conditionSchema = z.discriminatedUnion('op', [
+  z.strictObject({ field, op: z.enum(['eq', 'neq']), value: scalar }),
+  z.strictObject({
+    field,
+    op: z.enum(['in', 'notIn']),
+    value: z.array(scalar).min(1).max(FILTER_LIMITS.maxListLength),
+  }),
+  z.strictObject({ field, op: z.enum(['gt', 'gte', 'lt', 'lte']), value: scalar }),
+  z.strictObject({ field, op: z.literal('between'), value: z.tuple([scalar, scalar]) }),
+  z.strictObject({
+    field,
+    op: z.enum(['contains', 'startsWith', 'endsWith']),
+    value: z.string().min(1).max(FILTER_LIMITS.maxStringLength),
+  }),
+  z.strictObject({ field, op: z.enum(['isNull', 'isNotNull']) }),
+]);
+
+export const filterSchema: z.ZodType<Filter> = z.lazy(() =>
+  z.union([
+    z.strictObject({ and: z.array(filterSchema).min(1) }),
+    z.strictObject({ or: z.array(filterSchema).min(1) }),
+    z.strictObject({ not: filterSchema }),
+    conditionSchema,
+  ]),
+);
+
+/** How a column's values can be compared. Arrays and unrecognized types only support null checks. */
+export type FieldCategory =
+  'text' | 'number' | 'boolean' | 'temporal' | 'uuid' | 'enum' | 'json' | 'other';
+
+const CATEGORY_BY_TYPE: Record<string, FieldCategory> = {
+  text: 'text',
+  varchar: 'text',
+  bpchar: 'text',
+  citext: 'text',
+  name: 'text',
+  int2: 'number',
+  int4: 'number',
+  int8: 'number',
+  numeric: 'number',
+  float4: 'number',
+  float8: 'number',
+  money: 'number',
+  bool: 'boolean',
+  date: 'temporal',
+  timestamp: 'temporal',
+  timestamptz: 'temporal',
+  time: 'temporal',
+  timetz: 'temporal',
+  uuid: 'uuid',
+  json: 'json',
+  jsonb: 'json',
+};
+
+export function fieldCategory(f: Field): FieldCategory {
+  if (f.isArray) return 'other';
+  if (f.enumValues) return 'enum';
+  return CATEGORY_BY_TYPE[f.dataType] ?? 'other';
+}
+
+const NULL_CHECKS: Operator[] = ['isNull', 'isNotNull'];
+const EQUALITY: Operator[] = ['eq', 'neq', 'in', 'notIn', ...NULL_CHECKS];
+const ORDERED: Operator[] = [...EQUALITY, 'gt', 'gte', 'lt', 'lte', 'between'];
+
+export const OPERATORS_BY_CATEGORY: Record<FieldCategory, readonly Operator[]> = {
+  text: [...ORDERED, 'contains', 'startsWith', 'endsWith'],
+  number: ORDERED,
+  temporal: ORDERED,
+  boolean: ['eq', 'neq', ...NULL_CHECKS],
+  uuid: EQUALITY,
+  enum: EQUALITY,
+  json: NULL_CHECKS,
+  other: NULL_CHECKS,
+};
+
+const NUMERIC = /^-?(\d+(\.\d*)?|\.\d+)([eE][-+]?\d+)?$/;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+// ISO 8601 date, date-time (optional fraction and offset), or time of day.
+const TEMPORAL =
+  /^(\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}(:?\d{2})?)?)?|\d{2}:\d{2}(:\d{2}(\.\d+)?)?)$/;
+
+/** Returns an error message when `value` can't be compared against `f`, otherwise undefined. */
+function checkValue(f: Field, category: FieldCategory, value: Scalar): string | undefined {
+  switch (category) {
+    case 'text':
+      return typeof value === 'string' ? undefined : 'expected a string';
+    case 'number':
+      if (typeof value === 'number')
+        return Number.isFinite(value) ? undefined : 'expected a finite number';
+      return typeof value === 'string' && NUMERIC.test(value) ? undefined : 'expected a number';
+    case 'boolean':
+      return typeof value === 'boolean' ? undefined : 'expected a boolean';
+    case 'temporal':
+      return typeof value === 'string' && TEMPORAL.test(value)
+        ? undefined
+        : 'expected an ISO 8601 date/time';
+    case 'uuid':
+      return typeof value === 'string' && UUID.test(value) ? undefined : 'expected a UUID';
+    case 'enum':
+      return typeof value === 'string' && f.enumValues?.includes(value)
+        ? undefined
+        : `expected one of ${f.enumValues?.map((v) => `"${v}"`).join(', ')}`;
+    default:
+      return 'values cannot be compared for this field';
+  }
+}
+
+export interface FilterError {
+  /** JSON path into the filter, e.g. `and.1.value`. */
+  path: string;
+  message: string;
+}
+
+export type FilterValidation = { ok: true; filter: Filter } | { ok: false; errors: FilterError[] };
+
+/**
+ * Check a client-supplied filter against an entity. Only the entity's exposed fields can be
+ * referenced (hidden fields are indistinguishable from nonexistent ones), operators must suit
+ * the field's type, and values must parse as that type.
+ */
+export function validateFilter(entity: Entity, input: unknown): FilterValidation {
+  const parsed = filterSchema.safeParse(input);
+  if (!parsed.success) {
+    return {
+      ok: false,
+      errors: parsed.error.issues.map((i) => ({ path: i.path.join('.'), message: i.message })),
+    };
+  }
+
+  const errors: FilterError[] = [];
+  const fields = new Map(entity.fields.map((f) => [f.name, f]));
+  let conditions = 0;
+
+  const visit = (node: Filter, path: string[], depth: number) => {
+    const at = (...rest: (string | number)[]) => [...path, ...rest].join('.');
+    if (depth > FILTER_LIMITS.maxDepth) {
+      errors.push({
+        path: at(),
+        message: `filters can nest at most ${FILTER_LIMITS.maxDepth} levels`,
+      });
+      return;
+    }
+    if ('and' in node || 'or' in node) {
+      const key = 'and' in node ? 'and' : 'or';
+      const children = 'and' in node ? node.and : node.or;
+      children.forEach((child, i) => visit(child, [...path, key, String(i)], depth + 1));
+      return;
+    }
+    if ('not' in node) {
+      visit(node.not, [...path, 'not'], depth + 1);
+      return;
+    }
+
+    conditions++;
+    const f = fields.get(node.field);
+    if (!f) {
+      errors.push({ path: at('field'), message: `unknown field "${node.field}"` });
+      return;
+    }
+    const category = fieldCategory(f);
+    if (!OPERATORS_BY_CATEGORY[category].includes(node.op)) {
+      errors.push({
+        path: at('op'),
+        message: `operator "${node.op}" is not supported for ${f.name}`,
+      });
+      return;
+    }
+    if (!('value' in node)) return;
+    const values: Scalar[] = Array.isArray(node.value) ? node.value : [node.value];
+    values.forEach((value, i) => {
+      const message = checkValue(f, category, value);
+      if (message) {
+        errors.push({ path: Array.isArray(node.value) ? at('value', i) : at('value'), message });
+      }
+    });
+  };
+
+  visit(parsed.data, [], 1);
+  if (conditions > FILTER_LIMITS.maxConditions) {
+    errors.push({
+      path: '',
+      message: `filters can have at most ${FILTER_LIMITS.maxConditions} conditions`,
+    });
+  }
+
+  return errors.length > 0 ? { ok: false, errors } : { ok: true, filter: parsed.data };
+}
+
+/** Free-text search across the entity's searchable fields, as an `or` of `contains`. */
+export function searchFilter(entity: Entity, query: string): Filter | undefined {
+  const term = query.trim().slice(0, FILTER_LIMITS.maxStringLength);
+  if (!term) return undefined;
+  const fields = entity.searchable.filter((name) => {
+    const f = entity.fields.find((x) => x.name === name);
+    return f && fieldCategory(f) === 'text';
+  });
+  if (fields.length === 0) return undefined;
+  return { or: fields.map((name) => ({ field: name, op: 'contains', value: term })) };
+}
