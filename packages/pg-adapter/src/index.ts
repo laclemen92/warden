@@ -7,3 +7,13 @@ export {
 export { compileFilter, escapeLike } from './filter.js';
 export { introspect, WARDEN_SCHEMA, type IntrospectOptions } from './introspect.js';
 export { getRow, listRows, type ListOptions, type ListResult, type Row } from './rows.js';
+export { migrate, MIGRATIONS, type Migration } from './migrate.js';
+export {
+  deleteExpiredSessions,
+  deleteSession,
+  insertSession,
+  touchSession,
+  type NewSession,
+  type Session,
+  type SessionTimeouts,
+} from './sessions.js';

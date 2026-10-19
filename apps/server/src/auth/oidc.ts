@@ -1,0 +1,69 @@
+import * as oidc from 'openid-client';
+import type { AuthSettings } from './settings.js';
+
+/** Per-login values kept in the browser between /auth/login and /auth/callback. */
+export interface LoginChecks {
+  state: string;
+  nonce: string;
+  codeVerifier: string;
+}
+
+export interface OidcClient {
+  redirectUri: string;
+  /** Fresh checks plus the IdP URL to send the browser to. */
+  begin(): Promise<{ url: URL; checks: LoginChecks }>;
+  /** Exchange the callback's code and return the validated ID token claims. */
+  finish(callbackUrl: URL, checks: LoginChecks): Promise<oidc.IDToken>;
+}
+
+export function createOidcClient(settings: AuthSettings): OidcClient {
+  const redirectUri = new URL('/auth/callback', settings.publicUrl).href;
+  // Settings only allow http for loopback issuers.
+  const options =
+    settings.issuer.protocol === 'http:' ? { execute: [oidc.allowInsecureRequests] } : {};
+
+  // Discovered lazily and retried after failure, so an IdP outage doesn't stop Warden starting.
+  let discovered: Promise<oidc.Configuration> | undefined;
+  const configuration = () =>
+    (discovered ??= oidc
+      .discovery(settings.issuer, settings.clientId, settings.clientSecret, undefined, options)
+      .catch((err: unknown) => {
+        discovered = undefined;
+        throw err;
+      }));
+
+  return {
+    redirectUri,
+
+    async begin() {
+      const config = await configuration();
+      const checks: LoginChecks = {
+        state: oidc.randomState(),
+        nonce: oidc.randomNonce(),
+        codeVerifier: oidc.randomPKCECodeVerifier(),
+      };
+      const url = oidc.buildAuthorizationUrl(config, {
+        redirect_uri: redirectUri,
+        scope: settings.scopes,
+        state: checks.state,
+        nonce: checks.nonce,
+        code_challenge: await oidc.calculatePKCECodeChallenge(checks.codeVerifier),
+        code_challenge_method: 'S256',
+      });
+      return { url, checks };
+    },
+
+    async finish(callbackUrl, checks) {
+      const config = await configuration();
+      const tokens = await oidc.authorizationCodeGrant(config, callbackUrl, {
+        pkceCodeVerifier: checks.codeVerifier,
+        expectedState: checks.state,
+        expectedNonce: checks.nonce,
+        idTokenExpected: true,
+      });
+      const claims = tokens.claims();
+      if (!claims) throw new Error('token response has no ID token');
+      return claims;
+    },
+  };
+}

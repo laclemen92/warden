@@ -23,8 +23,8 @@ const oidc = await startMockOidc({
       clientId: env.MOCK_OIDC_CLIENT_ID ?? 'warden',
       clientSecret: env.MOCK_OIDC_CLIENT_SECRET ?? 'warden-dev-secret',
       redirectUris: list(env.MOCK_OIDC_REDIRECT_URIS, [
-        'http://localhost:3000/api/auth/callback',
-        'http://localhost:5173/api/auth/callback',
+        'http://localhost:3000/auth/callback',
+        'http://localhost:5173/auth/callback',
       ]),
       postLogoutRedirectUris: list(env.MOCK_OIDC_POST_LOGOUT_REDIRECT_URIS, [
         'http://localhost:3000/',

@@ -4,7 +4,7 @@ import { MOCK_USERS, startMockOidc, type MockOidc } from '../src/index.js';
 
 const CLIENT_ID = 'warden';
 const CLIENT_SECRET = 'test-secret';
-const REDIRECT_URI = 'http://localhost:3000/api/auth/callback';
+const REDIRECT_URI = 'http://localhost:3000/auth/callback';
 
 let idp: MockOidc;
 let config: oidc.Configuration;

@@ -24,10 +24,10 @@ Run `pnpm format && pnpm lint && pnpm typecheck && pnpm test` before every commi
 | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `packages/core`       | Pure logic, no I/O: `SchemaModel` types, `resolveSchema` (model + config → `EffectiveSchema`), filter AST + `validateFilter`, sort, record ids, cursors |
 | `packages/config`     | zod schema for the config file and `loadConfig` (errors carry file/line/col)                                                                            |
-| `packages/pg-adapter` | Postgres: `introspect`, `createDatabase`, `compileFilter`, `listRows`/`getRow`                                                                          |
+| `packages/pg-adapter` | Postgres: `introspect`, `createDatabase`, `compileFilter`, `listRows`/`getRow`, `migrate` (`warden` schema), sessions                                   |
 | `packages/testing`    | `startPostgres()` / `readExampleSql()` test helpers (private)                                                                                           |
 | `packages/mock-oidc`  | Dev/E2E-only OIDC provider (`startMockOidc()`, `MOCK_USERS`); runs in compose. Never ship it                                                            |
-| `apps/server`         | Fastify. `warden.ts` boots (config → introspect → resolve → app); `app.ts` wires routes; `routes/*`                                                     |
+| `apps/server`         | Fastify. `warden.ts` boots (config → introspect → resolve → app); `app.ts` wires routes; `auth/*` OIDC + sessions; `routes/*`                           |
 | `apps/web`            | React + Vite UI                                                                                                                                         |
 | `examples/basic`      | Example schema, seed, and config used by compose and tests                                                                                              |
 
@@ -42,6 +42,7 @@ Put logic in `packages/core` when it can be pure; keep SQL in `pg-adapter`; keep
 - **Config/DB mismatches are warnings, not crashes** (a dropped column must not take Warden down). Invalid config files _do_ fail startup with a `ConfigError`.
 - **Don't leak internals.** 5xx responses are generic; details go to the log.
 - Enforce permissions on the server. The UI only hides controls.
+- **Every `/api/*` route requires a session.** The guard in `routes/auth.ts` checks the matched route as well as the raw URL (Fastify decodes `/%61pi/...` to `/api/...`). New API routes go under `/api/` so they are covered.
 
 ## Conventions
 

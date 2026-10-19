@@ -53,6 +53,23 @@ The mock provider replaces a real IdP for local use: its sign-in page lists test
 
 Client ID `warden`, secret `warden-dev-secret`, scopes `openid email profile groups`.
 
+## Authentication
+
+Warden signs users in with OIDC (authorization code + PKCE) and keeps server-side sessions in the `warden` schema, which it creates and migrates on startup. Every `/api` route requires a session. Configure it with environment variables:
+
+| Variable                          | Required | Default                | Description                                                                                                                          |
+| --------------------------------- | -------- | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `WARDEN_PUBLIC_URL`               | yes      |                        | URL browsers use to reach Warden, e.g. `https://warden.example.com`. Register `<url>/auth/callback` as the redirect URI at your IdP. |
+| `OIDC_ISSUER`                     | yes      |                        | Issuer URL (discovery is fetched from `/.well-known/openid-configuration`).                                                          |
+| `OIDC_CLIENT_ID`                  | yes      |                        | Client ID registered at the IdP.                                                                                                     |
+| `OIDC_CLIENT_SECRET`              | yes      |                        | Client secret.                                                                                                                       |
+| `OIDC_SCOPES`                     | no       | `openid email profile` | Space-separated scopes. Add your IdP's group scope if it has one.                                                                    |
+| `WARDEN_SESSION_SECRET`           | yes      |                        | At least 32 characters; signs cookies. Generate with `openssl rand -base64 32`. Changing it logs everyone out.                       |
+| `WARDEN_SESSION_IDLE_TIMEOUT`     | no       | `2h`                   | A session ends after this long without a request (`30m`, `8h`, `7d`, or seconds).                                                    |
+| `WARDEN_SESSION_ABSOLUTE_TIMEOUT` | no       | `12h`                  | A session ends this long after login, however active.                                                                                |
+
+Both URLs must use https, except on `localhost`. When `WARDEN_PUBLIC_URL` is https, the session cookie is `__Host-warden_session` with `Secure`; it is always `HttpOnly` and `SameSite=Lax`. Only a hash of the session token is stored. Logging out (`POST /auth/logout`) deletes the session.
+
 ## Development
 
 Requires Node 22 and pnpm (`corepack enable`).
@@ -60,7 +77,8 @@ Requires Node 22 and pnpm (`corepack enable`).
 ```sh
 pnpm install
 docker compose up -d postgres mock-oidc
-pnpm dev          # server on :3000, web on :5173 (proxies /api to the server)
+cp apps/server/.env.example apps/server/.env
+pnpm dev          # server on :3000, web on :5173 (proxies /api and /auth to the server)
 pnpm test
 pnpm lint
 pnpm typecheck
