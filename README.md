@@ -40,7 +40,18 @@ Requires Docker.
 docker compose up --build
 ```
 
-This starts Postgres seeded with the example schema in [`examples/basic`](examples/basic) and Warden at http://localhost:3000. Override host ports with `POSTGRES_PORT` and `WARDEN_PORT` if 5432 or 3000 are taken.
+This starts Postgres seeded with the example schema in [`examples/basic`](examples/basic), a mock OIDC provider at http://localhost:9400, and Warden at http://localhost:3000. Override host ports with `POSTGRES_PORT`, `OIDC_PORT` and `WARDEN_PORT` if 5432, 9400 or 3000 are taken.
+
+The mock provider replaces a real IdP for local use: its sign-in page lists test users and needs no password. It is for development and E2E only.
+
+| User       | Email                  | `groups` claim   |
+| ---------- | ---------------------- | ---------------- |
+| `viewer`   | `viewer@example.com`   | `warden-viewers` |
+| `editor`   | `editor@example.com`   | `warden-editors` |
+| `admin`    | `admin@example.com`    | `warden-admins`  |
+| `outsider` | `outsider@example.org` | (none)           |
+
+Client ID `warden`, secret `warden-dev-secret`, scopes `openid email profile groups`.
 
 ## Development
 
@@ -48,7 +59,7 @@ Requires Node 22 and pnpm (`corepack enable`).
 
 ```sh
 pnpm install
-docker compose up -d postgres
+docker compose up -d postgres mock-oidc
 pnpm dev          # server on :3000, web on :5173 (proxies /api to the server)
 pnpm test
 pnpm lint
@@ -64,6 +75,7 @@ pnpm typecheck
 | `packages/core`       | Schema model types, policy engine, filter compilation       |
 | `packages/config`     | `warden.config.yaml`/`.json` schema and loader              |
 | `packages/pg-adapter` | Postgres introspection and query execution                  |
+| `packages/mock-oidc`  | Development-only OIDC provider with test users              |
 | `examples/basic`      | Example schema, seed data, and config used by compose/tests |
 | `docker`              | Production Dockerfile                                       |
 

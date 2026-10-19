@@ -16,17 +16,42 @@ services:
       timeout: 3s
       retries: 10
 
+  # Development-only IdP with test users (viewer, editor, admin, outsider). See packages/mock-oidc.
+  mock-oidc:
+    build:
+      context: .
+      dockerfile: docker/mock-oidc.Dockerfile
+    environment:
+      # The issuer must be the same URL for the browser and for Warden. Warden shares this
+      # container's network (see below), so http://localhost:<port> works for both, as long as
+      # the container listens on the same port the host publishes.
+      MOCK_OIDC_PORT: ${OIDC_PORT:-9400}
+      MOCK_OIDC_ISSUER: http://localhost:${OIDC_PORT:-9400}
+      MOCK_OIDC_CLIENT_ID: warden
+      MOCK_OIDC_CLIENT_SECRET: warden-dev-secret
+      MOCK_OIDC_REDIRECT_URIS: http://localhost:${WARDEN_PORT:-3000}/api/auth/callback,http://localhost:5173/api/auth/callback
+      MOCK_OIDC_POST_LOGOUT_REDIRECT_URIS: http://localhost:${WARDEN_PORT:-3000}/,http://localhost:5173/
+    ports:
+      - '${OIDC_PORT:-9400}:${OIDC_PORT:-9400}'
+      # Warden's port is published here because Warden uses this container's network namespace.
+      - '${WARDEN_PORT:-3000}:3000'
+
   warden:
     build:
       context: .
       dockerfile: docker/Dockerfile
+    network_mode: service:mock-oidc
     environment:
       DATABASE_URL: postgres://warden:warden@postgres:5432/example
       WARDEN_CONFIG: /config/warden.config.yaml
-    ports:
-      - '${WARDEN_PORT:-3000}:3000'
+      WARDEN_PUBLIC_URL: http://localhost:${WARDEN_PORT:-3000}
+      OIDC_ISSUER: http://localhost:${OIDC_PORT:-9400}
+      OIDC_CLIENT_ID: warden
+      OIDC_CLIENT_SECRET: warden-dev-secret
     volumes:
       - ./examples/basic/warden.config.yaml:/config/warden.config.yaml:ro
     depends_on:
       postgres:
+        condition: service_healthy
+      mock-oidc:
         condition: service_healthy
