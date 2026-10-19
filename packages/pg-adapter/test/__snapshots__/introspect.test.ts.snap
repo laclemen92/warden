@@ -138,6 +138,8 @@ exports[`introspect > matches the example schema snapshot 1`] = `
           "isArray": false,
           "name": "total",
           "nullable": false,
+          "precision": 12,
+          "scale": 2,
         },
         {
           "dataType": "bpchar",
@@ -145,6 +147,7 @@ exports[`introspect > matches the example schema snapshot 1`] = `
           "generated": false,
           "hasDefault": true,
           "isArray": false,
+          "maxLength": 3,
           "name": "currency",
           "nullable": false,
         },

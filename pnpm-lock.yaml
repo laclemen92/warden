@@ -150,6 +150,9 @@ importers:
       '@types/pg':
         specifier: ^8.23.1
         version: 8.23.1
+      '@wardenhq/config':
+        specifier: workspace:*
+        version: link:../config
       '@wardenhq/testing':
         specifier: workspace:*
         version: link:../testing
