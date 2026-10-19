@@ -1,0 +1,140 @@
+import { describe, expect, it } from 'vitest';
+import { ConfigError, parseConfig } from '../src/index.js';
+
+const FILE = '/etc/warden/warden.config.yaml';
+
+function issues(source: string) {
+  try {
+    parseConfig(source, FILE);
+  } catch (err) {
+    if (err instanceof ConfigError) return err.issues;
+    throw err;
+  }
+  throw new Error('expected config to be invalid');
+}
+
+describe('parseConfig', () => {
+  it('exposes everything, read-only, when the file is empty', () => {
+    expect(parseConfig('', FILE)).toEqual({
+      schemas: ['public'],
+      defaults: { expose: 'all', newColumns: 'visible' },
+      tables: {},
+    });
+  });
+
+  it('parses a full YAML config and fills nested defaults', () => {
+    const config = parseConfig(
+      `
+schemas: [public, billing]
+defaults:
+  expose: none
+tables:
+  users:
+    label: People
+    displayField: email
+    defaultSort: { column: created_at }
+    searchable: [email, full_name]
+    columns:
+      password_hash: { hidden: true }
+      created_at: { readOnly: true, label: Joined }
+  billing.invoices: {}
+`,
+      FILE,
+    );
+    expect(config.defaults).toEqual({ expose: 'none', newColumns: 'visible' });
+    expect(config.tables.users).toEqual({
+      label: 'People',
+      displayField: 'email',
+      defaultSort: { column: 'created_at', direction: 'asc' },
+      searchable: ['email', 'full_name'],
+      columns: {
+        password_hash: { hidden: true },
+        created_at: { readOnly: true, label: 'Joined' },
+      },
+    });
+    expect(config.tables['billing.invoices']).toEqual({ columns: {} });
+  });
+
+  it('parses JSON', () => {
+    const config = parseConfig(
+      JSON.stringify({ tables: { users: { hidden: true } } }),
+      'warden.config.json',
+    );
+    expect(config.tables.users?.hidden).toBe(true);
+  });
+
+  it('points unknown keys at the offending key with line and column', () => {
+    expect(
+      issues(`tables:
+  users:
+    columns:
+      password_hash:
+        hiden: true
+`),
+    ).toEqual([
+      {
+        path: 'tables.users.columns.password_hash.hiden',
+        message: 'Unrecognized key: "hiden"',
+        line: 5,
+        column: 9,
+      },
+    ]);
+  });
+
+  it('reports type and enum errors at the value', () => {
+    const result = issues(`defaults:
+  expose: everything
+tables:
+  users:
+    hidden: "yes"
+`);
+    expect(result).toMatchObject([
+      { path: 'defaults.expose', line: 2, column: 11 },
+      { path: 'tables.users.hidden', line: 5, column: 13 },
+    ]);
+    expect(result[0]?.message).toMatch(/all.*none/);
+  });
+
+  it('rejects hidden columns used as displayField, sort, or search', () => {
+    expect(
+      issues(`tables:
+  users:
+    displayField: password_hash
+    defaultSort: { column: password_hash, direction: desc }
+    searchable: [email, password_hash]
+    columns:
+      password_hash: { hidden: true }
+`).map((i) => i.path),
+    ).toEqual([
+      'tables.users.displayField',
+      'tables.users.defaultSort.column',
+      'tables.users.searchable.1',
+    ]);
+  });
+
+  it('requires qualified table keys to use a listed schema', () => {
+    expect(issues(`tables:\n  billing.invoices: {}\n`)).toMatchObject([
+      { path: 'tables.billing.invoices', message: 'schema "billing" is not listed in `schemas`' },
+    ]);
+  });
+
+  it('rejects malformed table keys', () => {
+    expect(issues(`tables:\n  a.b.c: {}\n`)).toMatchObject([
+      { path: 'tables.a.b.c', message: 'Expected "table" or "schema.table"' },
+    ]);
+  });
+
+  it('reports YAML syntax errors and duplicate keys with positions', () => {
+    expect(issues(`tables:\n  users: [unclosed\n`)[0]).toMatchObject({ path: '', line: 3 });
+    expect(issues(`tables:\n  users: {}\n  users: {}\n`)[0]).toMatchObject({
+      message: expect.stringMatching(/unique/i),
+      line: 3,
+    });
+  });
+
+  it('formats every issue in the error message with the file path', () => {
+    expect(() => parseConfig('defaults: { expose: 1 }', FILE)).toThrow(
+      /Invalid Warden config \/etc\/warden\/warden\.config\.yaml:\n {2}- defaults\.expose \(line 1, col 21\): /,
+    );
+  });
+});

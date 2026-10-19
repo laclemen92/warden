@@ -1,23 +1,37 @@
 # Warden exposes every introspected table and column by default.
-# Use this file to restrict and customize what is exposed.
+# This file narrows and customizes what is exposed.
+
+schemas: [public]
+
 defaults:
-  expose: all # all | none (allow-list mode)
+  expose: all # all | none (only tables listed below)
+  newColumns: visible # visible | hidden | readOnly: columns not mentioned here
 
+tables:
+  companies:
+    displayField: name
+    defaultSort: { column: name }
+    searchable: [name, domain]
 
-# Coming in #9 (tables/columns) and #28 (roles):
-#
-# tables:
-#   users:
-#     label: Users
-#     displayField: email
-#     columns:
-#       password_hash: { hidden: true }
-#       created_at: { readOnly: true }
-#   orders:
-#     deny: [create, delete]
+  users:
+    label: Users
+    displayField: email
+    defaultSort: { column: created_at, direction: desc }
+    searchable: [email, full_name]
+    columns:
+      password_hash: { hidden: true }
+      created_at: { readOnly: true, label: Joined }
+
+  orders:
+    defaultSort: { column: placed_at, direction: desc }
+    columns:
+      placed_at: { readOnly: true }
+# Coming in #28: roles, grants, and per-table deny, e.g.
 #
 # roles:
 #   viewer: { grants: { "*": [read] } }
 #   ops:
 #     grants:
 #       users: [read, update]
+# tables:
+#   orders: { deny: [create, delete] }
