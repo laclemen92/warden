@@ -1,0 +1,32 @@
+services:
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: warden
+      POSTGRES_PASSWORD: warden
+      POSTGRES_DB: example
+    ports:
+      - '${POSTGRES_PORT:-5432}:5432'
+    volumes:
+      - ./examples/basic/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      - ./examples/basic/seed.sql:/docker-entrypoint-initdb.d/02-seed.sql:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U warden -d example']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  warden:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    environment:
+      DATABASE_URL: postgres://warden:warden@postgres:5432/example
+      WARDEN_CONFIG: /config/warden.config.yaml
+    ports:
+      - '${WARDEN_PORT:-3000}:3000'
+    volumes:
+      - ./examples/basic/warden.config.yaml:/config/warden.config.yaml:ro
+    depends_on:
+      postgres:
+        condition: service_healthy

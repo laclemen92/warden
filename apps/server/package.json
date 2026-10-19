@@ -1,0 +1,27 @@
+{
+  "name": "@wardenhq/server",
+  "version": "0.0.0",
+  "description": "Warden API server",
+  "license": "Apache-2.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@fastify/static": "^10.1.6",
+    "@wardenhq/config": "workspace:*",
+    "@wardenhq/core": "workspace:*",
+    "@wardenhq/pg-adapter": "workspace:*",
+    "fastify": "^5.12.7"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "tsx": "^4.23.15"
+  }
+}
