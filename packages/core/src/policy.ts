@@ -1,4 +1,6 @@
-import { ACTIONS, type Action, type WardenConfig } from '@wardenhq/config';
+// The schema entry point, not the package root: the root pulls in the Node-only file loader,
+// and core also runs in the browser.
+import { ACTIONS, type Action, type WardenConfig } from '@wardenhq/config/schema';
 import type { EffectiveSchema, SchemaWarning } from './effective-schema.js';
 
 export type { Action };
