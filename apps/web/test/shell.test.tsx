@@ -96,7 +96,7 @@ describe('web shell', () => {
     const router = renderAt('/');
     const nav = await screen.findByRole('navigation', { name: 'Entities' });
     await userEvent.click(await within(nav).findByRole('link', { name: 'Orders' }));
-    expect(router.state.location.pathname).toBe('/entities/orders');
+    await waitFor(() => expect(router.state.location.pathname).toBe('/entities/orders'));
     expect(await screen.findByRole('heading', { name: 'Orders' })).toBeInTheDocument();
     expect(within(nav).getByRole('link', { name: 'Orders' })).toHaveAttribute(
       'data-active',
