@@ -1,4 +1,4 @@
-import type { Entity } from './effective-schema.js';
+import type { Entity, Field } from './effective-schema.js';
 import { fieldCategory, type FieldCategory } from './filter.js';
 
 export interface SortTerm {
@@ -15,6 +15,9 @@ const SORTABLE: ReadonlySet<FieldCategory> = new Set([
   'uuid',
   'enum',
 ]);
+
+/** Whether rows can be ordered by this field. */
+export const isSortable = (f: Field): boolean => SORTABLE.has(fieldCategory(f));
 
 export type SortResolution = { ok: true; sort: SortTerm[] } | { ok: false; message: string };
 
@@ -36,8 +39,7 @@ export function resolveSort(entity: Entity, input?: string): SortResolution {
       const name = part.replace(/^[-+]/, '');
       const f = entity.fields.find((x) => x.name === name);
       if (!f) return { ok: false, message: `unknown field "${name}"` };
-      if (!SORTABLE.has(fieldCategory(f)))
-        return { ok: false, message: `cannot sort by "${name}"` };
+      if (!isSortable(f)) return { ok: false, message: `cannot sort by "${name}"` };
       if (terms.some((t) => t.field === name)) {
         return { ok: false, message: `"${name}" appears more than once in sort` };
       }

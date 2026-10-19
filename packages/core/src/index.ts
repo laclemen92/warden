@@ -13,7 +13,7 @@ export {
 } from './filter.js';
 export { checkFieldValue } from './filter.js';
 export type * from './sort.js';
-export { MAX_SORT_TERMS, resolveSort } from './sort.js';
+export { MAX_SORT_TERMS, isSortable, resolveSort } from './sort.js';
 export type * from './record-id.js';
 export { decodeRecordId, encodeRecordId } from './record-id.js';
 export type * from './cursor.js';
