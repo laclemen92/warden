@@ -19,6 +19,12 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@wardenhq/core": "workspace:*"
+    "@wardenhq/core": "workspace:*",
+    "pg": "^8.23.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "@types/pg": "^8.23.1",
+    "@wardenhq/testing": "workspace:*"
   }
 }

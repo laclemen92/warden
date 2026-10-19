@@ -4,8 +4,24 @@ import { getTable, type SchemaModel } from '../src/index.js';
 const model: SchemaModel = {
   enums: [],
   tables: [
-    { schema: 'public', name: 'users', columns: [], primaryKey: ['id'], foreignKeys: [] },
-    { schema: 'billing', name: 'users', columns: [], primaryKey: ['id'], foreignKeys: [] },
+    {
+      schema: 'public',
+      name: 'users',
+      kind: 'table',
+      columns: [],
+      primaryKey: ['id'],
+      uniqueKeys: [],
+      foreignKeys: [],
+    },
+    {
+      schema: 'billing',
+      name: 'users',
+      kind: 'table',
+      columns: [],
+      primaryKey: ['id'],
+      uniqueKeys: [],
+      foreignKeys: [],
+    },
   ],
 };
 
