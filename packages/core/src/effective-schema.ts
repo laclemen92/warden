@@ -37,6 +37,10 @@ export interface Field {
   hasDefault: boolean;
   /** Never writable: configured read-only, identity `always`, or generated. */
   readOnly: boolean;
+  /** Column constraints that write validation enforces; see `Column`. */
+  maxLength?: number;
+  precision?: number;
+  scale?: number;
   enumValues?: string[];
   comment?: string;
 }
@@ -228,6 +232,9 @@ function toField(
     hasDefault: column.hasDefault,
     readOnly: configuredReadOnly || column.identity === 'always' || column.generated,
   };
+  if (column.maxLength !== undefined) field.maxLength = column.maxLength;
+  if (column.precision !== undefined) field.precision = column.precision;
+  if (column.scale !== undefined) field.scale = column.scale;
   const values = column.enum && enumValues.get(`${column.enum.schema}.${column.enum.name}`);
   if (values) field.enumValues = values;
   if (column.comment) field.comment = column.comment;

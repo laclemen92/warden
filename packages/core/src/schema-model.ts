@@ -36,6 +36,11 @@ export interface Column {
   identity?: 'always' | 'byDefault';
   /** Generated (computed) columns cannot be written. */
   generated: boolean;
+  /** Declared length limit in characters, e.g. 255 for `varchar(255)`. Also applies to array elements. */
+  maxLength?: number;
+  /** Declared `numeric(precision, scale)`; absent for unconstrained numerics. */
+  precision?: number;
+  scale?: number;
   /** Set when the column (or its array element) is an enum type. */
   enum?: QualifiedName;
   comment?: string;
