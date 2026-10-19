@@ -6,6 +6,7 @@ schemas: [public]
 defaults:
   expose: all # all | none (only tables listed below)
   newColumns: visible # visible | hidden | readOnly: columns not mentioned here
+  read: all # all | granted (reading requires a `read` grant)
 
 tables:
   companies:
@@ -26,12 +27,14 @@ tables:
     defaultSort: { column: placed_at, direction: desc }
     columns:
       placed_at: { readOnly: true }
-# Coming in #28: roles, grants, and per-table deny, e.g.
-#
-# roles:
-#   viewer: { grants: { "*": [read] } }
-#   ops:
-#     grants:
-#       users: [read, update]
-# tables:
-#   orders: { deny: [create, delete] }
+    # Nobody may create or delete orders, whatever their role grants.
+    deny: [create, delete]
+
+# Create, update and delete are denied unless a role grants them.
+roles:
+  viewer: { grants: { '*': [read] } }
+  ops:
+    grants:
+      users: [read, update]
+      companies: [read, create, update]
+      orders: [update]
