@@ -17,8 +17,9 @@ describe('parseConfig', () => {
   it('exposes everything, read-only, when the file is empty', () => {
     expect(parseConfig('', FILE)).toEqual({
       schemas: ['public'],
-      defaults: { expose: 'all', newColumns: 'visible' },
+      defaults: { expose: 'all', newColumns: 'visible', read: 'all' },
       tables: {},
+      roles: {},
     });
   });
 
@@ -41,7 +42,7 @@ tables:
 `,
       FILE,
     );
-    expect(config.defaults).toEqual({ expose: 'none', newColumns: 'visible' });
+    expect(config.defaults).toEqual({ expose: 'none', newColumns: 'visible', read: 'all' });
     expect(config.tables.users).toEqual({
       label: 'People',
       displayField: 'email',
@@ -115,6 +116,64 @@ tables:
   it('requires qualified table keys to use a listed schema', () => {
     expect(issues(`tables:\n  billing.invoices: {}\n`)).toMatchObject([
       { path: 'tables.billing.invoices', message: 'schema "billing" is not listed in `schemas`' },
+    ]);
+  });
+
+  it('parses roles, grants, and per-table deny', () => {
+    const config = parseConfig(
+      `
+roles:
+  viewer: { grants: { "*": [read] } }
+  ops:
+    grants:
+      users: [read, update]
+      companies: [read, create, update]
+  nobody: {}
+tables:
+  orders: { deny: [create, delete] }
+`,
+      FILE,
+    );
+    expect(config.roles).toEqual({
+      viewer: { grants: { '*': ['read'] } },
+      ops: { grants: { users: ['read', 'update'], companies: ['read', 'create', 'update'] } },
+      nobody: { grants: {} },
+    });
+    expect(config.tables.orders?.deny).toEqual(['create', 'delete']);
+  });
+
+  it('rejects unknown actions and role keys', () => {
+    expect(
+      issues(`tables:
+  orders: { deny: [drop] }
+roles:
+  ops:
+    grants:
+      users: [read, write]
+    grant: {}
+`).map((i) => [i.path, i.line]),
+    ).toEqual([
+      ['tables.orders.deny.0', 2],
+      ['roles.ops.grants.users.1', 6],
+      ['roles.ops.grant', 7],
+    ]);
+  });
+
+  it('rejects malformed grant keys', () => {
+    for (const key of ['a.b.c', '**', 'users*', '']) {
+      expect(issues(`roles:\n  ops:\n    grants:\n      "${key}": [read]\n`)).toMatchObject([
+        { path: `roles.ops.grants.${key}`, message: 'Expected "*", "table" or "schema.table"' },
+      ]);
+    }
+  });
+
+  it('requires qualified grant keys to use a listed schema', () => {
+    expect(issues(`roles:\n  ops:\n    grants:\n      billing.invoices: [read]\n`)).toMatchObject([
+      {
+        path: 'roles.ops.grants.billing.invoices',
+        message: 'schema "billing" is not listed in `schemas`',
+        line: 4,
+      },
     ]);
   });
 

@@ -6,7 +6,7 @@ Thanks for your interest in contributing!
 
 1. Install Node 22 and enable pnpm with `corepack enable`.
 2. `pnpm install`
-3. `docker compose up -d postgres` for a seeded example database.
+3. `docker compose up -d postgres mock-oidc` for a seeded example database and a mock OIDC provider.
 4. `pnpm dev`
 
 ## Before opening a PR

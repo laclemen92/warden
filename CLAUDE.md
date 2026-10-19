@@ -26,6 +26,7 @@ Run `pnpm format && pnpm lint && pnpm typecheck && pnpm test` before every commi
 | `packages/config`     | zod schema for the config file and `loadConfig` (errors carry file/line/col)                                                                            |
 | `packages/pg-adapter` | Postgres: `introspect`, `createDatabase`, `compileFilter`, `listRows`/`getRow`                                                                          |
 | `packages/testing`    | `startPostgres()` / `readExampleSql()` test helpers (private)                                                                                           |
+| `packages/mock-oidc`  | Dev/E2E-only OIDC provider (`startMockOidc()`, `MOCK_USERS`); runs in compose. Never ship it                                                            |
 | `apps/server`         | Fastify. `warden.ts` boots (config → introspect → resolve → app); `app.ts` wires routes; `routes/*`                                                     |
 | `apps/web`            | React + Vite UI                                                                                                                                         |
 | `examples/basic`      | Example schema, seed, and config used by compose and tests                                                                                              |
@@ -51,6 +52,7 @@ Put logic in `packages/core` when it can be pure; keep SQL in `pg-adapter`; keep
 - Postgres values: dates/times come back as Postgres text (not JS `Date`); `int8`/`numeric` are strings. Keep it that way: cursors depend on it.
 - Comments explain _why_, sparingly. Match the surrounding style.
 - New dependency: add it to the package that uses it with `pnpm --filter`. Shared dev tooling goes at the root. Check the latest version first.
+- **Config changes are documented in the same PR.** Adding, changing, or removing a key in `packages/config/src/schema.ts` updates `docs/config.md` (the config reference) and `examples/basic/warden.config.yaml`.
 
 ## Tests
 
@@ -63,5 +65,5 @@ Put logic in `packages/core` when it can be pure; keep SQL in `pg-adapter`; keep
 - One branch and PR per issue: `feat/<issue>-<slug>`. The commit message and PR body end with `Closes #<issue>`. PR bodies have a Summary and a Test plan.
 - Squash-merge. Regenerate `pnpm-lock.yaml` with `pnpm install` on conflicts; never hand-merge it.
 - Several agents may work in parallel, so stay inside your issue's scope. Shared files that commonly conflict: `packages/core/src/index.ts` (append exports), `packages/config/src/schema.ts`, `apps/server/src/app.ts`, `pnpm-lock.yaml`.
-- Docker compose host ports are configurable: use `POSTGRES_PORT=<unique> WARDEN_PORT=<unique> docker compose up` so parallel work doesn't collide, and `docker compose down -v` afterwards.
+- Docker compose host ports are configurable: use `POSTGRES_PORT=<unique> WARDEN_PORT=<unique> OIDC_PORT=<unique> docker compose up` so parallel work doesn't collide, and `docker compose down -v` afterwards.
 - Check an issue's "Blocked by" notes before starting it.

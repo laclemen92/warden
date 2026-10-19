@@ -18,3 +18,5 @@ export type * from './record-id.js';
 export { decodeRecordId, encodeRecordId } from './record-id.js';
 export type * from './cursor.js';
 export { decodeCursor, encodeCursor } from './cursor.js';
+export type * from './policy.js';
+export { allowedActions, isAllowed, resolvePolicy } from './policy.js';
