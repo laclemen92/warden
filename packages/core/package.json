@@ -19,6 +19,7 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@wardenhq/config": "workspace:*"
+    "@wardenhq/config": "workspace:*",
+    "zod": "^4.6.7"
   }
 }
