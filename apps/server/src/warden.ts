@@ -1,6 +1,6 @@
 import { loadConfig } from '@wardenhq/config';
 import { resolveSchema } from '@wardenhq/core';
-import { createDatabase, introspect, migrate } from '@wardenhq/pg-adapter';
+import { createDatabase, introspect, migrate, pendingMigrations } from '@wardenhq/pg-adapter';
 import { buildApp, type AppOptions } from './app.js';
 import { createOidcClient } from './auth/oidc.js';
 import { createSessions } from './auth/session.js';
@@ -13,8 +13,16 @@ export interface WardenOptions {
   logger?: AppOptions['logger'];
 }
 
+/** `WARDEN_MIGRATE`: on by default; off when a separate, privileged role runs migrations. */
+export function parseMigrateFlag(value: string | undefined): boolean {
+  const normalized = value?.trim().toLowerCase() || 'true';
+  if (['true', '1', 'yes', 'on'].includes(normalized)) return true;
+  if (['false', '0', 'no', 'off'].includes(normalized)) return false;
+  throw new Error('WARDEN_MIGRATE must be true or false');
+}
+
 /**
- * Load config, migrate Warden's own schema, introspect the database, and build the app. Config that doesn't match the
+ * Load config, migrate Warden's own schema (or check it is current), introspect the database, and build the app. Config that doesn't match the
  * database is logged as warnings; invalid config throws a ConfigError.
  */
 export async function createWarden({
@@ -26,6 +34,7 @@ export async function createWarden({
   const connectionString = env.DATABASE_URL;
   if (!connectionString) throw new Error('DATABASE_URL is required');
   const authSettings = parseAuthSettings(env);
+  const runMigrations = parseMigrateFlag(env.WARDEN_MIGRATE);
 
   const { config, path: configPath } = await loadConfig({ cwd, env });
   // Route idle-connection errors to the app logger once it exists.
@@ -36,7 +45,18 @@ export async function createWarden({
   });
 
   try {
-    const migrations = await migrate(db);
+    let migrations: string[] = [];
+    if (runMigrations) {
+      migrations = await migrate(db);
+    } else {
+      const pending = await pendingMigrations(db);
+      if (pending.length > 0) {
+        throw new Error(
+          `WARDEN_MIGRATE is off but the warden schema is missing migrations: ${pending.join(', ')}. ` +
+            'Run `node dist/migrate.js` as the schema owner first.',
+        );
+      }
+    }
     const model = await introspect(pool, { schemas: config.schemas });
     const { schema, warnings } = resolveSchema(model, config);
 

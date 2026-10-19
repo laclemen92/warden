@@ -32,7 +32,7 @@ roles:
       users: [read, update]
 ```
 
-See the [configuration reference](docs/config.md) for every option.
+See the [configuration reference](docs/config.md) for every option and [database setup](docs/database.md) for migrations, database roles, and the audit log.
 
 ## Quickstart
 
@@ -57,7 +57,7 @@ Client ID `warden`, secret `warden-dev-secret`, scopes `openid email profile gro
 
 ## Authentication
 
-Warden signs users in with OIDC (authorization code + PKCE) and keeps server-side sessions in the `warden` schema, which it creates and migrates on startup. Every `/api` route requires a session. Configure it with environment variables:
+Warden signs users in with OIDC (authorization code + PKCE) and keeps server-side sessions in the `warden` schema, which it creates and migrates on startup (see [database setup](docs/database.md) to migrate separately and run Warden as a restricted role). Every `/api` route requires a session. Configure it with environment variables:
 
 | Variable                          | Required | Default                | Description                                                                                                                          |
 | --------------------------------- | -------- | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
@@ -98,7 +98,7 @@ pnpm typecheck
 | `packages/mock-oidc`  | Development-only OIDC provider with test users              |
 | `examples/basic`      | Example schema, seed data, and config used by compose/tests |
 | `docker`              | Production Dockerfile                                       |
-| `docs`                | Configuration reference                                     |
+| `docs`                | Configuration reference and database setup                  |
 
 ## License
 

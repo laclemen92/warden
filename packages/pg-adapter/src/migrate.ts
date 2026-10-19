@@ -27,6 +27,51 @@ export const MIGRATIONS: readonly Migration[] = [
       create index sessions_last_seen_at_idx on warden.sessions (last_seen_at);
     `,
   },
+  {
+    version: '0002_audit_log',
+    sql: `
+      create table warden.audit_log (
+        id            bigint generated always as identity primary key,
+        occurred_at   timestamptz not null default now(),
+        request_id    text,
+        actor_subject text not null,
+        actor_email   text,
+        actor_roles   text[] not null default '{}',
+        -- Free text rather than an enum: custom actions add their own names.
+        action        text not null,
+        entity        text not null,
+        -- The opaque record id the API uses, plus the raw key columns.
+        record_id     text,
+        primary_key   jsonb,
+        before        jsonb,
+        after         jsonb,
+        diff          jsonb,
+        reason        text,
+        -- Groups the rows touched by one custom action under a parent entry.
+        parent_id     bigint references warden.audit_log (id)
+      );
+      create index audit_log_record_idx on warden.audit_log (entity, record_id, id desc);
+      create index audit_log_occurred_at_idx on warden.audit_log (occurred_at);
+      create index audit_log_actor_idx on warden.audit_log (actor_subject, occurred_at);
+      create index audit_log_parent_idx on warden.audit_log (parent_id) where parent_id is not null;
+
+      -- Append-only even for the table owner, who bypasses grants. Dropping the triggers takes
+      -- a deliberate DDL statement, which the runtime role shouldn't be able to run at all.
+      create function warden.audit_log_append_only() returns trigger
+        language plpgsql as $$
+        begin
+          raise exception 'warden.audit_log is append-only (% denied)', tg_op
+            using errcode = 'insufficient_privilege';
+        end;
+        $$;
+      create trigger audit_log_no_update_delete
+        before update or delete on warden.audit_log
+        for each row execute function warden.audit_log_append_only();
+      create trigger audit_log_no_truncate
+        before truncate on warden.audit_log
+        for each statement execute function warden.audit_log_append_only();
+    `,
+  },
 ];
 
 // Arbitrary constant shared by every Warden instance, so replicas don't migrate concurrently.
@@ -64,4 +109,23 @@ export async function migrate(
     }
     return pending.map((m) => m.version);
   });
+}
+
+/** Versions in `migrations` not yet applied, for refusing to start against a stale schema. */
+export async function pendingMigrations(
+  db: Database,
+  migrations: readonly Migration[] = MIGRATIONS,
+): Promise<string[]> {
+  const { rows: exists } = await sql<{ table: string | null }>`
+    select to_regclass(${`${WARDEN_SCHEMA}.schema_migrations`})::text as table`.execute(db);
+  const applied = new Set<string>();
+  if (exists[0]?.table) {
+    const { rows } = await sql<{ version: string }>`
+      select version from ${sql.id(WARDEN_SCHEMA, 'schema_migrations')}`.execute(db);
+    for (const row of rows) applied.add(row.version);
+  }
+  return migrations
+    .map((m) => m.version)
+    .filter((v) => !applied.has(v))
+    .sort();
 }
