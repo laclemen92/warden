@@ -1,4 +1,4 @@
-import { getTable, type SchemaModel } from '@wardenhq/core';
+import { getTable, type Column, type SchemaModel } from '@wardenhq/core';
 import { readExampleSql, startPostgres, type TestDatabase } from '@wardenhq/testing';
 import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -148,6 +148,32 @@ describe('introspect', () => {
     expect(model.enums).toEqual([
       { schema: 'billing', name: 'currency', values: ['USD', 'EUR', 'GBP'] },
     ]);
+  });
+
+  it('reports declared lengths and numeric precision, including for array elements', async () => {
+    await db.exec(`
+      create table misc.sized (
+        code char(3), title varchar(80), labels varchar(20)[], body text, plain varchar,
+        price numeric(12, 2), ratio numeric(5), amount numeric, weight float8
+      )`);
+    try {
+      const model = await introspect(pool, { schemas: ['misc'] });
+      const pick = ({ maxLength, precision, scale }: Column) => ({ maxLength, precision, scale });
+      const columns = table(model, 'sized', 'misc').columns;
+      expect(Object.fromEntries(columns.map((c) => [c.name, pick(c)]))).toEqual({
+        code: { maxLength: 3 },
+        title: { maxLength: 80 },
+        labels: { maxLength: 20 },
+        body: {},
+        plain: {},
+        price: { precision: 12, scale: 2 },
+        ratio: { precision: 5, scale: 0 },
+        amount: {},
+        weight: {},
+      });
+    } finally {
+      await db.exec('drop table misc.sized');
+    }
   });
 
   it('includes enums from other schemas when a column references them', async () => {

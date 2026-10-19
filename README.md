@@ -15,7 +15,7 @@ Point Warden at a database and it introspects the schema and exposes every table
 - **Self-hosted.** One Docker image. Warden's own metadata lives in a separate `warden` schema.
 
 ```yaml
-# warden.config.yaml (planned shape)
+# warden.config.yaml
 defaults:
   expose: all
 tables:
@@ -31,6 +31,8 @@ roles:
     grants:
       users: [read, update]
 ```
+
+See the [configuration reference](docs/config.md) for every option.
 
 ## Quickstart
 
@@ -96,6 +98,7 @@ pnpm typecheck
 | `packages/mock-oidc`  | Development-only OIDC provider with test users              |
 | `examples/basic`      | Example schema, seed data, and config used by compose/tests |
 | `docker`              | Production Dockerfile                                       |
+| `docs`                | Configuration reference                                     |
 
 ## License
 

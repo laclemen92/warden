@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Writable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
-import type { EffectiveSchema } from '@wardenhq/core';
+import { validateRecord, type EffectiveSchema } from '@wardenhq/core';
 import { readExampleSql, startPostgres, type TestDatabase } from '@wardenhq/testing';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createWarden, type WardenOptions } from '../src/warden.js';
@@ -61,6 +61,28 @@ describe('GET /api/schema', () => {
       'owner',
     ]);
     expect(body).not.toContain('password_hash');
+  });
+
+  it('carries the column constraints clients need to mirror write validation', async () => {
+    const { schema } = await getSchema({ WARDEN_CONFIG: EXAMPLE_CONFIG });
+    const orders = schema.entities.find((e) => e.key === 'orders');
+    if (!orders) throw new Error('orders not exposed');
+    expect(orders.fields.find((f) => f.name === 'total')).toMatchObject({
+      precision: 12,
+      scale: 2,
+    });
+    expect(orders.fields.find((f) => f.name === 'currency')).toMatchObject({ maxLength: 3 });
+
+    // The UI builds its validation from the served entity; it must match the server's.
+    const input = { company_id: '1', total: '12345678901.00', currency: 'EURO', status: 'lost' };
+    expect(validateRecord(orders, input, 'create')).toEqual({
+      ok: false,
+      errors: [
+        { field: 'status', message: expect.stringMatching(/^expected one of/) },
+        { field: 'total', message: 'must have at most 10 digits before the decimal point' },
+        { field: 'currency', message: 'must be at most 3 characters' },
+      ],
+    });
   });
 
   it('exposes everything when there is no config file', async () => {

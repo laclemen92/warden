@@ -57,6 +57,9 @@ interface ColumnRow {
   generated: boolean;
   enum_oid: string | null;
   enum_schema: string | null;
+  max_length: number | null;
+  precision: number | null;
+  scale: number | null;
   comment: string | null;
 }
 
@@ -112,6 +115,11 @@ const COLUMNS_SQL = `
          case when coalesce(et.typtype, t.typtype) = 'e'
               then coalesce(et.oid, t.oid)::int8::text end as enum_oid,
          case when coalesce(et.typtype, t.typtype) = 'e' then tn.nspname end as enum_schema,
+         information_schema._pg_char_max_length(coalesce(et.oid, t.oid), a.atttypmod) as max_length,
+         case when coalesce(et.typname, t.typname) = 'numeric' then
+           information_schema._pg_numeric_precision(coalesce(et.oid, t.oid), a.atttypmod) end as precision,
+         case when coalesce(et.typname, t.typname) = 'numeric' then
+           information_schema._pg_numeric_scale(coalesce(et.oid, t.oid), a.atttypmod) end as scale,
          col_description(a.attrelid, a.attnum) as comment
   from pg_attribute a
   join pg_class c on c.oid = a.attrelid
@@ -235,6 +243,9 @@ function toColumn(
   };
   if (row.identity === 'a') column.identity = 'always';
   if (row.identity === 'd') column.identity = 'byDefault';
+  if (row.max_length !== null) column.maxLength = row.max_length;
+  if (row.precision !== null) column.precision = row.precision;
+  if (row.scale !== null) column.scale = row.scale;
   const enumName = row.enum_oid ? enumNameByOid.get(row.enum_oid) : undefined;
   if (enumName) column.enum = enumName;
   if (row.comment) column.comment = row.comment;
