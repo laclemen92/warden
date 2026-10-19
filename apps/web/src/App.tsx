@@ -1,9 +1,29 @@
-// Placeholder until the web shell lands in #20.
-export function App() {
+import { QueryClientProvider, type QueryClient } from '@tanstack/react-query';
+import { RouterProvider, type DataRouter } from 'react-router';
+import { TooltipProvider } from '@/components/ui/tooltip';
+import { loginPath } from '@/lib/auth';
+import { createQueryClient } from '@/lib/query-client';
+
+/** Wires a router to a query client that sends the user to /login when any API call returns 401. */
+export function createApp(createRouter: () => DataRouter): {
+  router: DataRouter;
+  queryClient: QueryClient;
+} {
+  const router = createRouter();
+  const queryClient = createQueryClient(() => {
+    const { pathname, search } = router.state.location;
+    if (pathname === '/login') return;
+    void router.navigate(loginPath(pathname + search), { replace: true });
+  });
+  return { router, queryClient };
+}
+
+export function App({ router, queryClient }: { router: DataRouter; queryClient: QueryClient }) {
   return (
-    <main style={{ fontFamily: 'system-ui, sans-serif', padding: '2rem' }}>
-      <h1>Warden</h1>
-      <p>Config-driven, audited backoffice for your Postgres database.</p>
-    </main>
+    <QueryClientProvider client={queryClient}>
+      <TooltipProvider>
+        <RouterProvider router={router} />
+      </TooltipProvider>
+    </QueryClientProvider>
   );
 }
