@@ -23,3 +23,4 @@ export { allowedActions, isAllowed, resolvePolicy } from './policy.js';
 export type * from './validation.js';
 export { fieldSchema, recordSchema, toFieldErrors, validateRecord } from './validation.js';
 export { resolveRoles } from './roles.js';
+export { relationFilter } from './relation.js';

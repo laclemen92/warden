@@ -18,7 +18,7 @@ import {
   X,
 } from 'lucide-react';
 import { useMemo, useRef, useState } from 'react';
-import { useSearchParams } from 'react-router';
+import { Link, useSearchParams } from 'react-router';
 import { cn } from 'cn';
 import { FilterBuilder } from '@/components/filter-builder';
 import { Badge } from '@/components/ui/badge';
@@ -50,23 +50,11 @@ import {
   writeGridState,
   type GridUpdate,
 } from '@/lib/grid-state';
-
-export interface ListItem {
-  /** Encoded record id; null when the entity has no primary key. */
-  id: string | null;
-  values: Record<string, unknown>;
-}
-
-export interface ListResponse {
-  items: ListItem[];
-  nextCursor: string | null;
-  hasMore: boolean;
-  total?: number;
-}
+import { recordPath, type RecordItem, type RecordList } from '@/lib/records';
 
 const features = tableFeatures({ rowSortingFeature });
-const helper = createColumnHelper<typeof features, ListItem>();
-const NO_ROWS: ListItem[] = [];
+const helper = createColumnHelper<typeof features, RecordItem>();
+const NO_ROWS: RecordItem[] = [];
 const SEARCH_DEBOUNCE_MS = 300;
 const numberFormat = new Intl.NumberFormat();
 
@@ -122,7 +110,7 @@ export function EntityGrid({ entity }: { entity: Entity }) {
 
   const rows = useQuery({
     queryKey: ['rows', entity.key, url],
-    queryFn: () => apiFetch<ListResponse>(url),
+    queryFn: () => apiFetch<RecordList>(url),
     placeholderData: keepPreviousData,
   });
 
@@ -136,7 +124,20 @@ export function EntityGrid({ entity }: { entity: Entity }) {
           id: field.name,
           header: field.label,
           enableSorting: isSortable(field),
-          cell: (info) => <CellValue value={info.getValue()} />,
+          cell: (info) => {
+            const id = info.row.original.id;
+            // The display field opens the record; rows without a primary key can't be opened.
+            return field.name === entity.displayField && id !== null ? (
+              <Link
+                to={recordPath(entity, id)}
+                className="font-medium underline underline-offset-4"
+              >
+                <CellValue value={info.getValue()} />
+              </Link>
+            ) : (
+              <CellValue value={info.getValue()} />
+            );
+          },
         }),
       ),
     [entity],

@@ -4,13 +4,13 @@ import userEvent from '@testing-library/user-event';
 import { createMemoryRouter } from 'react-router';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { App, createApp } from '../src/App';
-import type { ListResponse } from '../src/components/entity-grid';
+import type { RecordList } from '../src/lib/records';
 import { routes } from '../src/routes';
 import { orders } from './fixtures';
 
 const schema: EffectiveSchema = { entities: [orders] };
 
-function page(ids: number[], total: number, hasMore = false): ListResponse {
+function page(ids: number[], total: number, hasMore = false): RecordList {
   return {
     items: ids.map((id) => ({
       id: String(id),
@@ -103,6 +103,16 @@ describe('entity grid', () => {
     expect(within(table).getAllByText('null')).toHaveLength(1);
     expect(within(table).getAllByText('{"tag":"a"}')).toHaveLength(2);
     expect(screen.getByText('1–2 of 2')).toBeInTheDocument();
+  });
+
+  it('links each row to its record through the display field', async () => {
+    renderAt('/entities/orders');
+    const table = await grid();
+    expect(within(table).getByRole('link', { name: '2' })).toHaveAttribute(
+      'href',
+      '/entities/orders/2',
+    );
+    expect(within(table).getAllByRole('link')).toHaveLength(2);
   });
 
   it('sorts on the server and keeps the sort in the URL', async () => {

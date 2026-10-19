@@ -4,7 +4,6 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { NotFoundPage } from '@/pages/not-found-page';
 import { useSchema } from '@/lib/schema';
 
-// The detail view (#22) mounts here.
 export function EntityPage() {
   const { entity: key } = useParams();
   const { data: schema, isPending } = useSchema();
