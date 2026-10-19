@@ -7,27 +7,36 @@ import { validateRecord, type EffectiveSchema } from '@wardenhq/core';
 import { readExampleSql, startPostgres, type TestDatabase } from '@wardenhq/testing';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createWarden, type WardenOptions } from '../src/warden.js';
+import { authEnv, login, startTestIdp } from './helpers/auth.js';
+import type { MockOidc } from '@wardenhq/mock-oidc';
 
 const EXAMPLE_CONFIG = fileURLToPath(
   new URL('../../../examples/basic/warden.config.yaml', import.meta.url),
 );
 
 let db: TestDatabase;
+let idp: MockOidc;
 
 beforeAll(async () => {
   db = await startPostgres({
     sql: [await readExampleSql('basic/schema.sql'), await readExampleSql('basic/seed.sql')],
   });
+  idp = await startTestIdp();
 }, 120_000);
 
 afterAll(async () => {
+  await idp?.close();
   await db?.stop();
 });
 
 async function getSchema(env: Record<string, string>, logger: WardenOptions['logger'] = false) {
-  const app = await createWarden({ env: { DATABASE_URL: db.connectionString, ...env }, logger });
+  const app = await createWarden({
+    env: { DATABASE_URL: db.connectionString, ...authEnv(idp), ...env },
+    logger,
+  });
   try {
-    const res = await app.inject({ method: 'GET', url: '/api/schema' });
+    const cookie = await login(app, 'viewer');
+    const res = await app.inject({ method: 'GET', url: '/api/schema', headers: { cookie } });
     expect(res.statusCode).toBe(200);
     return { body: res.body, schema: res.json<EffectiveSchema>() };
   } finally {

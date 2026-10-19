@@ -1,0 +1,355 @@
+import { createHash } from 'node:crypto';
+import type { MockOidc } from '@wardenhq/mock-oidc';
+import { readExampleSql, startPostgres, type TestDatabase } from '@wardenhq/testing';
+import pg from 'pg';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { parseAuthSettings, parseDuration } from '../src/auth/settings.js';
+import { safeReturnTo } from '../src/routes/auth.js';
+import { createWarden } from '../src/warden.js';
+import {
+  authEnv,
+  beginLogin,
+  callback,
+  cookiesFrom,
+  HTTPS_PUBLIC_URL,
+  login,
+  signInAtIdp,
+  startTestIdp,
+} from './helpers/auth.js';
+
+type App = Awaited<ReturnType<typeof createWarden>>;
+
+let db: TestDatabase;
+let sqlPool: pg.Pool;
+let idp: MockOidc;
+let app: App;
+
+const start = (env: Record<string, string> = {}) =>
+  createWarden({ env: { DATABASE_URL: db.connectionString, ...authEnv(idp), ...env } });
+
+beforeAll(async () => {
+  db = await startPostgres({
+    sql: [await readExampleSql('basic/schema.sql'), await readExampleSql('basic/seed.sql')],
+  });
+  sqlPool = new pg.Pool({ connectionString: db.connectionString });
+  idp = await startTestIdp();
+  app = await start();
+}, 120_000);
+
+afterAll(async () => {
+  await app?.close();
+  await idp?.close();
+  await sqlPool?.end();
+  await db?.stop();
+});
+
+const get = (url: string, cookie?: string) =>
+  app.inject({ method: 'GET', url, ...(cookie ? { headers: { cookie } } : {}) });
+
+const UNAUTHORIZED = { statusCode: 401, error: 'Unauthorized', message: 'Unauthorized' };
+
+describe('unauthenticated requests', () => {
+  it.each(['/api/schema', '/api/me', '/api/entities/users', '/api/entities/users/1', '/api/nope'])(
+    '%s returns 401',
+    async (url) => {
+      const res = await get(url);
+      expect(res.statusCode).toBe(401);
+      expect(res.json()).toEqual(UNAUTHORIZED);
+    },
+  );
+
+  it('guards percent-encoded paths that the router decodes to /api', async () => {
+    // Fastify routes /%61pi/schema to /api/schema, so a raw-URL prefix check alone would miss it.
+    const res = await get('/%61pi/schema');
+    expect(res.statusCode).toBe(401);
+  });
+
+  it('rejects an unsigned, forged, or re-signed session cookie', async () => {
+    const real = await login(app);
+    const [name, value = ''] = real.split('=');
+    const token = value.slice(0, value.lastIndexOf('.'));
+    for (const cookie of [
+      `${name}=${token}`,
+      `${name}=${token}.forgedsignature`,
+      `${name}=${'A'.repeat(43)}.${value.slice(value.lastIndexOf('.') + 1)}`,
+    ]) {
+      expect((await get('/api/me', cookie)).statusCode).toBe(401);
+    }
+  });
+
+  it('leaves health checks public', async () => {
+    expect((await get('/healthz')).statusCode).toBe(200);
+  });
+});
+
+describe('login', () => {
+  it('logs in through the IdP and serves /api/me', async () => {
+    const cookie = await login(app, 'editor');
+    const me = await get('/api/me', cookie);
+    expect(me.statusCode).toBe(200);
+    expect(me.json()).toEqual({ sub: 'editor', email: 'editor@example.com', name: 'Eddie Editor' });
+    expect((await get('/api/schema', cookie)).statusCode).toBe(200);
+  });
+
+  it('sends PKCE, state, and nonce to the IdP', async () => {
+    const { authorizeUrl } = await beginLogin(app);
+    const url = new URL(authorizeUrl);
+    expect(url.origin).toBe(idp.issuer);
+    expect(url.searchParams.get('code_challenge_method')).toBe('S256');
+    for (const param of ['code_challenge', 'state', 'nonce']) {
+      expect(url.searchParams.get(param)).toBeTruthy();
+    }
+    expect(url.searchParams.get('redirect_uri')).toBe('http://localhost:3000/auth/callback');
+    expect(url.searchParams.get('scope')).toBe('openid email profile groups');
+  });
+
+  it('sets an httpOnly, SameSite=Lax session cookie', async () => {
+    const { authorizeUrl, cookies } = await beginLogin(app);
+    const res = await callback(app, await signInAtIdp(authorizeUrl, 'viewer'), cookies);
+    const setCookie = [res.headers['set-cookie'] ?? []].flat();
+    const session = setCookie.find((c) => c.startsWith('warden_session='));
+    expect(session).toMatch(/HttpOnly/);
+    expect(session).toMatch(/SameSite=Lax/);
+    expect(session).toMatch(/Path=\//);
+    expect(session).toMatch(/Max-Age=43200/);
+    // The login cookie is cleared once used.
+    expect(setCookie.find((c) => c.startsWith('warden_login='))).toMatch(/Max-Age=0/);
+  });
+
+  it('uses a Secure __Host- cookie when Warden is served over https', async () => {
+    const secureApp = await start({ WARDEN_PUBLIC_URL: HTTPS_PUBLIC_URL });
+    try {
+      const { authorizeUrl, cookies } = await beginLogin(secureApp);
+      expect([...cookies.keys()]).toEqual(['__Host-warden_login']);
+      expect(new URL(authorizeUrl).searchParams.get('redirect_uri')).toBe(
+        `${HTTPS_PUBLIC_URL}/auth/callback`,
+      );
+      const res = await callback(secureApp, await signInAtIdp(authorizeUrl, 'viewer'), cookies);
+      const session = [res.headers['set-cookie'] ?? []]
+        .flat()
+        .find((c) => c.startsWith('__Host-warden_session='));
+      expect(session).toMatch(/; Secure/);
+      expect(session).toMatch(/HttpOnly/);
+      expect(session).toMatch(/SameSite=Lax/);
+    } finally {
+      await secureApp.close();
+    }
+  });
+
+  it('stores only a hash of the session token', async () => {
+    const cookie = await login(app, 'admin');
+    const value = cookie.slice(cookie.indexOf('=') + 1);
+    const token = value.slice(0, value.lastIndexOf('.'));
+    const { rows } = await sqlPool.query<{ n: string }>(
+      `select count(*) as n from warden.sessions where token_hash = $1`,
+      [createHash('sha256').update(token).digest()],
+    );
+    expect(rows[0]?.n).toBe('1');
+    const { rows: raw } = await sqlPool.query(
+      `select 1 from warden.sessions where encode(token_hash, 'escape') like '%' || $1 || '%'`,
+      [token],
+    );
+    expect(raw).toEqual([]);
+  });
+
+  it('redirects to a same-origin returnTo, and to / for anything else', async () => {
+    const landing = async (returnTo: string) => {
+      const { authorizeUrl, cookies } = await beginLogin(app, returnTo);
+      const res = await callback(app, await signInAtIdp(authorizeUrl, 'viewer'), cookies);
+      return res.headers.location;
+    };
+    expect(await landing('/entities/users?q=a')).toBe('/entities/users?q=a');
+    for (const evil of ['https://evil.example/', '//evil.example/', '/\\evil.example', 'evil']) {
+      expect(await landing(evil)).toBe('/');
+    }
+  });
+
+  it('fails without the login cookie (another browser, or expired)', async () => {
+    const { authorizeUrl } = await beginLogin(app);
+    const res = await callback(app, await signInAtIdp(authorizeUrl, 'admin'), new Map());
+    expect(res.statusCode).toBe(302);
+    expect(res.headers.location).toBe('/login?error=login_failed');
+    expect(cookiesFrom(res.headers['set-cookie']).get('warden_session')).toBeUndefined();
+  });
+
+  it("fails with another login's cookie (state mismatch)", async () => {
+    const first = await beginLogin(app);
+    const second = await beginLogin(app);
+    const res = await callback(app, await signInAtIdp(first.authorizeUrl, 'admin'), second.cookies);
+    expect(res.headers.location).toBe('/login?error=login_failed');
+    expect(cookiesFrom(res.headers['set-cookie']).get('warden_session')).toBeUndefined();
+  });
+
+  it('fails with a tampered login cookie', async () => {
+    const { authorizeUrl, cookies } = await beginLogin(app);
+    const signed = cookies.get('warden_login') ?? '';
+    const tampered = new Map([['warden_login', signed.replace(/^[^.]/, 'x')]]);
+    const res = await callback(app, await signInAtIdp(authorizeUrl, 'admin'), tampered);
+    expect(res.headers.location).toBe('/login?error=login_failed');
+  });
+
+  it('refuses to replay an authorization code', async () => {
+    const { authorizeUrl, cookies } = await beginLogin(app);
+    const url = await signInAtIdp(authorizeUrl, 'admin');
+    expect((await callback(app, url, cookies)).headers.location).toBe('/');
+    const replay = await callback(app, url, cookies);
+    expect(replay.headers.location).toBe('/login?error=login_failed');
+  });
+
+  it('fails when the user cancels at the IdP', async () => {
+    const { authorizeUrl, cookies } = await beginLogin(app);
+    const interaction = await fetch(authorizeUrl, { redirect: 'manual' });
+    const jar = cookiesFrom(interaction.headers.getSetCookie());
+    const headers = { cookie: [...jar].map(([k, v]) => `${k}=${v}`).join('; ') };
+    const location = new URL(interaction.headers.get('location')!, idp.issuer).href;
+    const resume = await fetch(`${location}/abort`, {
+      method: 'POST',
+      headers,
+      redirect: 'manual',
+    });
+    const back = await fetch(new URL(resume.headers.get('location')!, idp.issuer), {
+      headers,
+      redirect: 'manual',
+    });
+    const res = await callback(app, new URL(back.headers.get('location')!), cookies);
+    expect(res.headers.location).toBe('/login?error=login_failed');
+  });
+
+  it('redirects to the login page with a generic error when the IdP is down', async () => {
+    const downApp = await start({ OIDC_ISSUER: 'http://127.0.0.1:9' });
+    try {
+      const res = await downApp.inject({ method: 'GET', url: '/auth/login' });
+      expect(res.statusCode).toBe(302);
+      expect(res.headers.location).toBe('/login?error=login_failed');
+    } finally {
+      await downApp.close();
+    }
+  });
+});
+
+describe('sessions', () => {
+  const backdate = (column: string, interval: string) =>
+    sqlPool.query(`update warden.sessions set ${column} = now() - $1::interval`, [interval]);
+
+  it('logout revokes the session server-side and clears the cookie', async () => {
+    const cookie = await login(app, 'editor');
+    const res = await app.inject({ method: 'POST', url: '/auth/logout', headers: { cookie } });
+    expect(res.statusCode).toBe(204);
+    expect(String(res.headers['set-cookie'])).toMatch(/^warden_session=;.*Max-Age=0/);
+    // Replaying the old cookie no longer works.
+    expect((await get('/api/me', cookie)).statusCode).toBe(401);
+  });
+
+  it('logout without a session still succeeds', async () => {
+    const res = await app.inject({ method: 'POST', url: '/auth/logout' });
+    expect(res.statusCode).toBe(204);
+  });
+
+  it('logout is not available over GET', async () => {
+    const cookie = await login(app, 'viewer');
+    await app.inject({ method: 'GET', url: '/auth/logout', headers: { cookie } });
+    expect((await get('/api/me', cookie)).statusCode).toBe(200);
+  });
+
+  it('expires after the idle timeout', async () => {
+    const shortApp = await start({ WARDEN_SESSION_IDLE_TIMEOUT: '30m' });
+    try {
+      const cookie = await login(shortApp, 'viewer');
+      await backdate('last_seen_at', '29 minutes');
+      const res = await shortApp.inject({ method: 'GET', url: '/api/me', headers: { cookie } });
+      expect(res.statusCode).toBe(200);
+      // That request reset the idle clock; now let it lapse.
+      await backdate('last_seen_at', '31 minutes');
+      const expired = await shortApp.inject({ method: 'GET', url: '/api/me', headers: { cookie } });
+      expect(expired.statusCode).toBe(401);
+    } finally {
+      await shortApp.close();
+    }
+  });
+
+  it('expires after the absolute timeout even while active', async () => {
+    const shortApp = await start({
+      WARDEN_SESSION_IDLE_TIMEOUT: '1h',
+      WARDEN_SESSION_ABSOLUTE_TIMEOUT: '1h',
+    });
+    try {
+      const cookie = await login(shortApp, 'viewer');
+      await backdate('created_at', '61 minutes');
+      const res = await shortApp.inject({ method: 'GET', url: '/api/me', headers: { cookie } });
+      expect(res.statusCode).toBe(401);
+    } finally {
+      await shortApp.close();
+    }
+  });
+});
+
+describe('settings', () => {
+  const valid = {
+    WARDEN_PUBLIC_URL: 'https://warden.example.com',
+    OIDC_ISSUER: 'https://accounts.example.com',
+    OIDC_CLIENT_ID: 'warden',
+    OIDC_CLIENT_SECRET: 'secret',
+    WARDEN_SESSION_SECRET: 'x'.repeat(32),
+  };
+
+  it('parses durations', () => {
+    expect(parseDuration('90')).toBe(90);
+    expect(parseDuration('30m')).toBe(1800);
+    expect(parseDuration('8h')).toBe(28_800);
+    expect(parseDuration('7d')).toBe(604_800);
+    for (const bad of ['', '0', '-5m', '1.5h', '2w', 'soon'])
+      expect(parseDuration(bad)).toBeUndefined();
+  });
+
+  it('defaults scopes and timeouts', () => {
+    expect(parseAuthSettings(valid)).toMatchObject({
+      scopes: 'openid email profile',
+      idleTimeoutSeconds: 7200,
+      absoluteTimeoutSeconds: 43_200,
+    });
+  });
+
+  it('lists every missing variable at once', () => {
+    expect(() => parseAuthSettings({})).toThrow(
+      /WARDEN_PUBLIC_URL is required[\s\S]*OIDC_ISSUER is required[\s\S]*OIDC_CLIENT_ID is required[\s\S]*OIDC_CLIENT_SECRET is required[\s\S]*WARDEN_SESSION_SECRET is required/,
+    );
+  });
+
+  it.each([
+    [{ OIDC_ISSUER: 'http://idp.example.com' }, /OIDC_ISSUER must use https/],
+    [{ WARDEN_PUBLIC_URL: 'http://warden.example.com' }, /WARDEN_PUBLIC_URL must use https/],
+    [{ OIDC_ISSUER: 'not a url' }, /OIDC_ISSUER must be a URL/],
+    [{ WARDEN_SESSION_SECRET: 'short' }, /at least 32 characters/],
+    [{ OIDC_SCOPES: 'email profile' }, /must include openid/],
+    [{ WARDEN_SESSION_IDLE_TIMEOUT: 'forever' }, /WARDEN_SESSION_IDLE_TIMEOUT must be a duration/],
+    [
+      { WARDEN_SESSION_IDLE_TIMEOUT: '2d', WARDEN_SESSION_ABSOLUTE_TIMEOUT: '1d' },
+      /must not exceed/,
+    ],
+  ])('rejects %o', (overrides, message) => {
+    expect(() => parseAuthSettings({ ...valid, ...overrides })).toThrow(message);
+  });
+
+  it('allows http for localhost only', () => {
+    expect(() =>
+      parseAuthSettings({
+        ...valid,
+        OIDC_ISSUER: 'http://localhost:9400',
+        WARDEN_PUBLIC_URL: 'http://127.0.0.1:3000',
+      }),
+    ).not.toThrow();
+  });
+
+  it('fails startup on invalid auth settings', async () => {
+    await expect(
+      createWarden({ env: { DATABASE_URL: db.connectionString, OIDC_ISSUER: idp.issuer } }),
+    ).rejects.toThrow(/Invalid auth settings/);
+  });
+
+  it('only accepts same-origin paths as returnTo', () => {
+    expect(safeReturnTo('/a/b?c=d#e')).toBe('/a/b?c=d#e');
+    for (const bad of [undefined, 42, '', 'a', '//x', '/\\x', 'https://x', '/a\nb']) {
+      expect(safeReturnTo(bad)).toBe('/');
+    }
+  });
+});

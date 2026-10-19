@@ -29,7 +29,7 @@ services:
       MOCK_OIDC_ISSUER: http://localhost:${OIDC_PORT:-9400}
       MOCK_OIDC_CLIENT_ID: warden
       MOCK_OIDC_CLIENT_SECRET: warden-dev-secret
-      MOCK_OIDC_REDIRECT_URIS: http://localhost:${WARDEN_PORT:-3000}/api/auth/callback,http://localhost:5173/api/auth/callback
+      MOCK_OIDC_REDIRECT_URIS: http://localhost:${WARDEN_PORT:-3000}/auth/callback,http://localhost:5173/auth/callback
       MOCK_OIDC_POST_LOGOUT_REDIRECT_URIS: http://localhost:${WARDEN_PORT:-3000}/,http://localhost:5173/
     ports:
       - '${OIDC_PORT:-9400}:${OIDC_PORT:-9400}'
@@ -48,6 +48,9 @@ services:
       OIDC_ISSUER: http://localhost:${OIDC_PORT:-9400}
       OIDC_CLIENT_ID: warden
       OIDC_CLIENT_SECRET: warden-dev-secret
+      OIDC_SCOPES: openid email profile groups
+      # Development only. Generate a real one with `openssl rand -base64 32`.
+      WARDEN_SESSION_SECRET: compose-dev-session-secret-not-for-production
     volumes:
       - ./examples/basic/warden.config.yaml:/config/warden.config.yaml:ro
     depends_on:

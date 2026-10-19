@@ -6,6 +6,8 @@ import { readExampleSql, startPostgres, type TestDatabase } from '@wardenhq/test
 import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createWarden } from '../src/warden.js';
+import { authEnv, login, startTestIdp } from './helpers/auth.js';
+import type { MockOidc } from '@wardenhq/mock-oidc';
 
 const EXAMPLE_CONFIG = fileURLToPath(
   new URL('../../../examples/basic/warden.config.yaml', import.meta.url),
@@ -35,6 +37,8 @@ interface ListBody {
 let db: TestDatabase;
 let sqlPool: pg.Pool;
 let app: Awaited<ReturnType<typeof createWarden>>;
+let idp: MockOidc;
+let cookie: string;
 
 beforeAll(async () => {
   db = await startPostgres({
@@ -45,19 +49,22 @@ beforeAll(async () => {
     ],
   });
   sqlPool = new pg.Pool({ connectionString: db.connectionString });
+  idp = await startTestIdp();
   app = await createWarden({
-    env: { DATABASE_URL: db.connectionString, WARDEN_CONFIG: EXAMPLE_CONFIG },
+    env: { DATABASE_URL: db.connectionString, WARDEN_CONFIG: EXAMPLE_CONFIG, ...authEnv(idp) },
   });
+  cookie = await login(app);
 }, 120_000);
 
 afterAll(async () => {
   await app?.close();
+  await idp?.close();
   await sqlPool?.end();
   await db?.stop();
 });
 
 const get = async (url: string) => {
-  const res = await app.inject({ method: 'GET', url });
+  const res = await app.inject({ method: 'GET', url, headers: { cookie } });
   return { status: res.statusCode, body: res.json(), raw: res.body };
 };
 const list = async (entity: string, query: Record<string, string | number | boolean> = {}) => {
@@ -262,15 +269,16 @@ describe('hidden entities', () => {
     const config = join(dir, 'warden.config.yaml');
     writeFileSync(config, 'tables:\n  companies: { hidden: true }\n');
     const hidden = await createWarden({
-      env: { DATABASE_URL: db.connectionString, WARDEN_CONFIG: config },
+      env: { DATABASE_URL: db.connectionString, WARDEN_CONFIG: config, ...authEnv(idp) },
     });
+    // Sessions live in the database, so the cookie from the main app works here too.
+    const headers = { cookie };
     try {
       for (const url of ['/api/entities/companies', '/api/entities/companies/1']) {
-        expect((await hidden.inject({ method: 'GET', url })).statusCode).toBe(404);
+        expect((await hidden.inject({ method: 'GET', url, headers })).statusCode).toBe(404);
       }
-      expect((await hidden.inject({ method: 'GET', url: '/api/entities/users' })).statusCode).toBe(
-        200,
-      );
+      const users = await hidden.inject({ method: 'GET', url: '/api/entities/users', headers });
+      expect(users.statusCode).toBe(200);
     } finally {
       await hidden.close();
     }

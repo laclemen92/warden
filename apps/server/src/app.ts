@@ -4,6 +4,7 @@ import fastifyStatic from '@fastify/static';
 import type { EffectiveSchema } from '@wardenhq/core';
 import type { Database } from '@wardenhq/pg-adapter';
 import Fastify, { type FastifyServerOptions } from 'fastify';
+import { registerAuth, type AuthOptions } from './routes/auth.js';
 import { registerEntityRoutes } from './routes/entities.js';
 
 export interface AppOptions {
@@ -11,12 +12,15 @@ export interface AppOptions {
   schema?: EffectiveSchema;
   /** Data connection; entity routes are registered when both `schema` and `db` are given. */
   db?: Database;
+  /** Login routes and the session check on /api. Required whenever data routes are served. */
+  auth?: AuthOptions;
   /** Directory containing the built web UI. Served with SPA fallback when present. */
   webDir?: string;
   logger?: FastifyServerOptions['logger'];
 }
 
-export async function buildApp({ schema, db, webDir, logger = false }: AppOptions = {}) {
+export async function buildApp({ schema, db, auth, webDir, logger = false }: AppOptions = {}) {
+  if (schema && !auth) throw new Error('auth is required to serve /api routes');
   const app = Fastify({ logger });
 
   // Don't leak database errors (SQL, constraint names, values) to clients; they are logged.
@@ -35,7 +39,7 @@ export async function buildApp({ schema, db, webDir, logger = false }: AppOption
 
   app.get('/healthz', async () => ({ status: 'ok' }));
 
-  // TODO(#13): require an authenticated session on /api once OIDC login lands.
+  if (auth) await registerAuth(app, auth);
   if (schema) app.get('/api/schema', async () => schema);
   if (schema && db) registerEntityRoutes(app, schema, db);
 

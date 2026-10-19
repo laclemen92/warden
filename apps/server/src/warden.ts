@@ -1,7 +1,10 @@
 import { loadConfig } from '@wardenhq/config';
 import { resolveSchema } from '@wardenhq/core';
-import { createDatabase, introspect } from '@wardenhq/pg-adapter';
+import { createDatabase, introspect, migrate } from '@wardenhq/pg-adapter';
 import { buildApp, type AppOptions } from './app.js';
+import { createOidcClient } from './auth/oidc.js';
+import { createSessions } from './auth/session.js';
+import { parseAuthSettings } from './auth/settings.js';
 
 export interface WardenOptions {
   env?: Record<string, string | undefined>;
@@ -11,7 +14,7 @@ export interface WardenOptions {
 }
 
 /**
- * Load config, introspect the database, and build the app. Config that doesn't match the
+ * Load config, migrate Warden's own schema, introspect the database, and build the app. Config that doesn't match the
  * database is logged as warnings; invalid config throws a ConfigError.
  */
 export async function createWarden({
@@ -22,6 +25,7 @@ export async function createWarden({
 }: WardenOptions = {}) {
   const connectionString = env.DATABASE_URL;
   if (!connectionString) throw new Error('DATABASE_URL is required');
+  const authSettings = parseAuthSettings(env);
 
   const { config, path: configPath } = await loadConfig({ cwd, env });
   // Route idle-connection errors to the app logger once it exists.
@@ -32,13 +36,20 @@ export async function createWarden({
   });
 
   try {
+    const migrations = await migrate(db);
     const model = await introspect(pool, { schemas: config.schemas });
     const { schema, warnings } = resolveSchema(model, config);
 
-    const app = await buildApp({ schema, db, logger, ...(webDir ? { webDir } : {}) });
+    const auth = {
+      sessionSecret: authSettings.sessionSecret,
+      sessions: createSessions(db, authSettings),
+      oidc: createOidcClient(authSettings),
+    };
+    const app = await buildApp({ schema, db, auth, logger, ...(webDir ? { webDir } : {}) });
     app.addHook('onClose', close);
     logIdleError = (err) => app.log.error({ err }, 'idle database connection error');
 
+    if (migrations.length > 0) app.log.info({ migrations }, 'applied migrations');
     app.log.info(
       { config: configPath ?? '(defaults)', entities: schema.entities.length },
       'schema loaded',
