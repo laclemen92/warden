@@ -1,5 +1,6 @@
 export {
   ACTIONS,
+  type AccessConfig,
   wardenConfigSchema,
   type Action,
   type ColumnConfig,

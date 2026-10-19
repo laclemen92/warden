@@ -9,6 +9,7 @@ Warden works with no config at all: it introspects the database and exposes ever
 - [`tables`](#tables)
 - [`tables.<table>.columns`](#tablestablecolumns)
 - [`roles`](#roles)
+- [`access`](#access)
 - [Full example](#full-example)
 
 ## Loading the config
@@ -198,7 +199,45 @@ tables:
 
 Here `ops` may update users and create or update companies. Nobody may create or delete orders, even a role granted `*: [create, delete]`.
 
-> **Status:** role assignment from SSO (email domain and IdP group claims) is tracked in [#15](https://github.com/laclemen92/warden/issues/15), and enforcement on the API in [#29](https://github.com/laclemen92/warden/issues/29). Until those land, roles are validated but not applied.
+Users get roles from [`access`](#access) when they sign in.
+
+> **Status:** enforcement on the API is tracked in [#29](https://github.com/laclemen92/warden/issues/29). Until it lands, roles are assigned (and shown at `/api/me`) but not enforced.
+
+## `access`
+
+Decides who may sign in and which [roles](#roles) they get, from the claims in the IdP's ID token.
+
+| Key                            | Type               | Default  |
+| ------------------------------ | ------------------ | -------- |
+| `access.groupsClaim`           | string             | `groups` |
+| `access.groups.<group>`        | list of role names | None     |
+| `access.emailDomains.<domain>` | list of role names | None     |
+| `access.requireVerifiedEmail`  | boolean            | `true`   |
+
+**Without `access`**, everyone the IdP authenticates may sign in, with no roles: they can read per [`defaults.read`](#defaults) and write nothing. Limit who can sign in at the IdP (for example, assign the Warden app to specific users or groups), or configure `access`.
+
+**With `access`**, a user gets every role of every rule they match, and a user who matches no rule is denied. The login fails with `/login?error=access_denied`, and no session is created.
+
+- **`groups`** maps an IdP group to roles. It matches when the group is in the ID token claim named by **`groupsClaim`** (a list of strings, or a single string). Group names match exactly and are case-sensitive. Most IdPs only send groups when asked, so add the right scope to `OIDC_SCOPES` (often `groups`) or configure the claim at the IdP. Entra ID sends group object IDs, not names; Keycloak may prefix groups with `/`.
+- **`emailDomains`** maps an email domain to roles, a default for everyone at that domain. It matches the part of the `email` claim after the last `@`, case-insensitively, and only that exact domain: `example.com` doesn't match `eu.example.com`.
+- **`requireVerifiedEmail`**: `emailDomains` only match when the ID token has `email_verified: true`. Otherwise anyone who can set their own email at the IdP could claim a domain. Set it to `false` only for an IdP that never sends `email_verified` and doesn't let users change their email address. It doesn't affect `groups`.
+
+Every role named here must be defined under `roles`, and a domain may only be listed once; otherwise startup fails.
+
+Roles are resolved again from the stored claims on every request, so restarting Warden with stricter rules applies to existing sessions too. Claims themselves are only refreshed at sign-in, so a user removed from a group at the IdP keeps that group's roles until their session expires.
+
+```yaml
+roles:
+  viewer: {}
+  ops:
+    grants:
+      users: [read, update]
+access:
+  groups:
+    warden-ops: [ops]
+  emailDomains:
+    example.com: [viewer] # everyone at example.com can sign in and read
+```
 
 ## Full example
 
@@ -245,6 +284,14 @@ roles:
   finance:
     grants:
       billing.invoices: [read, update]
+
+access:
+  groupsClaim: groups
+  groups:
+    warden-ops: [ops]
+    warden-finance: [finance]
+  emailDomains:
+    example.com: [viewer]
 ```
 
 [`examples/basic/warden.config.yaml`](../examples/basic/warden.config.yaml) is the config used by `docker compose` and the tests.

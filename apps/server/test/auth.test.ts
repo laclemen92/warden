@@ -1,4 +1,8 @@
 import { createHash } from 'node:crypto';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { MockOidc } from '@wardenhq/mock-oidc';
 import { readExampleSql, startPostgres, type TestDatabase } from '@wardenhq/testing';
 import pg from 'pg';
@@ -18,6 +22,10 @@ import {
 } from './helpers/auth.js';
 
 type App = Awaited<ReturnType<typeof createWarden>>;
+
+const EXAMPLE_CONFIG = fileURLToPath(
+  new URL('../../../examples/basic/warden.config.yaml', import.meta.url),
+);
 
 let db: TestDatabase;
 let sqlPool: pg.Pool;
@@ -87,7 +95,12 @@ describe('login', () => {
     const cookie = await login(app, 'editor');
     const me = await get('/api/me', cookie);
     expect(me.statusCode).toBe(200);
-    expect(me.json()).toEqual({ sub: 'editor', email: 'editor@example.com', name: 'Eddie Editor' });
+    expect(me.json()).toEqual({
+      sub: 'editor',
+      email: 'editor@example.com',
+      name: 'Eddie Editor',
+      roles: [],
+    });
     expect((await get('/api/schema', cookie)).statusCode).toBe(200);
   });
 
@@ -223,6 +236,77 @@ describe('login', () => {
       expect(res.headers.location).toBe('/login?error=login_failed');
     } finally {
       await downApp.close();
+    }
+  });
+});
+
+describe('roles', () => {
+  let rolesApp: App;
+  beforeAll(async () => {
+    rolesApp = await start({ WARDEN_CONFIG: EXAMPLE_CONFIG });
+  });
+  afterAll(() => rolesApp?.close());
+
+  const me = async (sub: string) => {
+    const cookie = await login(rolesApp, sub);
+    const res = await rolesApp.inject({ method: 'GET', url: '/api/me', headers: { cookie } });
+    expect(res.statusCode).toBe(200);
+    return res.json<{ roles: string[] }>().roles;
+  };
+
+  it('resolves roles from group claims and email domain, visible at /api/me', async () => {
+    expect(await me('viewer')).toEqual(['viewer']);
+    expect(await me('editor')).toEqual(['ops', 'viewer']);
+    expect(await me('admin')).toEqual(['admin', 'viewer']);
+  });
+
+  it('lets everyone in with no roles when access is not configured', async () => {
+    const cookie = await login(app, 'outsider');
+    const res = await get('/api/me', cookie);
+    expect(res.json()).toMatchObject({ sub: 'outsider', roles: [] });
+  });
+
+  it('denies a user who matches no rule, without creating a session', async () => {
+    const { rows: before } = await sqlPool.query(`select count(*) from warden.sessions`);
+    const { authorizeUrl, cookies } = await beginLogin(rolesApp);
+    const res = await callback(rolesApp, await signInAtIdp(authorizeUrl, 'outsider'), cookies);
+    expect(res.statusCode).toBe(302);
+    expect(res.headers.location).toBe('/login?error=access_denied');
+    expect(cookiesFrom(res.headers['set-cookie']).get('warden_session')).toBeUndefined();
+    const { rows: after } = await sqlPool.query(`select count(*) from warden.sessions`);
+    expect(after).toEqual(before);
+  });
+
+  it('denies existing sessions that no longer match after a config change', async () => {
+    // Sessions are shared by every app on this database, so one from the open app carries over.
+    const cookie = await login(app, 'outsider');
+    expect((await get('/api/me', cookie)).statusCode).toBe(200);
+    for (const url of ['/api/me', '/api/schema', '/api/entities/users']) {
+      const res = await rolesApp.inject({ method: 'GET', url, headers: { cookie } });
+      expect(res.statusCode, url).toBe(401);
+      expect(res.json()).toEqual(UNAUTHORIZED);
+    }
+  });
+
+  it('ignores email domains when the email is unverified', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'warden-roles-'));
+    const config = join(dir, 'warden.config.yaml');
+    writeFileSync(
+      config,
+      'roles: { viewer: {} }\naccess: { emailDomains: { example.com: [viewer] } }\n',
+    );
+    const domainApp = await start({ WARDEN_CONFIG: config });
+    try {
+      const cookie = await login(domainApp, 'viewer');
+      // Rewrite the stored claims, as an IdP that doesn't verify emails would have sent them.
+      await sqlPool.query(
+        `update warden.sessions set claims = claims || '{"email_verified": false}'
+         where subject = 'viewer'`,
+      );
+      const res = await domainApp.inject({ method: 'GET', url: '/api/me', headers: { cookie } });
+      expect(res.statusCode).toBe(401);
+    } finally {
+      await domainApp.close();
     }
   });
 });

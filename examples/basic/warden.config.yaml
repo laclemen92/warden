@@ -33,8 +33,19 @@ tables:
 # Create, update and delete are denied unless a role grants them.
 roles:
   viewer: { grants: { '*': [read] } }
+  admin: { grants: { '*': [read, create, update, delete] } }
   ops:
     grants:
       users: [read, update]
       companies: [read, create, update]
       orders: [update]
+
+# Who may sign in, and with which roles. Users matching no rule are denied, so the mock IdP's
+# `outsider` (example.org, no groups) can't sign in.
+access:
+  groups:
+    warden-viewers: [viewer]
+    warden-editors: [ops]
+    warden-admins: [admin]
+  emailDomains:
+    example.com: [viewer]

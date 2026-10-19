@@ -177,6 +177,79 @@ roles:
     ]);
   });
 
+  it('parses access rules and fills their defaults', () => {
+    const config = parseConfig(
+      `
+roles:
+  viewer: {}
+  admin: {}
+access:
+  groups:
+    warden-admins: [admin, viewer]
+  emailDomains:
+    example.com: [viewer]
+`,
+      FILE,
+    );
+    expect(config.access).toEqual({
+      groupsClaim: 'groups',
+      groups: { 'warden-admins': ['admin', 'viewer'] },
+      emailDomains: { 'example.com': ['viewer'] },
+      requireVerifiedEmail: true,
+    });
+    expect(parseConfig('roles: {}', FILE).access).toBeUndefined();
+  });
+
+  it('requires access rules to name defined roles', () => {
+    expect(
+      issues(`roles:
+  viewer: {}
+access:
+  groups:
+    admins: [viewer, admin]
+  emailDomains:
+    example.com: [constructor]
+`),
+    ).toMatchObject([
+      {
+        path: 'access.groups.admins.1',
+        message: 'role "admin" is not defined in `roles`',
+        line: 5,
+      },
+      {
+        path: 'access.emailDomains.example.com.0',
+        message: 'role "constructor" is not defined in `roles`',
+        line: 7,
+      },
+    ]);
+  });
+
+  it('rejects empty role lists, malformed domains, and duplicate domains', () => {
+    expect(
+      issues(`roles:
+  viewer: {}
+access:
+  groups:
+    admins: []
+  emailDomains:
+    "@example.com": [viewer]
+    Example.COM: [viewer]
+    example.com: [viewer]
+  groupClaim: groups
+`).map((i) => i.path),
+    ).toEqual(['access.groups.admins', 'access.emailDomains.@example.com', 'access.groupClaim']);
+    expect(
+      issues(
+        `roles:\n  viewer: {}\naccess:\n  emailDomains:\n    Example.COM: [viewer]\n    example.com: [viewer]\n`,
+      ),
+    ).toMatchObject([
+      {
+        path: 'access.emailDomains.example.com',
+        message: 'domain "example.com" is listed more than once',
+      },
+    ]);
+  });
+
   it('rejects malformed table keys', () => {
     expect(issues(`tables:\n  a.b.c: {}\n`)).toMatchObject([
       { path: 'tables.a.b.c', message: 'Expected "table" or "schema.table"' },
