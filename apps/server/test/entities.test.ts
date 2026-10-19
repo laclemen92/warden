@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readExampleSql, startPostgres, type TestDatabase } from '@wardenhq/testing';
+import { relationFilter, type EffectiveSchema } from '@wardenhq/core';
 import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createWarden } from '../src/warden.js';
@@ -259,6 +260,51 @@ describe('GET /api/entities/:entity/:id', () => {
     const wrongArity = Buffer.from(JSON.stringify(['1'])).toString('base64url');
     for (const id of ['1', wrongArity, 'bm90IGpzb24']) {
       expect((await get(`/api/entities/order_tags/${id}`)).status).toBe(404);
+    }
+  });
+});
+
+describe('relation navigation', () => {
+  // The detail view builds these filters from a row to find its parent and children.
+  it('accepts relation filters built from rows, matching the equivalent SQL', async () => {
+    const schema = (await get('/api/schema')).body as EffectiveSchema;
+    const users = schema.entities.find((e) => e.key === 'users')!;
+    const user = (await get('/api/entities/users/2')).body as Item;
+
+    const company = users.relations.find(
+      (r) => r.kind === 'belongsTo' && r.entity === 'companies',
+    )!;
+    const parent = await list('companies', {
+      filter: JSON.stringify(relationFilter(company, user.values)),
+      limit: 1,
+    });
+    expect(parent.items.map((i) => i.id)).toEqual(
+      await sqlIds(
+        'select c.id from companies c join users u on u.company_id = c.id where u.id = 2',
+      ),
+    );
+
+    const orders = users.relations.find((r) => r.kind === 'hasMany' && r.entity === 'orders')!;
+    const children = await list('orders', {
+      filter: JSON.stringify(relationFilter(orders, user.values)),
+      limit: 500,
+      count: true,
+    });
+    const expected = await sqlIds('select id from orders where user_id = 2 order by id');
+    expect(expected.length).toBeGreaterThan(0);
+    expect(children.total).toBe(expected.length);
+    expect(children.items.map((i) => i.id).sort((a, b) => Number(a) - Number(b))).toEqual(expected);
+  });
+
+  it('accepts every relation filter in the schema', async () => {
+    const schema = (await get('/api/schema')).body as EffectiveSchema;
+    for (const entity of schema.entities) {
+      const [row] = (await list(entity.key, { limit: 1 })).items;
+      if (!row) continue;
+      for (const relation of entity.relations) {
+        const filter = relationFilter(relation, row.values);
+        if (filter) await list(relation.entity, { filter: JSON.stringify(filter), limit: 1 });
+      }
     }
   });
 });
