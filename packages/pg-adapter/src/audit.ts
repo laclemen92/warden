@@ -49,7 +49,7 @@ const json = (value: unknown) =>
  * column values never reach the log.
  */
 export function auditHook({ actor, requestId, reason }: AuditContext): WriteHook {
-  return async (trx, { action, entity, before, after }) => {
+  return async (trx, { action, entity, before, after, written }) => {
     // The row as it now is; on delete, as it was. An update that changes the key is filed under
     // the new id.
     const row = (after ?? before)!;
@@ -61,12 +61,13 @@ export function auditHook({ actor, requestId, reason }: AuditContext): WriteHook
       await sql`
         insert into ${sql.id(WARDEN_SCHEMA, 'audit_log')}
           (request_id, actor_subject, actor_email, actor_roles, action, entity, record_id,
-           primary_key, before, after, diff, reason)
+           primary_key, before, after, diff, reason, written)
         values (
           ${requestId ?? null}, ${actor.subject}, ${actor.email ?? null}, ${[...actor.roles]},
           ${action}, ${entity.key}, ${encodeRecordId(entity, row)},
           ${json(primaryKey)}::jsonb, ${json(before)}::jsonb, ${json(after)}::jsonb,
-          ${json(auditDiff(before, after))}::jsonb, ${reason ?? null})`.execute(trx);
+          ${json(auditDiff(before, after))}::jsonb, ${reason ?? null},
+          ${written ? [...written] : null}::text[])`.execute(trx);
     } catch (err) {
       throw new AuditWriteError(err);
     }
@@ -103,8 +104,9 @@ export async function recordExport(
 export interface AuditQuery {
   /**
    * Per entity key, the fields the caller can read. Only these entities' entries are returned,
-   * cut down to these fields, and an entry whose changes are all to other fields is left out, so
-   * fields the caller can't see leave no trace.
+   * cut down to these fields, and an update that wasn't asked to change any of these fields is
+   * left out, so fields the caller can't see leave no trace. Fields the database changed itself
+   * (such as an `updated_at` trigger) don't count.
    */
   visible: Record<string, readonly string[]>;
   entity?: string;
@@ -141,6 +143,7 @@ interface AuditRow {
   after: Record<string, unknown> | null;
   diff: AuditEntry['diff'] | null;
   details: ExportDetails | null;
+  written: string[] | null;
 }
 
 /** Audit entries matching `query`, newest first. */
@@ -149,10 +152,14 @@ export async function listAuditEntries(db: Database, query: AuditQuery): Promise
   const fields = sql`${JSON.stringify(visible)}::jsonb`;
   const conditions: Expression<SqlBool>[] = [
     sql<SqlBool>`${fields} ? a.entity`,
-    // The case keeps jsonb_object_keys away from diffs that aren't objects.
+    // The case keeps jsonb_object_keys away from diffs that aren't objects. An update counts only
+    // the fields it set; entries from before those were recorded count every changed field.
     sql<SqlBool>`case
       when a.diff is null or jsonb_typeof(a.diff) <> 'object' or a.diff = '{}'::jsonb then true
-      else exists (select from jsonb_object_keys(a.diff) as k (field) where (${fields} -> a.entity) ? k.field)
+      else exists (
+        select from jsonb_object_keys(a.diff) as k (field)
+        where (${fields} -> a.entity) ? k.field
+          and (a.action <> 'update' or a.written is null or k.field = any (a.written)))
     end`,
   ];
   if (entity !== undefined) conditions.push(sql<SqlBool>`a.entity = ${entity}`);
@@ -171,7 +178,7 @@ export async function listAuditEntries(db: Database, query: AuditQuery): Promise
   const { rows } = await sql<AuditRow>`
     select a.id::text as id, to_json(a.occurred_at) #>> '{}' as occurred_at, a.request_id,
            a.actor_subject, a.actor_email, a.actor_roles, a.action, a.entity, a.record_id,
-           a.reason, a.before, a.after, a.diff, a.details
+           a.reason, a.before, a.after, a.diff, a.details, a.written
     from ${sql.id(WARDEN_SCHEMA, 'audit_log')} as a
     where ${sql.join(conditions, sql` and `)}
     order by a.id desc
@@ -195,6 +202,7 @@ export async function listAuditEntries(db: Database, query: AuditQuery): Promise
           details: row.details,
         },
         visible[row.entity] ?? [],
+        row.written,
       ),
     ),
     hasMore: rows.length > limit,

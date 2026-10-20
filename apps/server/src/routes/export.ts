@@ -2,6 +2,7 @@ import { Readable } from 'node:stream';
 import {
   csvHeader,
   csvRow,
+  filterFields,
   isAllowed,
   resolveSort,
   searchFilter,
@@ -129,7 +130,9 @@ export function registerExportRoutes(
             rowCount: rows.total,
             columns: fields.map((f) => f.name),
             ...(validFilter ? { filter: validFilter } : {}),
-            ...(q ? { q } : {}),
+            // With the fields it was matched against, so readers who can't see one of them are
+            // shown neither the search text nor the count.
+            ...(q ? { q, searchFields: search ? filterFields(search) : [] } : {}),
             ...(sortInput ? { sort: sortInput } : {}),
           },
         });

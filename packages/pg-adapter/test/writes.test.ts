@@ -139,7 +139,9 @@ describe('createRow', () => {
         expect(rows).toHaveLength(1);
       },
     });
-    expect(changes).toEqual([{ action: 'create', entity: things, before: null, after: row }]);
+    expect(changes).toEqual([
+      { action: 'create', entity: things, before: null, after: row, written: ['name'] },
+    ]);
 
     const { rows: before } = await sql`select count(*) from things`.execute(handle.db);
     await expect(
@@ -291,7 +293,13 @@ describe('updateRow', () => {
       },
     );
     expect(changes).toEqual([
-      { action: 'update', entity: things, before: created, after: result.ok && result.row },
+      {
+        action: 'update',
+        entity: things,
+        before: created,
+        after: result.ok && result.row,
+        written: ['name'],
+      },
     ]);
   });
 });

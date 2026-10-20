@@ -14,6 +14,11 @@ export interface WriteChange {
   before: Row | null;
   /** The row after the change; null for `delete`. */
   after: Row | null;
+  /**
+   * The fields the caller set, for `create` and `update`. Other differences between `before` and
+   * `after` are the database's own doing (defaults, triggers, generated columns).
+   */
+  written?: string[];
 }
 
 /**
@@ -93,7 +98,13 @@ export async function createRow(
     const { rows } = await sql<Row>`
       insert into ${table(entity)} ${insert} ${returning(entity)}`.execute(trx);
     const row = rows[0]!;
-    await onWrite?.(trx, { action: 'create', entity, before: null, after: row });
+    await onWrite?.(trx, {
+      action: 'create',
+      entity,
+      before: null,
+      after: row,
+      written: set.map((s) => s.f.name),
+    });
     return row;
   });
 }
@@ -128,7 +139,13 @@ export async function updateRow(
       set ${sql.join(set.map((s) => sql`${sql.id(s.f.name)} = ${s.value}`))}
       where ${compileFilter(filter, ALIAS)} ${returning(entity)}`.execute(trx);
     const row = rows[0]!;
-    await onWrite?.(trx, { action: 'update', entity, before, after: row });
+    await onWrite?.(trx, {
+      action: 'update',
+      entity,
+      before,
+      after: row,
+      written: set.map((s) => s.f.name),
+    });
     return { ok: true, row };
   });
 }

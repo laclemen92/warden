@@ -67,7 +67,8 @@ const entries = async (where = sql`true`) =>
   (
     await sql<Entry>`
       select request_id, actor_subject, actor_email, actor_roles, action, entity, record_id,
-             primary_key, before, after, diff, reason, parent_id, occurred_at::text as occurred_at
+             primary_key, before, after, diff, reason, written, parent_id,
+             occurred_at::text as occurred_at
       from warden.audit_log where ${where} order by id`.execute(handle.db)
   ).rows;
 const latest = async () => (await entries()).at(-1);
@@ -107,6 +108,7 @@ describe('auditHook', () => {
         meta: { from: null, to: { tier: 1 } },
       },
       reason: 'ticket 42',
+      written: ['name', 'meta'],
       parent_id: null,
       occurred_at: expect.stringMatching(/^\d{4}-\d{2}-\d{2} /),
     });
@@ -119,7 +121,7 @@ describe('auditHook', () => {
       handle.db,
       accounts,
       filter,
-      { name: 'New' },
+      { name: 'New', meta: { a: 1 } },
       {
         version: rowVersion(accounts, row),
         onWrite: auditHook({ actor: { subject: 'sub-2', roles: [] } }),
@@ -135,6 +137,8 @@ describe('auditHook', () => {
       before: { id: row.id, name: 'Old', meta: { a: 1 } },
       after: { id: row.id, name: 'New', meta: { a: 1 } },
       diff: { name: { from: 'Old', to: 'New' } },
+      // What the caller set, changed or not.
+      written: ['name', 'meta'],
     });
   });
 
@@ -150,6 +154,7 @@ describe('auditHook', () => {
       before: { id: row.id, name: 'Gone', meta: null },
       after: null,
       diff: { id: { from: row.id, to: null }, name: { from: 'Gone', to: null } },
+      written: null,
     });
   });
 

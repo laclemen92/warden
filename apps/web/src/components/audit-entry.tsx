@@ -39,7 +39,9 @@ function ExportSummary({
     })
     .join(', ');
   const rows: [string, string][] = [
-    ['Rows', numberFormat.format(details.rowCount)],
+    ...(details.rowCount !== undefined
+      ? [['Rows', numberFormat.format(details.rowCount)] as [string, string]]
+      : []),
     ['Columns', details.columns.map(label).join(', ') || '—'],
     ...(filter ? [['Filter', filter] as [string, string]] : []),
     ...(details.q ? [['Search', details.q] as [string, string]] : []),
@@ -57,7 +59,8 @@ function ExportSummary({
       </dl>
       {details.redacted && (
         <p className="text-muted-foreground">
-          The filter or sort used columns you can't see, so it isn't shown.
+          The filter, search, or sort used columns you can't see, so it isn't shown, nor is the
+          number of rows when the filter or search is hidden.
         </p>
       )}
     </div>

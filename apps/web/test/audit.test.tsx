@@ -265,7 +265,7 @@ describe('audit log page', () => {
                 q: 'ada',
                 sort: '-email',
               }),
-              exported('4', { rowCount: 2, columns: ['email'], redacted: true }),
+              exported('4', { columns: ['email'], redacted: true }),
             ])
           : undefined,
       ['audit'],
@@ -288,10 +288,7 @@ describe('audit log page', () => {
     expect(within(full).queryByText('No field changes.')).not.toBeInTheDocument();
 
     const redacted = screen.getByRole('article', { name: 'export 4' });
-    expect(terms(redacted)).toEqual([
-      ['Rows', '2'],
-      ['Columns', 'Email'],
-    ]);
+    expect(terms(redacted)).toEqual([['Columns', 'Email']]);
     expect(within(redacted).getByText(/used columns you can't see/)).toBeInTheDocument();
   });
 
