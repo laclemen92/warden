@@ -20,8 +20,11 @@ export interface SessionUser {
 }
 
 export interface Sessions {
-  /** Create a session for a freshly authenticated user and set its cookie. */
-  start(reply: FastifyReply, user: SessionUser): Promise<void>;
+  /**
+   * Create a session for a freshly authenticated user and set its cookie, revoking the session
+   * the browser already held, so a copy of the old token stops working.
+   */
+  start(req: FastifyRequest, reply: FastifyReply, user: SessionUser): Promise<void>;
   /** The request's live session, refreshing its idle timer; `undefined` if absent or expired. */
   load(req: FastifyRequest): Promise<Session | undefined>;
   /** Revoke the request's session (if any) and clear its cookie. */
@@ -64,7 +67,9 @@ export function createSessions(db: Database, settings: AuthSettings): Sessions {
   return {
     cookie,
 
-    async start(reply, user) {
+    async start(req, reply, user) {
+      const previous = readToken(req);
+      if (previous) await deleteSession(db, hashToken(previous));
       // Opportunistic cleanup; logins are rare enough that this stays cheap.
       await deleteExpiredSessions(db, timeouts);
       const token = randomBytes(32).toString('base64url');

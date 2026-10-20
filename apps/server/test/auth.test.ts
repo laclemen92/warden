@@ -335,6 +335,35 @@ describe('sessions', () => {
     expect((await get('/api/me', cookie)).statusCode).toBe(401);
   });
 
+  it('signing in again revokes the session the browser already held', async () => {
+    const old = await login(app, 'editor');
+    const other = await login(app, 'editor');
+    const [name, value = ''] = old.split('=');
+
+    const { authorizeUrl, cookies } = await beginLogin(app);
+    cookies.set(name!, value);
+    const res = await callback(app, await signInAtIdp(authorizeUrl, 'editor'), cookies);
+    expect(res.statusCode).toBe(302);
+    const fresh = cookiesFrom(res.headers['set-cookie']).get(name!);
+    expect(fresh).toBeTruthy();
+
+    // A copy of the old token is useless now; the new one, and other browsers, still work.
+    expect((await get('/api/me', old)).statusCode).toBe(401);
+    expect((await get('/api/me', `${name}=${fresh}`)).statusCode).toBe(200);
+    expect((await get('/api/me', other)).statusCode).toBe(200);
+  });
+
+  it('signing in with an invalid session cookie still works and revokes nothing', async () => {
+    const other = await login(app, 'viewer');
+    const [name, value = ''] = other.split('=');
+    const { authorizeUrl, cookies } = await beginLogin(app);
+    // The raw token without its signature, as if someone tried to name a session to delete.
+    cookies.set(name!, value.slice(0, value.lastIndexOf('.')));
+    const res = await callback(app, await signInAtIdp(authorizeUrl, 'viewer'), cookies);
+    expect(res.headers.location).toBe('/');
+    expect((await get('/api/me', other)).statusCode).toBe(200);
+  });
+
   it('logout without a session still succeeds', async () => {
     const res = await app.inject({ method: 'POST', url: '/auth/logout' });
     expect(res.statusCode).toBe(204);

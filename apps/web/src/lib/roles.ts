@@ -6,6 +6,7 @@ import { useCurrentUser } from './auth';
 export const ROLES_PATH = '/admin/roles';
 const ROLES_URL = '/api/admin/roles';
 const ASSIGNMENTS_URL = '/api/admin/roles/assignments';
+const SESSIONS_URL = '/api/admin/roles/sessions';
 
 export interface RoleDefinition {
   name: string;
@@ -22,6 +23,16 @@ export interface RoleAssignment {
   defined: boolean;
 }
 
+/** Someone with at least one live session. */
+export interface SignedInUser {
+  subject: string;
+  email: string | null;
+  name: string | null;
+  /** Live sessions, one per browser or device. */
+  sessions: number;
+  lastSeenAt: string;
+}
+
 export interface RolesReport {
   roles: RoleDefinition[];
   /** Config's `access` rules; null when config has none, so nobody may sign in. */
@@ -32,6 +43,7 @@ export interface RolesReport {
     allowAll: boolean;
   } | null;
   assignments: RoleAssignment[];
+  signedIn: SignedInUser[];
 }
 
 export interface AssignmentInput {
@@ -73,6 +85,25 @@ function useAssignmentMutation(method: 'POST' | 'DELETE') {
 
 export const useAssignRole = () => useAssignmentMutation('POST');
 export const useUnassignRole = () => useAssignmentMutation('DELETE');
+
+/** Sign a user out of every session, so they sign in again with fresh IdP claims. */
+export function useRevokeSessions() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (subject: string) =>
+      apiFetch<{ revoked: number }>(SESSIONS_URL, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ subject }),
+      }),
+    // An admin who signs themselves out gets a 401 refreshing these, which sends them to login.
+    onSettled: () =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['admin-roles'] }),
+        queryClient.invalidateQueries({ queryKey: ['me'] }),
+      ]),
+  });
+}
 
 /** A role's grants as short lines, e.g. `users: read, update`. */
 export function describeGrants(grants: RoleDefinition['grants']): string[] {

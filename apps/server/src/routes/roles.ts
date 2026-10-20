@@ -2,16 +2,21 @@ import type { WardenConfig } from '@wardenhq/config';
 import { adminAreas, parseEmail } from '@wardenhq/core';
 import {
   assignRole,
+  deleteSessionsForSubject,
   listRoleAssignments,
+  listSignedInUsers,
   unassignRole,
   type Database,
   type RoleAssignment,
+  type SessionTimeouts,
 } from '@wardenhq/pg-adapter';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 
 export interface RoleRoutesOptions {
   config: WardenConfig;
   db: Database;
+  /** Which sessions count as signed in, for the list of signed-in users. */
+  sessionTimeouts: SessionTimeouts;
 }
 
 interface AssignmentBody {
@@ -28,6 +33,15 @@ const notFound = (reply: FastifyReply) => {
 const badRequest = (reply: FastifyReply, message: string) =>
   reply.code(400).send({ statusCode: 400, error: 'Bad Request', message });
 
+const revokeSchema = {
+  body: {
+    type: 'object',
+    required: ['subject'],
+    additionalProperties: false,
+    properties: { subject: { type: 'string', minLength: 1, maxLength: 1000 } },
+  },
+};
+
 const assignmentSchema = {
   body: {
     type: 'object',
@@ -41,12 +55,15 @@ const assignmentSchema = {
 };
 
 /**
- * The roles page's API: config's roles and access rules (read-only, since config defines roles)
- * and the roles assigned to users in the app. Assigning a role can give someone any access that
- * role has, so only roles with `admin: [roles]` can use it; to everyone else it is a route that
- * doesn't exist.
+ * The roles page's API: config's roles and access rules (read-only, since config defines roles),
+ * the roles assigned to users in the app, and who is signed in, so their sessions can be revoked.
+ * Assigning a role can give someone any access that role has, so only roles with
+ * `admin: [roles]` can use it; to everyone else it is a route that doesn't exist.
  */
-export function registerRoleRoutes(app: FastifyInstance, { config, db }: RoleRoutesOptions) {
+export function registerRoleRoutes(
+  app: FastifyInstance,
+  { config, db, sessionTimeouts }: RoleRoutesOptions,
+) {
   const defined = (role: string) => Object.hasOwn(config.roles, role);
 
   // Checked before the body is parsed, so non-admins can't tell the routes exist.
@@ -83,6 +100,7 @@ export function registerRoleRoutes(app: FastifyInstance, { config, db }: RoleRou
         }
       : null,
     assignments: (await listRoleAssignments(db)).map(withDefined),
+    signedIn: await listSignedInUsers(db, sessionTimeouts),
   }));
 
   app.post<{ Body: AssignmentBody }>(
@@ -122,5 +140,17 @@ export function registerRoleRoutes(app: FastifyInstance, { config, db }: RoleRou
       }
       return reply.code(204).send();
     },
+  );
+
+  // Claims (and so IdP groups) are only read at sign-in; this makes someone sign in again.
+  app.delete<{ Body: { subject: string } }>(
+    '/api/admin/roles/sessions',
+    { onRequest, schema: revokeSchema },
+    async (req) => ({
+      revoked: await deleteSessionsForSubject(db, {
+        subject: req.body.subject,
+        actor: actorOf(req),
+      }),
+    }),
   );
 }

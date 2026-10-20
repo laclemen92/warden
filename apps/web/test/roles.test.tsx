@@ -33,6 +33,22 @@ const report: RolesReport = {
       defined: false,
     },
   ],
+  signedIn: [
+    {
+      subject: 'sub-sam',
+      email: 'sam@example.org',
+      name: 'Sam',
+      sessions: 2,
+      lastSeenAt: '2026-10-20 08:00:00+00',
+    },
+    {
+      subject: 'sub-x',
+      email: null,
+      name: null,
+      sessions: 1,
+      lastSeenAt: '2026-10-20 07:00:00+00',
+    },
+  ],
 };
 
 type Responses = Record<string, { status: number; body?: unknown }>;
@@ -192,6 +208,42 @@ describe('roles page', () => {
 
     await waitFor(() => expect(screen.queryByText('eve@example.org')).not.toBeInTheDocument());
     expect(bodyOf(fetchMock, 'DELETE')).toEqual({ email: 'eve@example.org', role: 'ops' });
+  });
+
+  it('lists who is signed in and signs a user out everywhere', async () => {
+    const responses: Responses = {
+      ...base(['roles']),
+      'GET /api/admin/roles': { status: 200, body: report },
+      'DELETE /api/admin/roles/sessions': { status: 200, body: { revoked: 2 } },
+    };
+    const fetchMock = stubFetch(responses);
+    renderAt('/admin/roles');
+
+    const signedIn = await screen.findByRole('region', { name: 'Signed in' });
+    expect(rowsOf(signedIn)).toEqual([
+      'sam@example.orgsub-sam22026-10-20 08:00:00+00Sign out everywhere',
+      'sub-x12026-10-20 07:00:00+00Sign out everywhere',
+    ]);
+
+    responses['GET /api/admin/roles'] = {
+      status: 200,
+      body: { ...report, signedIn: report.signedIn.slice(1) },
+    };
+    await userEvent.click(
+      within(signedIn).getByRole('button', { name: 'Sign out sam@example.org everywhere' }),
+    );
+    await waitFor(() => expect(within(signedIn).queryByText('sub-sam')).not.toBeInTheDocument());
+    expect(bodyOf(fetchMock, 'DELETE')).toEqual({ subject: 'sub-sam' });
+  });
+
+  it('explains when nobody is signed in', async () => {
+    stubFetch({
+      ...base(['roles']),
+      'GET /api/admin/roles': { status: 200, body: { ...report, signedIn: [] } },
+    });
+    renderAt('/admin/roles');
+    const signedIn = await screen.findByRole('region', { name: 'Signed in' });
+    expect(signedIn).toHaveTextContent('Nobody is signed in.');
   });
 
   it('explains when access lets everyone in', async () => {

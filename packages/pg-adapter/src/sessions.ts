@@ -1,8 +1,10 @@
 import { sql } from 'kysely';
 import type { Database } from './database.js';
 import { WARDEN_SCHEMA } from './introspect.js';
+import type { AssignmentActor } from './role-assignments.js';
 
 const SESSIONS = sql.id(WARDEN_SCHEMA, 'sessions');
+const AUDIT_LOG = sql.id(WARDEN_SCHEMA, 'audit_log');
 
 export interface SessionTimeouts {
   /** Session ends after this long without a request. */
@@ -65,4 +67,56 @@ export async function deleteExpiredSessions(
 ): Promise<number> {
   const result = await sql`delete from ${SESSIONS} where not (${live(timeouts)})`.execute(db);
   return Number(result.numAffectedRows ?? 0);
+}
+
+/** Someone signed in, summarized over their live sessions (one per browser or device). */
+export interface SignedInUser {
+  subject: string;
+  /** From their most recent session. */
+  email: string | null;
+  name: string | null;
+  sessions: number;
+  lastSeenAt: string;
+}
+
+export async function listSignedInUsers(
+  db: Database,
+  timeouts: SessionTimeouts,
+): Promise<SignedInUser[]> {
+  const { rows } = await sql<SignedInUser>`
+    select subject,
+           (array_agg(email order by last_seen_at desc))[1] as email,
+           (array_agg(name order by last_seen_at desc))[1] as name,
+           count(*)::int as sessions,
+           max(last_seen_at) as "lastSeenAt"
+    from ${SESSIONS}
+    where ${live(timeouts)}
+    group by subject
+    order by max(last_seen_at) desc, subject`.execute(db);
+  return rows;
+}
+
+/**
+ * Sign `subject` out everywhere: delete all their sessions, expired or not, and audit it in the
+ * same transaction. Returns how many were deleted; nothing is audited when there were none.
+ */
+export async function deleteSessionsForSubject(
+  db: Database,
+  { subject, actor }: { subject: string; actor: AssignmentActor },
+): Promise<number> {
+  return db.transaction().execute(async (trx) => {
+    const result = await sql`delete from ${SESSIONS} where subject = ${subject}`.execute(trx);
+    const count = Number(result.numAffectedRows ?? 0);
+    if (count > 0) {
+      await sql`
+        insert into ${AUDIT_LOG}
+          (request_id, actor_subject, actor_email, actor_roles, action, entity, primary_key,
+           details)
+        values (${actor.requestId ?? null}, ${actor.subject}, ${actor.email ?? null},
+                ${[...actor.roles]}, 'revoke_sessions', 'warden.sessions',
+                ${JSON.stringify({ subject })}::jsonb,
+                ${JSON.stringify({ sessions: count })}::jsonb)`.execute(trx);
+    }
+    return count;
+  });
 }

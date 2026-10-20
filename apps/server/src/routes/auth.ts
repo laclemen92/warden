@@ -145,7 +145,7 @@ export async function registerAuth(
       return reply.redirect(ACCESS_DENIED);
     }
 
-    await sessions.start(reply, {
+    await sessions.start(req, reply, {
       subject: claims.sub,
       ...(typeof claims.email === 'string' ? { email: claims.email } : {}),
       ...(typeof claims.name === 'string' ? { name: claims.name } : {}),
