@@ -1,7 +1,10 @@
 export interface MockUser {
   /** Stable `sub`; also the value posted by the login page. */
   sub: string;
-  email: string;
+  /** Omitted from the claims when absent, like an IdP account without one. */
+  email?: string;
+  /** The `email_verified` claim; defaults to `true`. */
+  emailVerified?: boolean;
   name: string;
   /** Returned in the `groups` claim (requested with the `groups` scope). */
   groups: string[];

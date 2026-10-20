@@ -62,8 +62,9 @@ const accessConfigSchema = z.strictObject({
     )
     .default({}),
   /**
-   * Only match `emailDomains` when the IdP says the email is verified (`email_verified: true`).
-   * Turn off only for IdPs that never send the claim and don't let users set their own email.
+   * Only match `emailDomains` and role assignments, and only record the email as the audit
+   * actor, when the IdP says it is verified (`email_verified: true`). Turn off only for IdPs
+   * that never send the claim and don't let users set their own email.
    */
   requireVerifiedEmail: z.boolean().default(true),
   /**

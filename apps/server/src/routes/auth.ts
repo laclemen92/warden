@@ -1,6 +1,6 @@
 import fastifyCookie from '@fastify/cookie';
 import type { AccessConfig, WardenConfig } from '@wardenhq/config';
-import { adminAreas, assignmentEmail, resolveRoles } from '@wardenhq/core';
+import { adminAreas, assignmentEmail, resolveRoles, sessionEmail } from '@wardenhq/core';
 import type { Session } from '@wardenhq/pg-adapter';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { LoginChecks, OidcClient } from '../auth/oidc.js';
@@ -123,7 +123,8 @@ export async function registerAuth(
           .code(401)
           .send({ statusCode: 401, error: 'Unauthorized', message: 'Unauthorized' });
       }
-      req.session = session;
+      // Same for the email, which every audit entry attributes the request to.
+      req.session = { ...session, email: sessionEmail(access, session.claims) ?? null };
       req.roles = roles;
     }
     const rejection = csrfRejection(req);
@@ -176,9 +177,10 @@ export async function registerAuth(
       return reply.redirect(ACCESS_DENIED);
     }
 
+    const email = sessionEmail(access, claims);
     await sessions.start(req, reply, {
       subject: claims.sub,
-      ...(typeof claims.email === 'string' ? { email: claims.email } : {}),
+      ...(email ? { email } : {}),
       ...(typeof claims.name === 'string' ? { name: claims.name } : {}),
       claims: { ...claims },
       idToken,

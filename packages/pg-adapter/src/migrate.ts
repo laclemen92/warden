@@ -146,6 +146,18 @@ export const MIGRATIONS: readonly Migration[] = [
       alter table warden.audit_log add column written text[];
     `,
   },
+  {
+    version: '0009_session_verified_email',
+    sql: `
+      -- Sessions now store an email only when the IdP verified it; older ones stored any, which
+      -- the Roles page and session revocations would show. Rows are short-lived, so dropping the
+      -- unverified ones (and any under requireVerifiedEmail: false until they sign in again) is
+      -- simpler than keeping them.
+      update warden.sessions set email = null
+      where claims->'email_verified' is distinct from 'true'::jsonb
+        and claims->'email_verified' is distinct from '"true"'::jsonb;
+    `,
+  },
 ];
 
 // Arbitrary constant shared by every Warden instance, so replicas don't migrate concurrently.

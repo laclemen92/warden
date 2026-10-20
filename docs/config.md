@@ -323,7 +323,7 @@ A user gets every role of every rule they match, and a user who matches no rule 
 
 - **`groups`** maps an IdP group to roles. It matches when the group is in the ID token claim named by **`groupsClaim`** (a list of strings, or a single string). Group names match exactly and are case-sensitive. Most IdPs only send groups when asked, so add the right scope to `OIDC_SCOPES` (often `groups`) or configure the claim at the IdP. Entra ID sends group object IDs, not names; Keycloak may prefix groups with `/`.
 - **`emailDomains`** maps an email domain to roles, a default for everyone at that domain. It matches the part of the `email` claim after the last `@`, case-insensitively, and only that exact domain: `example.com` doesn't match `eu.example.com`.
-- **`requireVerifiedEmail`**: `emailDomains` only match when the ID token has `email_verified: true`. Otherwise anyone who can set their own email at the IdP could claim a domain. Set it to `false` only for an IdP that never sends `email_verified` and doesn't let users change their email address. It doesn't affect `groups`.
+- **`requireVerifiedEmail`**: `emailDomains` only match when the ID token has `email_verified: true`. Otherwise anyone who can set their own email at the IdP could claim a domain. It also decides whether Warden records the user's email at all: without a verified one, their sessions, audit entries, and the roles page identify them only by OIDC subject, so nobody can act under someone else's address. Set it to `false` only for an IdP that never sends `email_verified` and doesn't let users change their email address. It doesn't affect `groups`.
 
 Every role named here must be defined under `roles`, and a domain may only be listed once; otherwise startup fails.
 

@@ -1,7 +1,7 @@
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { startMockOidc, type MockOidc } from '@wardenhq/mock-oidc';
+import { startMockOidc, type MockOidc, type MockUser } from '@wardenhq/mock-oidc';
 import type { FastifyInstance, LightMyRequestResponse } from 'fastify';
 import { expect } from 'vitest';
 
@@ -10,8 +10,12 @@ export const HTTPS_PUBLIC_URL = 'https://warden.test';
 const CLIENT_ID = 'warden';
 const CLIENT_SECRET = 'test-client-secret';
 
-export function startTestIdp({ endSession = true } = {}): Promise<MockOidc> {
+export function startTestIdp({
+  endSession = true,
+  users,
+}: { endSession?: boolean; users?: readonly MockUser[] } = {}): Promise<MockOidc> {
   return startMockOidc({
+    ...(users ? { users } : {}),
     clients: [
       {
         clientId: CLIENT_ID,

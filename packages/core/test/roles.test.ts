@@ -1,6 +1,6 @@
 import { wardenConfigSchema } from '@wardenhq/config';
 import { describe, expect, it } from 'vitest';
-import { assignmentEmail, parseEmail, resolveRoles } from '../src/index.js';
+import { assignmentEmail, parseEmail, resolveRoles, sessionEmail } from '../src/index.js';
 
 const access = (rules: unknown) =>
   wardenConfigSchema.parse({
@@ -179,6 +179,32 @@ describe('parseEmail', () => {
       ['ada@example.com'],
     ]) {
       expect(parseEmail(value), String(value)).toBeUndefined();
+    }
+  });
+});
+
+describe('sessionEmail', () => {
+  it('is the verified email, as the IdP sent it', () => {
+    expect(sessionEmail(rules, user({ email: 'U1@Example.COM' }))).toBe('U1@Example.COM');
+    expect(sessionEmail(rules, user({ email_verified: 'true' }))).toBe('u1@example.com');
+  });
+
+  it('is absent when the email is unverified, even without access rules', () => {
+    for (const email_verified of [false, 'false', undefined, 1, null]) {
+      expect(sessionEmail(rules, user({ email_verified })), String(email_verified)).toBe(undefined);
+      expect(sessionEmail(undefined, user({ email_verified }))).toBeUndefined();
+    }
+  });
+
+  it('trusts an unverified email when requireVerifiedEmail is off', () => {
+    const trusting = access({ requireVerifiedEmail: false });
+    expect(sessionEmail(trusting, user({ email_verified: false }))).toBe('u1@example.com');
+    expect(sessionEmail(trusting, user({ email_verified: undefined }))).toBe('u1@example.com');
+  });
+
+  it('is absent when the email is missing or not a string', () => {
+    for (const email of [undefined, '', 42, ['u1@example.com'], null]) {
+      expect(sessionEmail(rules, user({ email })), String(email)).toBeUndefined();
     }
   });
 });
