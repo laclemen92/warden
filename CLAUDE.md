@@ -43,6 +43,7 @@ Put logic in `packages/core` when it can be pure; keep SQL in `pg-adapter`; keep
 - **Don't leak internals.** 5xx responses are generic; details go to the log.
 - Enforce permissions on the server. The UI only hides controls.
 - **Every `/api/*` route requires a session.** The guard in `routes/auth.ts` checks the matched route as well as the raw URL (Fastify decodes `/%61pi/...` to `/api/...`). New API routes go under `/api/` so they are covered.
+- **Writes are same-origin JSON.** The `onRequest` hook in `routes/auth.ts` refuses unsafe methods whose `Sec-Fetch-Site` isn't `same-origin`, and `/api/*` POSTs that aren't `application/json`, so a cross-site form can't trigger them. Never change state on GET, and never add a CORS policy.
 
 ## Conventions
 

@@ -38,7 +38,13 @@ export {
   type AuditQuery,
 } from './audit.js';
 export { mapWriteError, type WriteErrorResult } from './errors.js';
-export { migrate, MIGRATIONS, pendingMigrations, type Migration } from './migrate.js';
+export {
+  canDisableAuditTriggers,
+  migrate,
+  MIGRATIONS,
+  pendingMigrations,
+  type Migration,
+} from './migrate.js';
 export {
   deleteExpiredSessions,
   deleteSession,

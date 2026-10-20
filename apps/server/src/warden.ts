@@ -2,6 +2,7 @@ import { loadConfig, requireAccess } from '@wardenhq/config';
 import { resolvePolicy, resolveSchema } from '@wardenhq/core';
 import {
   assignedRoles,
+  canDisableAuditTriggers,
   createDatabase,
   ensureSchemaSnapshot,
   introspect,
@@ -79,6 +80,7 @@ export async function createWarden({
         );
       }
     }
+    const auditTamperable = await canDisableAuditTriggers(db);
     const model = await introspect(pool, { schemas: config.schemas });
     const { schema, warnings: schemaWarnings } = resolveSchema(model, config);
     const { policy, warnings: policyWarnings } = resolvePolicy(schema, config);
@@ -119,6 +121,11 @@ export async function createWarden({
       { config: configPath ?? '(defaults)', entities: schema.entities.length },
       'schema loaded',
     );
+    if (auditTamperable) {
+      app.log.warn(
+        'the database role Warden runs as owns warden.audit_log (or is a superuser), so it could disable the append-only triggers; run Warden as a separate role (see docs/database.md)',
+      );
+    }
     if (config.access?.allowAll) {
       app.log.warn(
         'access.allowAll is on: everyone the identity provider authenticates can sign in and read per defaults.read',

@@ -6,6 +6,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   acknowledgeSchemaSnapshot,
   assignRole,
+  canDisableAuditTriggers,
   createDatabase,
   ensureSchemaSnapshot,
   migrate,
@@ -52,11 +53,19 @@ afterAll(async () => {
 describe('pendingMigrations', () => {
   it('lists every migration before the schema exists and none after migrating', async () => {
     expect(await pendingMigrations(handle.db)).toEqual(MIGRATIONS.map((m) => m.version));
+    expect(await canDisableAuditTriggers(handle.db)).toBe(false);
     await migrate(handle.db);
     expect(await pendingMigrations(handle.db)).toEqual([]);
     expect(
       await pendingMigrations(handle.db, [...MIGRATIONS, { version: '9999_next', sql: '' }]),
     ).toEqual(['9999_next']);
+  });
+});
+
+describe('canDisableAuditTriggers', () => {
+  it('is true for the role that created the audit log', async () => {
+    await migrate(handle.db);
+    expect(await canDisableAuditTriggers(handle.db)).toBe(true);
   });
 });
 
@@ -129,6 +138,32 @@ describe('documented runtime grants', () => {
     'create table warden.x (id int)',
   ])('denies the runtime role: %s', async (statement) => {
     await expect(app.query(statement)).rejects.toMatchObject(DENIED);
+  });
+
+  it('reports that the runtime role cannot disable the audit triggers', async () => {
+    const appHandle = createDatabase({ connectionString: appConnectionString });
+    try {
+      expect(await canDisableAuditTriggers(appHandle.db)).toBe(false);
+    } finally {
+      await appHandle.close();
+    }
+  });
+
+  it('reports that a member of the owner role can disable them', async () => {
+    const { rows } = await sql<{ owner: string }>`
+      select tableowner as owner from pg_tables
+      where schemaname = 'warden' and tablename = 'audit_log'`.execute(handle.db);
+    await sql.raw(`create role warden_member login password 'm' nosuperuser`).execute(handle.db);
+    await sql.raw(`grant "${rows[0]!.owner}" to warden_member`).execute(handle.db);
+    const url = new URL(pgContainer.connectionString);
+    url.username = 'warden_member';
+    url.password = 'm';
+    const memberHandle = createDatabase({ connectionString: url.href });
+    try {
+      expect(await canDisableAuditTriggers(memberHandle.db)).toBe(true);
+    } finally {
+      await memberHandle.close();
+    }
   });
 
   it('lets the runtime role use sessions and check migrations', async () => {
