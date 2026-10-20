@@ -1,6 +1,7 @@
 import { wardenConfigSchema } from '@wardenhq/config';
 import { describe, expect, it } from 'vitest';
 import {
+  entityFor,
   humanize,
   resolveSchema,
   type Column,
@@ -303,5 +304,67 @@ describe('humanize', () => {
     ['users', 'Users'],
   ])('%s → %s', (input, expected) => {
     expect(humanize(input)).toBe(expected);
+  });
+});
+
+describe('primary keys on update', () => {
+  const keyed: SchemaModel = {
+    enums: [],
+    tables: [
+      table(
+        'memberships',
+        [
+          col('org', { hasDefault: true }),
+          col('member'),
+          col('since', { dataType: 'date', formattedType: 'date', nullable: true }),
+        ],
+        { primaryKey: ['org', 'member'] },
+      ),
+      table('events', [id, col('name')]),
+    ],
+  };
+  const resolveKeyed = (config: unknown, key: string) => {
+    const e = resolveSchema(keyed, wardenConfigSchema.parse(config)).schema.entities.find(
+      (x) => x.key === key,
+    );
+    if (!e) throw new Error(`entity ${key} not exposed`);
+    return e;
+  };
+
+  it('makes writable primary key columns create-only', () => {
+    const memberships = resolveKeyed({}, 'memberships');
+    expect(memberships.fields.map((f) => [f.name, f.readOnly, f.createOnly])).toEqual([
+      ['org', false, true],
+      ['member', false, true],
+      ['since', false, undefined],
+    ]);
+    // Already read-only, so there's nothing to restrict.
+    expect(resolveKeyed({}, 'events').fields[0]).not.toHaveProperty('createOnly');
+
+    expect(entityFor(memberships, 'create')).toBe(memberships);
+    expect(entityFor(memberships, 'update').fields.map((f) => [f.name, f.readOnly])).toEqual([
+      ['org', true],
+      ['member', true],
+      ['since', false],
+    ]);
+  });
+
+  it('lets updates change primary keys only when the table opts in', () => {
+    const memberships = resolveKeyed(
+      { tables: { memberships: { updatablePrimaryKey: true } } },
+      'memberships',
+    );
+    expect(memberships.fields.some((f) => f.createOnly)).toBe(false);
+    expect(entityFor(memberships, 'update')).toBe(memberships);
+    // Configured read-only still wins.
+    const locked = resolveKeyed(
+      {
+        tables: {
+          memberships: { updatablePrimaryKey: true, columns: { org: { readOnly: true } } },
+        },
+      },
+      'memberships',
+    );
+    expect(locked.fields.find((f) => f.name === 'org')?.readOnly).toBe(true);
   });
 });

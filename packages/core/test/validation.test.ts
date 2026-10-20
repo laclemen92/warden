@@ -69,6 +69,31 @@ describe('validateRecord', () => {
     expect(errors({ id: 1 }, 'update')).toEqual([{ field: 'id', message: 'is read-only' }]);
   });
 
+  it('accepts create-only fields on create and rejects them on update', () => {
+    const keyed: Entity = {
+      ...entity,
+      key: 'codes',
+      primaryKey: ['code'],
+      fields: [field('code', { createOnly: true }), field('note', { nullable: true })],
+    };
+    expect(validateRecord(keyed, {}, 'create')).toEqual({
+      ok: false,
+      errors: [{ field: 'code', message: 'is required' }],
+    });
+    expect(validateRecord(keyed, { code: 'a' }, 'create')).toEqual({
+      ok: true,
+      values: { code: 'a' },
+    });
+    expect(validateRecord(keyed, { code: 'b', note: 'x' }, 'update')).toEqual({
+      ok: false,
+      errors: [{ field: 'code', message: 'is read-only' }],
+    });
+    expect(validateRecord(keyed, { note: 'x' }, 'update')).toEqual({
+      ok: true,
+      values: { note: 'x' },
+    });
+  });
+
   it('rejects unknown fields like nonexistent ones', () => {
     // A hidden column is simply absent from the entity, so it gets the same message.
     expect(errors({ password_hash: 'x', nope: 1 }, 'update')).toEqual([

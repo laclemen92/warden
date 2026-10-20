@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { Entity, Field } from './effective-schema.js';
+import { entityFor, type Entity, type Field } from './effective-schema.js';
 import { fieldCategory } from './filter.js';
 import {
   UUID,
@@ -123,12 +123,13 @@ export function fieldSchema(f: Field): z.ZodType {
 }
 
 /**
- * Schema for a create or update payload. Read-only fields are rejected; on create, fields that
- * are NOT NULL without a default are required. Unknown (including hidden) fields are rejected.
+ * Schema for a create or update payload. Read-only fields, and create-only fields on update, are
+ * rejected; on create, fields that are NOT NULL without a default are required. Unknown
+ * (including hidden) fields are rejected.
  */
 export function recordSchema(entity: Entity, mode: WriteMode) {
   const shape: Record<string, z.ZodType> = {};
-  for (const f of entity.fields) {
+  for (const f of entityFor(entity, mode).fields) {
     if (f.readOnly) {
       shape[f.name] = z.never({ error: 'is read-only' }).optional();
       continue;
