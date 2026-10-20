@@ -17,6 +17,7 @@ export {
   ConfigError,
   loadConfig,
   parseConfig,
+  requireAccess,
   type ConfigIssue,
   type LoadConfigOptions,
   type LoadedConfig,

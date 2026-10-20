@@ -11,6 +11,7 @@ import { parseAuthSettings, parseDuration } from '../src/auth/settings.js';
 import { safeReturnTo } from '../src/routes/auth.js';
 import { createWarden } from '../src/warden.js';
 import {
+  ALLOW_ALL_CONFIG,
   authEnv,
   beginLogin,
   callback,
@@ -19,6 +20,7 @@ import {
   login,
   signInAtIdp,
   startTestIdp,
+  writeConfig,
 } from './helpers/auth.js';
 
 type App = Awaited<ReturnType<typeof createWarden>>;
@@ -33,7 +35,14 @@ let idp: MockOidc;
 let app: App;
 
 const start = (env: Record<string, string> = {}) =>
-  createWarden({ env: { DATABASE_URL: db.connectionString, ...authEnv(idp), ...env } });
+  createWarden({
+    env: {
+      DATABASE_URL: db.connectionString,
+      WARDEN_CONFIG: writeConfig(ALLOW_ALL_CONFIG),
+      ...authEnv(idp),
+      ...env,
+    },
+  });
 
 beforeAll(async () => {
   db = await startPostgres({
@@ -261,7 +270,7 @@ describe('roles', () => {
     expect(await me('admin')).toEqual(['admin', 'viewer']);
   });
 
-  it('lets everyone in with no roles when access is not configured', async () => {
+  it('lets everyone in with no roles when access.allowAll is on', async () => {
     const cookie = await login(app, 'outsider');
     const res = await get('/api/me', cookie);
     expect(res.json()).toMatchObject({ sub: 'outsider', roles: [] });

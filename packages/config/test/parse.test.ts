@@ -211,6 +211,7 @@ access:
       groups: { 'warden-admins': ['admin', 'viewer'] },
       emailDomains: { 'example.com': ['viewer'] },
       requireVerifiedEmail: true,
+      allowAll: false,
     });
     expect(parseConfig('roles: {}', FILE).access).toBeUndefined();
   });

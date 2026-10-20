@@ -21,9 +21,20 @@ const user = (claims: Record<string, unknown>) => ({
 });
 
 describe('resolveRoles', () => {
-  it('lets everyone in with no roles when access is not configured', () => {
-    expect(resolveRoles(undefined, user({}))).toEqual([]);
-    expect(resolveRoles(undefined, { sub: 'x' })).toEqual([]);
+  it('lets nobody in when access is not configured', () => {
+    expect(resolveRoles(undefined, user({}))).toBeUndefined();
+    expect(resolveRoles(undefined, { sub: 'x' })).toBeUndefined();
+    expect(resolveRoles(undefined, user({}), ['viewer'])).toBeUndefined();
+  });
+
+  it('lets everyone in with allowAll, with roles only from matching rules', () => {
+    const open = access({ allowAll: true });
+    expect(resolveRoles(open, user({}))).toEqual([]);
+    expect(resolveRoles(open, { sub: 'x' })).toEqual([]);
+    expect(resolveRoles(open, user({}), ['ops'])).toEqual(['ops']);
+    const openWithRules = access({ allowAll: true, emailDomains: { 'example.com': ['viewer'] } });
+    expect(resolveRoles(openWithRules, user({}))).toEqual(['viewer']);
+    expect(resolveRoles(openWithRules, user({ email: 'u@example.org' }))).toEqual([]);
   });
 
   it('assigns roles by email domain, case-insensitively', () => {
@@ -115,8 +126,12 @@ describe('resolveRoles with in-app assignments', () => {
     expect(resolveRoles(rules, outsider, ['ops'])).toEqual(['ops']);
   });
 
-  it('gives assigned roles when access is not configured', () => {
-    expect(resolveRoles(undefined, user({}), ['ops', 'admin', 'ops'])).toEqual(['admin', 'ops']);
+  it('dedupes and sorts assigned roles', () => {
+    expect(resolveRoles(rules, user({}), ['ops', 'admin', 'ops'])).toEqual([
+      'admin',
+      'ops',
+      'viewer',
+    ]);
   });
 });
 

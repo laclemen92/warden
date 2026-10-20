@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { ConfigError, loadConfig } from '../src/index.js';
+import { ConfigError, loadConfig, requireAccess } from '../src/index.js';
 
 let cwd: string;
 beforeEach(() => {
@@ -51,5 +51,39 @@ describe('loadConfig', () => {
     );
     const { config } = await loadConfig({ path: example, env: {} });
     expect(config.tables.users?.columns.password_hash?.hidden).toBe(true);
+  });
+});
+
+describe('requireAccess', () => {
+  it('fails without access, naming the file and the opt-in', async () => {
+    writeFileSync(join(cwd, 'warden.config.yaml'), 'roles: { viewer: {} }\n');
+    const loaded = await loadConfig({ cwd, env: {} });
+    const err = (() => {
+      try {
+        requireAccess(loaded);
+      } catch (e) {
+        return e;
+      }
+    })();
+    expect(err).toBeInstanceOf(ConfigError);
+    expect((err as ConfigError).message).toContain(join(cwd, 'warden.config.yaml'));
+    expect((err as ConfigError).message).toMatch(/access: Required\..*access\.allowAll: true/);
+  });
+
+  it('fails when running on defaults', async () => {
+    const loaded = await loadConfig({ cwd, env: {} });
+    expect(() => requireAccess(loaded)).toThrow(/no config file found[\s\S]*access: Required/);
+  });
+
+  it('accepts access rules or the allowAll opt-in', async () => {
+    for (const source of [
+      'access: { allowAll: true }',
+      'roles: { viewer: {} }\naccess: { groups: { staff: [viewer] } }',
+      'access: {}',
+    ]) {
+      writeFileSync(join(cwd, 'warden.config.yaml'), source);
+      const loaded = await loadConfig({ cwd, env: {} });
+      expect(() => requireAccess(loaded)).not.toThrow();
+    }
   });
 });

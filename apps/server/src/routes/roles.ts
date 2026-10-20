@@ -76,7 +76,11 @@ export function registerRoleRoutes(app: FastifyInstance, { config, db }: RoleRou
       admin,
     })),
     access: config.access
-      ? { groups: config.access.groups, emailDomains: config.access.emailDomains }
+      ? {
+          groups: config.access.groups,
+          emailDomains: config.access.emailDomains,
+          allowAll: config.access.allowAll,
+        }
       : null,
     assignments: (await listRoleAssignments(db)).map(withDefined),
   }));

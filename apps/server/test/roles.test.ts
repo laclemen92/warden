@@ -94,6 +94,7 @@ describe('roles page API', () => {
           'warden-admins': ['admin'],
         },
         emailDomains: { 'example.com': ['viewer'] },
+        allowAll: false,
       },
       assignments: [],
     });

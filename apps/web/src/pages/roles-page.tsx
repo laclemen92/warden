@@ -287,15 +287,20 @@ function AccessSection({ access }: { access: RolesReport['access'] }) {
       title="Access rules"
       description="From the access section of your config: roles people get at sign-in from their identity provider groups and email domain."
     >
+      {access?.allowAll && (
+        <p className="text-sm text-muted-foreground">
+          <code>allowAll</code> is on: everyone the identity provider authenticates can sign in,
+          with no roles unless a rule below or an assignment gives them some.
+        </p>
+      )}
       {!access ? (
-        <p className="text-sm text-muted-foreground">
-          No access rules. Everyone the identity provider authenticates can sign in, with no roles
-          unless assigned some above.
-        </p>
+        <p className="text-sm text-muted-foreground">No access rules, so nobody can sign in.</p>
       ) : rules.length === 0 ? (
-        <p className="text-sm text-muted-foreground">
-          No rules, so only people with an assignment can sign in.
-        </p>
+        access.allowAll ? null : (
+          <p className="text-sm text-muted-foreground">
+            No rules, so only people with an assignment can sign in.
+          </p>
+        )
       ) : (
         <Table>
           <TableHeader>

@@ -75,6 +75,24 @@ export async function loadConfig({
 }
 
 /**
+ * Throw a {@link ConfigError} unless config says who may sign in. Without `access` every user the
+ * IdP authenticates could read the database, so letting everyone in must be explicit
+ * (`access.allowAll`).
+ */
+export function requireAccess({ config, path }: LoadedConfig): void {
+  if (config.access) return;
+  throw new ConfigError(path ?? '(defaults: no config file found)', [
+    {
+      path: 'access',
+      message:
+        'Required. Configure `access.groups` or `access.emailDomains` to decide who may sign in, ' +
+        'or set `access.allowAll: true` to let in everyone the IdP authenticates (only if the IdP ' +
+        'itself restricts who can sign in). See docs/config.md#access.',
+    },
+  ]);
+}
+
+/**
  * Parse and validate config source. YAML and JSON are both accepted (JSON is parsed as YAML 1.2,
  * which keeps line numbers for errors). `file` is used only in error messages.
  */

@@ -51,8 +51,9 @@ roles:
       companies: [read, create, update]
       orders: [update]
 
-# Who may sign in, and with which roles. Users matching no rule are denied, so the mock IdP's
-# `outsider` (example.org, no groups) can't sign in.
+# Who may sign in, and with which roles (required). Users matching no rule are denied, so the
+# mock IdP's `outsider` (example.org, no groups) can't sign in. `allowAll: true` would let every
+# IdP user in, with no roles unless a rule gives some; only use it if the IdP restricts sign-in.
 access:
   groups:
     warden-viewers: [viewer]
