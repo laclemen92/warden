@@ -8,9 +8,14 @@ export type Row = Record<string, unknown>;
 const ALIAS = 't';
 const column = (name: string) => sql.id(ALIAS, name);
 // `only` keeps rows of tables that INHERIT from this one out: those are separate entities, which
-// config may hide or deny, and the parent's primary key isn't unique across them.
-const from = (entity: Entity) =>
-  sql`only ${sql.id(entity.schema, entity.name)} as ${sql.id(ALIAS)}`;
+// config may hide or deny, and the parent's primary key isn't unique across them. A partitioned
+// table's rows all live in its partitions, so `only` would see none; partitions aren't entities and
+// partitioned tables can't have INHERITS children, so the plain table is exactly its rows.
+export const entityTable = (entity: Entity) => {
+  const table = sql.id(entity.schema, entity.name);
+  return entity.kind === 'partitioned' ? table : sql`only ${table}`;
+};
+const from = (entity: Entity) => sql`${entityTable(entity)} as ${sql.id(ALIAS)}`;
 // Only exposed fields are ever selected, so hidden columns never leave the database.
 const selection = (entity: Entity) => sql.join(entity.fields.map((f) => column(f.name)));
 
