@@ -72,6 +72,19 @@ export const MIGRATIONS: readonly Migration[] = [
         for each statement execute function warden.audit_log_append_only();
     `,
   },
+  {
+    version: '0003_schema_snapshots',
+    sql: `
+      -- Baselines for the schema drift page; the newest row is the current baseline.
+      create table warden.schema_snapshots (
+        id       bigint generated always as identity primary key,
+        taken_at timestamptz not null default now(),
+        -- OIDC subject of the admin who acknowledged it; null for the one taken at first start.
+        taken_by text,
+        model    jsonb not null
+      );
+    `,
+  },
 ];
 
 // Arbitrary constant shared by every Warden instance, so replicas don't migrate concurrently.

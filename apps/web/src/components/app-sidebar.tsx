@@ -1,5 +1,5 @@
 import type { Entity } from '@wardenhq/core';
-import { Shield, Table2 } from 'lucide-react';
+import { GitCompare, Shield, Table2 } from 'lucide-react';
 import { useState } from 'react';
 import { Link, NavLink, useMatch } from 'react-router';
 import {
@@ -18,6 +18,7 @@ import {
 } from '@/components/ui/sidebar';
 import { UserMenu } from '@/components/user-menu';
 import { entityPath, useSchema } from '@/lib/schema';
+import { SCHEMA_DRIFT_PATH, useCanViewSchemaDrift } from '@/lib/schema-drift';
 
 function EntityNavItem({ entity }: { entity: Entity }) {
   const path = entityPath(entity);
@@ -37,6 +38,8 @@ function EntityNavItem({ entity }: { entity: Entity }) {
 export function AppSidebar() {
   const { data: schema, isPending, isError } = useSchema();
   const [query, setQuery] = useState('');
+  const canViewSchemaDrift = useCanViewSchemaDrift();
+  const schemaDriftActive = useMatch(SCHEMA_DRIFT_PATH) !== null;
 
   const needle = query.trim().toLowerCase();
   const entities = (schema?.entities ?? [])
@@ -90,6 +93,25 @@ export function AppSidebar() {
             </nav>
           </SidebarGroupContent>
         </SidebarGroup>
+        {canViewSchemaDrift && (
+          <SidebarGroup>
+            <SidebarGroupLabel>Admin</SidebarGroupLabel>
+            <SidebarGroupContent>
+              <nav aria-label="Admin">
+                <SidebarMenu>
+                  <SidebarMenuItem>
+                    <SidebarMenuButton isActive={schemaDriftActive} tooltip="Schema drift" asChild>
+                      <NavLink to={SCHEMA_DRIFT_PATH}>
+                        <GitCompare />
+                        <span>Schema drift</span>
+                      </NavLink>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                </SidebarMenu>
+              </nav>
+            </SidebarGroupContent>
+          </SidebarGroup>
+        )}
       </SidebarContent>
       <SidebarFooter>
         <UserMenu />

@@ -1,6 +1,6 @@
 # Database setup
 
-Warden keeps its own metadata (sessions, the audit log) in a `warden` schema inside the database it manages. It never introspects or exposes that schema.
+Warden keeps its own metadata (sessions, the audit log, schema snapshots) in a `warden` schema inside the database it manages. It never introspects or exposes that schema.
 
 ## Migrations
 
@@ -22,7 +22,7 @@ docker run --rm -e DATABASE_URL=postgres://warden_owner:...@db/app <warden-image
 
 ## Restricting the runtime role
 
-The role Warden runs as only needs to append to and read the audit log. Postgres doesn't apply grants to a table's owner, so the runtime role must **not** be the role that ran the migrations.
+The role Warden runs as only needs to append to and read the audit log and the schema snapshots. Postgres doesn't apply grants to a table's owner, so the runtime role must **not** be the role that ran the migrations.
 
 Run this as the owner of the `warden` schema, replacing `warden_app` with your runtime role. It is safe to re-run after every upgrade:
 
@@ -34,6 +34,7 @@ grant usage on schema warden to warden_app;
 grant select on warden.schema_migrations to warden_app;
 grant select, insert, update, delete on warden.sessions to warden_app;
 grant select, insert on warden.audit_log to warden_app;
+grant select, insert on warden.schema_snapshots to warden_app;
 ```
 
 The runtime role also needs whatever access your configuration grants on your application tables (at least `select`, plus `insert`/`update`/`delete` where roles may write).
@@ -59,3 +60,7 @@ The runtime role also needs whatever access your configuration grants on your ap
 | `diff`          | `jsonb`       | The fields that changed.                                        |
 | `reason`        | `text`        | The reason the user gave, if any.                               |
 | `parent_id`     | `bigint`      | For rows changed by a custom action, the action's parent entry. |
+
+## Schema snapshots
+
+`warden.schema_snapshots` holds copies of the introspected schema. The newest row is the baseline the [schema drift page](config.md#schema-drift) compares against. Warden records the first one when it starts against a database that has none, and adds one each time an admin acknowledges drift. Older rows are kept as history.

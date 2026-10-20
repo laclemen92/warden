@@ -1,6 +1,6 @@
 import fastifyCookie from '@fastify/cookie';
-import type { AccessConfig } from '@wardenhq/config';
-import { resolveRoles } from '@wardenhq/core';
+import type { AccessConfig, WardenConfig } from '@wardenhq/config';
+import { adminAreas, resolveRoles } from '@wardenhq/core';
 import type { Session } from '@wardenhq/pg-adapter';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { LoginChecks, OidcClient } from '../auth/oidc.js';
@@ -21,6 +21,8 @@ export interface AuthOptions {
   oidc: OidcClient;
   /** Config `access` rules; without them every IdP user signs in with no roles. */
   access?: AccessConfig;
+  /** Config `roles`, for telling the UI which admin areas the user may open. */
+  roles?: WardenConfig['roles'];
 }
 
 const LOGIN_TTL_SECONDS = 600;
@@ -70,7 +72,7 @@ const isApi = (req: FastifyRequest) =>
 
 export async function registerAuth(
   app: FastifyInstance,
-  { sessionSecret, sessions, oidc, access }: AuthOptions,
+  { sessionSecret, sessions, oidc, access, roles: roleConfig = {} }: AuthOptions,
 ) {
   await app.register(fastifyCookie, { secret: sessionSecret });
   const login = sessions.cookie('warden_login', LOGIN_TTL_SECONDS);
@@ -155,6 +157,7 @@ export async function registerAuth(
       ...(session.email ? { email: session.email } : {}),
       ...(session.name ? { name: session.name } : {}),
       roles: req.roles!,
+      admin: adminAreas(roleConfig, req.roles!),
     };
   });
 }

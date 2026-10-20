@@ -4,7 +4,9 @@ import { sql } from 'kysely';
 import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
+  acknowledgeSchemaSnapshot,
   createDatabase,
+  ensureSchemaSnapshot,
   migrate,
   MIGRATIONS,
   pendingMigrations,
@@ -138,5 +140,23 @@ describe('documented runtime grants', () => {
     } finally {
       await appHandle.close();
     }
+  });
+
+  it('lets the runtime role record and acknowledge schema snapshots', async () => {
+    const appHandle = createDatabase({ connectionString: appConnectionString });
+    const model = { tables: [], enums: [] };
+    try {
+      const first = await ensureSchemaSnapshot(appHandle.db, model);
+      const next = await acknowledgeSchemaSnapshot(appHandle.db, {
+        model,
+        expectedId: first.id,
+        actor: { subject: 'admin', roles: ['admin'] },
+        drift: {},
+      });
+      expect(next?.takenBy).toBe('admin');
+    } finally {
+      await appHandle.close();
+    }
+    await expect(app.query('delete from warden.schema_snapshots')).rejects.toMatchObject(DENIED);
   });
 });

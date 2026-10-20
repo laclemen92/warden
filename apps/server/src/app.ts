@@ -7,6 +7,7 @@ import Fastify, { type FastifyServerOptions } from 'fastify';
 import { registerAuth, type AuthOptions } from './routes/auth.js';
 import { registerEntityRoutes } from './routes/entities.js';
 import { registerPolicy } from './routes/policy.js';
+import { registerSchemaDriftRoutes, type SchemaDriftOptions } from './routes/schema-drift.js';
 
 export interface AppOptions {
   /** Effective schema to serve. Already narrowed by config, so it is safe to send as-is. */
@@ -17,6 +18,8 @@ export interface AppOptions {
   policy?: Policy;
   /** Login routes and the session check on /api. Required whenever data routes are served. */
   auth?: AuthOptions;
+  /** Introspected model and config for the schema drift page; registered when `db` is given. */
+  drift?: Omit<SchemaDriftOptions, 'db'>;
   /** Directory containing the built web UI. Served with SPA fallback when present. */
   webDir?: string;
   logger?: FastifyServerOptions['logger'];
@@ -27,10 +30,11 @@ export async function buildApp({
   db,
   policy,
   auth,
+  drift,
   webDir,
   logger = false,
 }: AppOptions = {}) {
-  if (schema && !auth) throw new Error('auth is required to serve /api routes');
+  if ((schema || drift) && !auth) throw new Error('auth is required to serve /api routes');
   if (schema && db && !policy) throw new Error('policy is required to serve entity routes');
   const app = Fastify({ logger });
 
@@ -56,6 +60,7 @@ export async function buildApp({
     registerPolicy(app, schema, policy);
     registerEntityRoutes(app, schema, db, policy);
   }
+  if (drift && db) registerSchemaDriftRoutes(app, { ...drift, db });
 
   if (webDir && existsSync(webDir)) {
     await app.register(fastifyStatic, { root: webDir });
