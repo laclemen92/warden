@@ -92,8 +92,10 @@ const openTransactions = async () =>
   Number(
     (
       await sqlPool.query(
+        // Idle or mid-fetch: any backend but this one with a transaction open.
         `select count(*) from pg_stat_activity
-         where datname = current_database() and state like 'idle in transaction%'`,
+         where datname = current_database() and xact_start is not null
+           and pid <> pg_backend_pid()`,
       )
     ).rows[0].count,
   );
