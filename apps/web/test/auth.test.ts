@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { loginPath, safeReturnTo, ssoLoginUrl } from '../src/lib/auth';
+import { loginErrorMessage, loginPath, safeReturnTo, ssoLoginUrl } from '../src/lib/auth';
 
 describe('safeReturnTo', () => {
   it('keeps same-origin paths', () => {
@@ -33,4 +33,30 @@ describe('loginPath / ssoLoginUrl', () => {
   it('does not forward an off-site returnTo to the server', () => {
     expect(ssoLoginUrl('//evil.example')).toBe('/auth/login?returnTo=%2F');
   });
+});
+
+describe('loginErrorMessage', () => {
+  const generic = 'Sign-in failed. Please try again.';
+
+  it('has no message without an error code', () => {
+    expect(loginErrorMessage(null)).toBeNull();
+    expect(loginErrorMessage(undefined)).toBeNull();
+  });
+
+  it('shows the generic message for login_failed', () => {
+    expect(loginErrorMessage('login_failed')).toBe(generic);
+  });
+
+  it('tells a denied user to ask an administrator, not to retry', () => {
+    const message = loginErrorMessage('access_denied');
+    expect(message).toMatch(/doesn't have access to Warden.*administrator/);
+    expect(message).not.toMatch(/try again/i);
+  });
+
+  it.each(['', 'nope', '<img src=x onerror=alert(1)>', '__proto__', 'constructor', 'toString'])(
+    'falls back to the generic message for %j',
+    (code) => {
+      expect(loginErrorMessage(code)).toBe(generic);
+    },
+  );
 });

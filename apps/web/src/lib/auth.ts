@@ -32,6 +32,23 @@ export function ssoLoginUrl(returnTo: string): string {
   return `${LOGIN_URL}?returnTo=${encodeURIComponent(safeReturnTo(returnTo))}`;
 }
 
+const SIGN_IN_FAILED = 'Sign-in failed. Please try again.';
+
+// Codes the server puts in `/login?error=` (apps/server/src/routes/auth.ts).
+const LOGIN_ERRORS: Record<string, string> = {
+  login_failed: SIGN_IN_FAILED,
+  access_denied: "Your account doesn't have access to Warden. Ask an administrator for access.",
+};
+
+/**
+ * The message for a `?error=` code. Unknown codes get the generic message: the
+ * param comes from the URL, so it is never shown as-is.
+ */
+export function loginErrorMessage(code: string | null | undefined): string | null {
+  if (code == null) return null;
+  return Object.hasOwn(LOGIN_ERRORS, code) ? LOGIN_ERRORS[code]! : SIGN_IN_FAILED;
+}
+
 export function useCurrentUser() {
   return useQuery({
     queryKey: ['me'],
