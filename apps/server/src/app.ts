@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { STATUS_CODES } from 'node:http';
 import fastifyStatic from '@fastify/static';
@@ -36,7 +37,9 @@ export async function buildApp({
 }: AppOptions = {}) {
   if ((schema || drift) && !auth) throw new Error('auth is required to serve /api routes');
   if (schema && db && !policy) throw new Error('policy is required to serve entity routes');
-  const app = Fastify({ logger });
+  // Request ids are logged and stored with audit entries, so they must be unique across restarts
+  // and replicas.
+  const app = Fastify({ logger, genReqId: () => randomUUID() });
 
   // Don't leak database errors (SQL, constraint names, values) to clients; they are logged.
   app.setErrorHandler((err: Error & { statusCode?: number; validation?: unknown }, req, reply) => {

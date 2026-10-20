@@ -28,3 +28,5 @@ export type * from './admin.js';
 export { adminAreas } from './admin.js';
 export type * from './schema-drift.js';
 export { diffSchema } from './schema-drift.js';
+export type * from './audit.js';
+export { auditDiff } from './audit.js';

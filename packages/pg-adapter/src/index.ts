@@ -18,6 +18,7 @@ export {
   type WriteOptions,
   type WriteResult,
 } from './writes.js';
+export { AuditWriteError, auditHook, type AuditContext } from './audit.js';
 export { mapWriteError, type WriteErrorResult } from './errors.js';
 export { migrate, MIGRATIONS, pendingMigrations, type Migration } from './migrate.js';
 export {
