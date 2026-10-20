@@ -2,7 +2,7 @@ import type { EffectiveSchema, Entity, Field, Relation } from '@wardenhq/core';
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { createMemoryRouter } from 'react-router';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App, createApp } from '../src/App';
 import { routes } from '../src/routes';
 
@@ -172,6 +172,17 @@ async function pickCompany(search: string, option: string) {
 }
 
 const form = () => screen.findByRole('button', { name: /^(Create|Save)$/ });
+
+// The pages are lazy routes. Importing them cold took over the 5s `asyncUtilTimeout` on a busy
+// CI runner, failing whichever test rendered first; load them here, outside any assertion.
+beforeAll(async () => {
+  await Promise.all([
+    import('../src/components/app-layout'),
+    import('../src/pages/entity-page'),
+    import('../src/pages/record-form-page'),
+    import('../src/pages/record-page'),
+  ]);
+}, 60_000);
 
 describe('creating a record', () => {
   beforeEach(() => stubFetch());
