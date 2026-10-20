@@ -1,12 +1,27 @@
+import { useState, type MouseEvent } from 'react';
 import type { Entity, Field, Relation } from '@wardenhq/core';
-import { Link, useParams } from 'react-router';
+import { Trash2 } from 'lucide-react';
+import { Link, useNavigate, useParams } from 'react-router';
 import { displayText, FieldValue } from '@/components/field-value';
-import { Button } from '@/components/ui/button';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from '@/components/ui/alert-dialog';
+import { Button, buttonVariants } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { ApiError } from '@/lib/api';
+import { useCan } from '@/lib/capabilities';
 import {
   recordPath,
+  useDeleteRecord,
   useChildRecords,
   useParentRecord,
   useRecord,
@@ -51,16 +66,19 @@ function RecordView({ entity, id, entities }: { entity: Entity; id: string; enti
 
   return (
     <div className="space-y-8">
-      <div className="space-y-1">
-        <Link
-          to={entityPath(entity)}
-          className="text-sm text-muted-foreground underline-offset-4 hover:underline"
-        >
-          {entity.label}
-        </Link>
-        <h1 className="text-2xl font-semibold break-words">
-          {displayText(row[entity.displayField])}
-        </h1>
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div className="min-w-0 space-y-1">
+          <Link
+            to={entityPath(entity)}
+            className="text-sm text-muted-foreground underline-offset-4 hover:underline"
+          >
+            {entity.label}
+          </Link>
+          <h1 className="text-2xl font-semibold break-words">
+            {displayText(row[entity.displayField])}
+          </h1>
+        </div>
+        <DeleteRecord entity={entity} record={{ ...record, id }} />
       </div>
 
       <dl className="grid gap-x-6 gap-y-3 sm:grid-cols-[minmax(8rem,max-content)_1fr]">
@@ -101,6 +119,84 @@ function RecordView({ entity, id, entities }: { entity: Entity; id: string; enti
         </section>
       )}
     </div>
+  );
+}
+
+// apps/server/src/routes/entities.ts: a stale version, as opposed to a constraint conflict.
+const STALE_MESSAGE = 'the record has changed since it was read';
+
+function deleteErrorMessage(error: Error): string {
+  if (!(error instanceof ApiError)) return "Couldn't delete this record.";
+  if (error.status === 403) return "You don't have permission to delete this record.";
+  if (error.status === 409) {
+    return error.message === STALE_MESSAGE
+      ? 'This record changed since you opened it. Review the current values and try again.'
+      : "This record can't be deleted while other records refer to it.";
+  }
+  return "Couldn't delete this record.";
+}
+
+/** Shown only to users who may delete; the server enforces the policy either way. */
+function DeleteRecord({ entity, record }: { entity: Entity; record: RecordItem & { id: string } }) {
+  const canDelete = useCan(entity.key, 'delete');
+  const remove = useDeleteRecord(entity);
+  const navigate = useNavigate();
+  const [open, setOpen] = useState(false);
+  if (!canDelete) return null;
+
+  const title = displayText(record.values[entity.displayField]);
+  const confirm = (event: MouseEvent) => {
+    // Keep the dialog open until the delete settles, so errors show in it.
+    event.preventDefault();
+    remove.mutate(record, {
+      onSuccess: () => void navigate(entityPath(entity), { replace: true }),
+      onError: (error) => {
+        // Someone else already deleted it.
+        if (error instanceof ApiError && error.status === 404) {
+          void navigate(entityPath(entity), { replace: true });
+        }
+      },
+    });
+  };
+
+  return (
+    <AlertDialog
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next);
+        if (!next) remove.reset();
+      }}
+    >
+      <AlertDialogTrigger asChild>
+        <Button variant="outline">
+          <Trash2 />
+          Delete
+        </Button>
+      </AlertDialogTrigger>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Delete {title}?</AlertDialogTitle>
+          <AlertDialogDescription>
+            This permanently deletes the record from {entity.label}. It can't be undone.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        {remove.error && (
+          <p role="alert" className="text-sm text-destructive">
+            {deleteErrorMessage(remove.error)}
+          </p>
+        )}
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction
+            className={buttonVariants({ variant: 'destructive' })}
+            disabled={remove.isPending}
+            onClick={confirm}
+          >
+            {remove.isPending ? 'Deleting…' : 'Delete'}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   );
 }
 
