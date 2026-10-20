@@ -10,15 +10,17 @@ export const HTTPS_PUBLIC_URL = 'https://warden.test';
 const CLIENT_ID = 'warden';
 const CLIENT_SECRET = 'test-client-secret';
 
-export function startTestIdp(): Promise<MockOidc> {
+export function startTestIdp({ endSession = true } = {}): Promise<MockOidc> {
   return startMockOidc({
     clients: [
       {
         clientId: CLIENT_ID,
         clientSecret: CLIENT_SECRET,
         redirectUris: [PUBLIC_URL, HTTPS_PUBLIC_URL].map((url) => `${url}/auth/callback`),
+        postLogoutRedirectUris: [PUBLIC_URL, HTTPS_PUBLIC_URL].map((url) => `${url}/`),
       },
     ],
+    endSession,
   });
 }
 
@@ -59,19 +61,29 @@ export function cookiesFrom(header: string | string[] | undefined): Map<string, 
 export const cookieHeader = (cookies: Map<string, string>) =>
   [...cookies].map(([k, v]) => `${k}=${v}`).join('; ');
 
-/** Plays the browser at the IdP: open the login page, pick the user, follow back to Warden. */
-export async function signInAtIdp(authorizeUrl: string, sub: string): Promise<URL> {
-  const jar = new Map<string, string>();
-  const go = async (url: string, init: RequestInit = {}) => {
-    const res = await fetch(url, {
-      ...init,
-      redirect: 'manual',
-      headers: { ...(init.headers as Record<string, string>), cookie: cookieHeader(jar) },
-    });
-    for (const [k, v] of cookiesFrom(res.headers.getSetCookie())) jar.set(k, v);
-    const location = res.headers.get('location');
-    return location ? new URL(location, url).href : undefined;
-  };
+/** One request at the IdP with the browser's IdP cookies; returns the redirect, if any. */
+export async function idpRequest(jar: Map<string, string>, url: string, init: RequestInit = {}) {
+  const res = await fetch(url, {
+    ...init,
+    redirect: 'manual',
+    headers: { ...(init.headers as Record<string, string>), cookie: cookieHeader(jar) },
+  });
+  for (const [k, v] of cookiesFrom(res.headers.getSetCookie())) jar.set(k, v);
+  const location = res.headers.get('location');
+  return { res, location: location ? new URL(location, url).href : undefined };
+}
+
+/**
+ * Plays the browser at the IdP: open the login page, pick the user, follow back to Warden.
+ * Pass `jar` to keep the IdP's cookies (its session) across calls.
+ */
+export async function signInAtIdp(
+  authorizeUrl: string,
+  sub: string,
+  jar = new Map<string, string>(),
+): Promise<URL> {
+  const go = async (url: string, init: RequestInit = {}) =>
+    (await idpRequest(jar, url, init)).location;
 
   const interaction = await go(authorizeUrl);
   expect(interaction).toBeDefined();
@@ -122,4 +134,23 @@ export async function login(app: FastifyInstance, sub = 'admin'): Promise<string
   );
   expect(session).toBeDefined();
   return `${session![0]}=${session![1]}`;
+}
+
+/**
+ * Plays the browser at the IdP's end-session endpoint: confirms the logout (which the mock's
+ * page does by script) and returns where the IdP redirects back to.
+ */
+export async function logoutAtIdp(logoutUrl: string, jar: Map<string, string>) {
+  const { res } = await idpRequest(jar, logoutUrl);
+  expect(res.status).toBe(200);
+  const html = await res.text();
+  const action = /action="([^"]+)"/.exec(html)?.[1];
+  const xsrf = /name="xsrf" value="([^"]+)"/.exec(html)?.[1];
+  expect(action && xsrf).toBeTruthy();
+  const { location } = await idpRequest(jar, new URL(action!, logoutUrl).href, {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ xsrf: xsrf!, logout: 'yes' }).toString(),
+  });
+  return location;
 }

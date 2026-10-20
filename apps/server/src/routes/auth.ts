@@ -132,9 +132,9 @@ export async function registerAuth(
     const callbackUrl = new URL(oidc.redirectUri);
     callbackUrl.search = new URL(req.url, callbackUrl).search;
 
-    let claims;
+    let claims, idToken;
     try {
-      claims = await oidc.finish(callbackUrl, state);
+      ({ claims, idToken } = await oidc.finish(callbackUrl, state));
     } catch (err) {
       req.log.warn({ err }, 'OIDC login failed');
       return reply.redirect(LOGIN_FAILED);
@@ -150,15 +150,25 @@ export async function registerAuth(
       ...(typeof claims.email === 'string' ? { email: claims.email } : {}),
       ...(typeof claims.name === 'string' ? { name: claims.name } : {}),
       claims: { ...claims },
+      idToken,
     });
     req.log.info({ sub: claims.sub }, 'login');
     return reply.redirect(state.returnTo);
   });
 
-  // POST only, and the cookie is SameSite=Lax, so other sites can't log users out.
+  // POST only, and the cookie is SameSite=Lax, so other sites can't log users out. When the IdP
+  // supports RP-initiated logout, the browser goes there next to end the IdP's session too;
+  // otherwise the next sign-in on a shared machine would silently reuse it.
   app.post('/auth/logout', async (req, reply) => {
-    await sessions.end(req, reply);
-    return reply.code(204).send();
+    const idToken = await sessions.end(req, reply);
+    let redirectTo;
+    try {
+      redirectTo = await oidc.endSessionUrl(idToken);
+    } catch (err) {
+      // Warden's session is gone either way; the IdP's may outlive it.
+      req.log.warn({ err }, 'could not build the IdP logout URL');
+    }
+    return redirectTo ? { redirectTo: redirectTo.href } : reply.code(204).send();
   });
 
   app.get('/api/me', async (req) => {

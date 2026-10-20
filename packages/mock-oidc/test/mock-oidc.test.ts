@@ -220,4 +220,23 @@ describe('mock OIDC provider', () => {
     const { interaction } = await startLogin(go);
     expect(new URL(interaction).pathname).toMatch(/^\/interaction\//);
   });
+
+  it('can leave out RP-initiated logout, like IdPs without it', async () => {
+    const plain = await startMockOidc({
+      clients: [{ clientId: CLIENT_ID, clientSecret: CLIENT_SECRET, redirectUris: [REDIRECT_URI] }],
+      endSession: false,
+    });
+    try {
+      const plainConfig = await oidc.discovery(
+        new URL(plain.issuer),
+        CLIENT_ID,
+        CLIENT_SECRET,
+        undefined,
+        { execute: [oidc.allowInsecureRequests] },
+      );
+      expect(plainConfig.serverMetadata().end_session_endpoint).toBeUndefined();
+    } finally {
+      await plain.close();
+    }
+  });
 });

@@ -39,9 +39,11 @@ export function UserMenu() {
   const email = user?.email && user.email !== name ? user.email : undefined;
 
   const onLogout = async () => {
-    await logout();
+    const idpLogout = await logout();
     queryClient.clear();
-    await navigate('/login', { replace: true });
+    // The IdP sends the browser back to Warden, which then shows the login page.
+    if (idpLogout) window.location.assign(idpLogout);
+    else await navigate('/login', { replace: true });
   };
 
   return (

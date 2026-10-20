@@ -20,6 +20,8 @@ export interface NewSession {
   name?: string;
   /** ID token claims, kept for role resolution. */
   claims: Record<string, unknown>;
+  /** The raw ID token, for `id_token_hint` at logout. */
+  idToken?: string;
 }
 
 export interface Session {
@@ -37,9 +39,10 @@ const live = ({ idleSeconds, absoluteSeconds }: SessionTimeouts) =>
 
 export async function insertSession(db: Database, session: NewSession): Promise<void> {
   await sql`
-    insert into ${SESSIONS} (token_hash, subject, email, name, claims)
+    insert into ${SESSIONS} (token_hash, subject, email, name, claims, id_token)
     values (${session.tokenHash}, ${session.subject}, ${session.email ?? null},
-            ${session.name ?? null}, ${JSON.stringify(session.claims)}::jsonb)`.execute(db);
+            ${session.name ?? null}, ${JSON.stringify(session.claims)}::jsonb,
+            ${session.idToken ?? null})`.execute(db);
 }
 
 /** Return the session if it is still live and mark it as just used; otherwise `undefined`. */
@@ -56,8 +59,18 @@ export async function touchSession(
   return rows[0];
 }
 
-export async function deleteSession(db: Database, tokenHash: Buffer): Promise<void> {
-  await sql`delete from ${SESSIONS} where token_hash = ${tokenHash}`.execute(db);
+/**
+ * Delete a session, live or expired. Returns what logout needs from it, or `undefined` if there
+ * was no such session.
+ */
+export async function deleteSession(
+  db: Database,
+  tokenHash: Buffer,
+): Promise<{ idToken: string | null } | undefined> {
+  const { rows } = await sql<{ idToken: string | null }>`
+    delete from ${SESSIONS} where token_hash = ${tokenHash}
+    returning id_token as "idToken"`.execute(db);
+  return rows[0];
 }
 
 /** Remove sessions that can no longer be used. Returns how many were removed. */

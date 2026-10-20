@@ -67,7 +67,16 @@ export function useCurrentUser() {
   });
 }
 
-export async function logout(): Promise<void> {
+/**
+ * End the session. Returns the IdP's logout URL to send the browser to when the IdP supports
+ * it, so its session ends too; otherwise `undefined`.
+ */
+export async function logout(): Promise<string | undefined> {
   // Best effort: the session is gone either way once we land on the login page.
-  await fetch(LOGOUT_URL, { method: 'POST', credentials: 'same-origin' }).catch(() => undefined);
+  const res = await fetch(LOGOUT_URL, { method: 'POST', credentials: 'same-origin' }).catch(
+    () => undefined,
+  );
+  if (res?.status !== 200) return undefined;
+  const body = (await res.json().catch(() => undefined)) as { redirectTo?: unknown } | undefined;
+  return typeof body?.redirectTo === 'string' ? body.redirectTo : undefined;
 }
