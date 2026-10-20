@@ -1,5 +1,5 @@
 import { loadConfig } from '@wardenhq/config';
-import { resolveSchema } from '@wardenhq/core';
+import { resolvePolicy, resolveSchema } from '@wardenhq/core';
 import { createDatabase, introspect, migrate, pendingMigrations } from '@wardenhq/pg-adapter';
 import { buildApp, type AppOptions } from './app.js';
 import { createOidcClient } from './auth/oidc.js';
@@ -58,7 +58,9 @@ export async function createWarden({
       }
     }
     const model = await introspect(pool, { schemas: config.schemas });
-    const { schema, warnings } = resolveSchema(model, config);
+    const { schema, warnings: schemaWarnings } = resolveSchema(model, config);
+    const { policy, warnings: policyWarnings } = resolvePolicy(schema, config);
+    const warnings = [...schemaWarnings, ...policyWarnings];
 
     const auth = {
       sessionSecret: authSettings.sessionSecret,
@@ -66,7 +68,7 @@ export async function createWarden({
       oidc: createOidcClient(authSettings),
       ...(config.access ? { access: config.access } : {}),
     };
-    const app = await buildApp({ schema, db, auth, logger, ...(webDir ? { webDir } : {}) });
+    const app = await buildApp({ schema, db, policy, auth, logger, ...(webDir ? { webDir } : {}) });
     app.addHook('onClose', close);
     logIdleError = (err) => app.log.error({ err }, 'idle database connection error');
 
