@@ -1,10 +1,12 @@
 import {
+  ACCESS_AUDIT_ACTIONS,
   auditDiff,
   encodeRecordId,
   projectAuditEntry,
   type AuditEntry,
   type Entity,
   type ExportDetails,
+  type RevokeSessionsDetails,
 } from '@wardenhq/core';
 import { sql, type Expression, type SqlBool } from 'kysely';
 import type { Database } from './database.js';
@@ -109,6 +111,11 @@ export interface AuditQuery {
    * (such as an `updated_at` trigger) don't count.
    */
   visible: Record<string, readonly string[]>;
+  /**
+   * Also return role assignment and session revocation entries (`ACCESS_AUDIT_ACTIONS`), in
+   * full. Only for callers with `admin: [audit]`.
+   */
+  includeAccessEntries?: boolean;
   entity?: string;
   recordId?: string;
   /** Case-insensitive substring of the actor's email or subject. */
@@ -142,25 +149,40 @@ interface AuditRow {
   before: Record<string, unknown> | null;
   after: Record<string, unknown> | null;
   diff: AuditEntry['diff'] | null;
-  details: ExportDetails | null;
+  details: ExportDetails | { sessions: number; email?: string } | null;
+  primary_key: Record<string, unknown> | null;
   written: string[] | null;
 }
 
+const accessEntry = sql<SqlBool>`(a.entity, a.action) in (${sql.join(
+  Object.entries(ACCESS_AUDIT_ACTIONS).flatMap(([entity, actions]) =>
+    actions.map((action) => sql`(${entity}, ${action})`),
+  ),
+)})`;
+
+/** A `revoke_sessions` entry keeps the user's subject as its primary key. */
+const revokeDetails = (row: AuditRow): RevokeSessionsDetails => ({
+  subject: String(row.primary_key?.subject ?? ''),
+  ...(row.details as { sessions: number; email?: string }),
+});
+
 /** Audit entries matching `query`, newest first. */
 export async function listAuditEntries(db: Database, query: AuditQuery): Promise<AuditPage> {
-  const { visible, entity, recordId, actor, action, from, to, before, limit } = query;
+  const { visible, includeAccessEntries, entity, recordId, actor, action } = query;
+  const { from, to, before, limit } = query;
   const fields = sql`${JSON.stringify(visible)}::jsonb`;
-  const conditions: Expression<SqlBool>[] = [
-    sql<SqlBool>`${fields} ? a.entity`,
-    // The case keeps jsonb_object_keys away from diffs that aren't objects. An update counts only
-    // the fields it set; entries from before those were recorded count every changed field.
-    sql<SqlBool>`case
+  const entityEntry = sql<SqlBool>`(${fields} ? a.entity and
+    -- The case keeps jsonb_object_keys away from diffs that aren't objects. An update counts only
+    -- the fields it set; entries from before those were recorded count every changed field.
+    case
       when a.diff is null or jsonb_typeof(a.diff) <> 'object' or a.diff = '{}'::jsonb then true
       else exists (
         select from jsonb_object_keys(a.diff) as k (field)
         where (${fields} -> a.entity) ? k.field
           and (a.action <> 'update' or a.written is null or k.field = any (a.written)))
-    end`,
+    end)`;
+  const conditions: Expression<SqlBool>[] = [
+    includeAccessEntries ? sql<SqlBool>`(${entityEntry} or ${accessEntry})` : entityEntry,
   ];
   if (entity !== undefined) conditions.push(sql<SqlBool>`a.entity = ${entity}`);
   if (recordId !== undefined) conditions.push(sql<SqlBool>`a.record_id = ${recordId}`);
@@ -178,33 +200,34 @@ export async function listAuditEntries(db: Database, query: AuditQuery): Promise
   const { rows } = await sql<AuditRow>`
     select a.id::text as id, to_json(a.occurred_at) #>> '{}' as occurred_at, a.request_id,
            a.actor_subject, a.actor_email, a.actor_roles, a.action, a.entity, a.record_id,
-           a.reason, a.before, a.after, a.diff, a.details, a.written
+           a.reason, a.before, a.after, a.diff, a.details, a.primary_key, a.written
     from ${sql.id(WARDEN_SCHEMA, 'audit_log')} as a
     where ${sql.join(conditions, sql` and `)}
     order by a.id desc
     limit ${limit + 1}`.execute(db);
 
   return {
-    entries: rows.slice(0, limit).map((row) =>
-      projectAuditEntry(
-        {
-          id: row.id,
-          occurredAt: row.occurred_at,
-          requestId: row.request_id,
-          actor: { subject: row.actor_subject, email: row.actor_email, roles: row.actor_roles },
-          action: row.action,
-          entity: row.entity,
-          recordId: row.record_id,
-          reason: row.reason,
-          before: row.before,
-          after: row.after,
-          diff: row.diff ?? {},
-          details: row.details,
-        },
-        visible[row.entity] ?? [],
-        row.written,
-      ),
-    ),
+    entries: rows.slice(0, limit).map((row) => {
+      const entry: AuditEntry = {
+        id: row.id,
+        occurredAt: row.occurred_at,
+        requestId: row.request_id,
+        actor: { subject: row.actor_subject, email: row.actor_email, roles: row.actor_roles },
+        action: row.action,
+        entity: row.entity,
+        recordId: row.record_id,
+        reason: row.reason,
+        before: row.before,
+        after: row.after,
+        diff: row.diff ?? {},
+        details: row.details as ExportDetails | null,
+      };
+      // An entity's entry, or (only when asked for) an access entry, which is shown in full.
+      if (Object.hasOwn(visible, row.entity)) {
+        return projectAuditEntry(entry, visible[row.entity]!, row.written);
+      }
+      return row.action === 'revoke_sessions' ? { ...entry, details: revokeDetails(row) } : entry;
+    }),
     hasMore: rows.length > limit,
   };
 }

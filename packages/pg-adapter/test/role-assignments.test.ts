@@ -5,6 +5,7 @@ import {
   assignedRoles,
   assignRole,
   createDatabase,
+  listAuditEntries,
   listRoleAssignments,
   migrate,
   unassignRole,
@@ -70,6 +71,31 @@ describe('role assignments', () => {
         assignedAt: { from: null, to: assigned?.assignedAt },
       },
     });
+  });
+
+  it('lists the audit entries only when access entries are asked for', async () => {
+    // Even with a visible entity that happens to share a field name.
+    const query = { visible: { users: ['email', 'role'] }, limit: 50 };
+    expect((await listAuditEntries(handle.db, query)).entries).toEqual([]);
+    const { entries } = await listAuditEntries(handle.db, { ...query, includeAccessEntries: true });
+    expect(entries.map((e) => [e.action, e.after?.role])).toEqual([
+      ['assign', 'admin'],
+      ['assign', 'ops'],
+    ]);
+    // Shown in full: these aren't an entity's fields, so nothing is projected away.
+    expect(Object.keys(entries[0]!.after!).sort()).toEqual([
+      'assignedAt',
+      'assignedBy',
+      'email',
+      'role',
+    ]);
+    // Other entries under warden.* entities stay out.
+    await sql`insert into warden.audit_log (actor_subject, action, entity, diff)
+              values ('x', 'acknowledge', 'warden.schema_snapshots', '{}'),
+                     ('x', 'update', 'warden.sessions', '{}')`.execute(handle.db);
+    expect(
+      (await listAuditEntries(handle.db, { ...query, includeAccessEntries: true })).entries,
+    ).toHaveLength(2);
   });
 
   it('unassigns and audits it, once', async () => {

@@ -29,7 +29,7 @@ export { adminAreas } from './admin.js';
 export type * from './schema-drift.js';
 export { diffSchema } from './schema-drift.js';
 export type * from './audit.js';
-export { auditDiff, filterFields, projectAuditEntry } from './audit.js';
+export { ACCESS_AUDIT_ACTIONS, auditDiff, filterFields, projectAuditEntry } from './audit.js';
 export type * from './saved-view.js';
 export { VIEW_LIMITS, validateViewState, viewName } from './saved-view.js';
 export { csvCell, csvHeader, csvRow } from './csv.js';

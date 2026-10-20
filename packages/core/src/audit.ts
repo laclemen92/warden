@@ -47,7 +47,26 @@ export interface AuditEntry {
   after: Record<string, unknown> | null;
   diff: AuditDiff;
   /** For actions that don't change a row, what they did. */
-  details: ExportDetails | null;
+  details: ExportDetails | RevokeSessionsDetails | null;
+}
+
+/**
+ * Entries about access rather than a table's rows, by the entity they're filed under: role
+ * assignments (whose before and after are the assignment) and session revocations. Only the
+ * audit log search shows them, to users with `admin: [audit]`.
+ */
+export const ACCESS_AUDIT_ACTIONS = {
+  'warden.role_assignments': ['assign', 'unassign'],
+  'warden.sessions': ['revoke_sessions'],
+} as const satisfies Record<string, readonly string[]>;
+
+/** What a `revoke_sessions` entry did: whose sessions it deleted, and how many. */
+export interface RevokeSessionsDetails {
+  /** OIDC subject of the user signed out. */
+  subject: string;
+  /** Their email, from the deleted sessions; absent on entries written before it was kept. */
+  email?: string;
+  sessions: number;
 }
 
 /** What an export included, recorded as the entry's details. */
@@ -93,7 +112,9 @@ export function projectAuditEntry(
     before: entry.before && pick(entry.before, visible),
     after: entry.after && pick(entry.after, visible),
     diff: pick(entry.diff, visible),
-    details: entry.details && projectDetails(entry.details, visible),
+    // Entities' entries only ever have export details.
+    details:
+      entry.details && 'columns' in entry.details ? projectDetails(entry.details, visible) : null,
   };
 }
 

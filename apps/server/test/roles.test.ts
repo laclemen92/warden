@@ -1,4 +1,5 @@
 import { fileURLToPath } from 'node:url';
+import type { AuditEntry } from '@wardenhq/core';
 import type { MockOidc } from '@wardenhq/mock-oidc';
 import { readExampleSql, startPostgres, type TestDatabase } from '@wardenhq/testing';
 import pg from 'pg';
@@ -239,7 +240,7 @@ describe('roles page API', () => {
         actor_subject: 'admin',
         action: 'revoke_sessions',
         primary_key: { subject: 'editor' },
-        details: { sessions: 3 },
+        details: { sessions: 3, email: 'editor@example.com' },
       },
     ]);
     editor = await login(app, 'editor');
@@ -306,5 +307,74 @@ describe('roles page API', () => {
     expect((await assign({ email: 'a@example.com', role: 'ops' }, '')).statusCode).toBe(401);
     expect((await unassign({ email: 'a@example.com', role: 'ops' }, '')).statusCode).toBe(401);
     expect((await revoke({ subject: 'admin' }, '')).statusCode).toBe(401);
+  });
+});
+
+describe('access entries in the audit log', () => {
+  const search = async (cookie: string, query: Record<string, string> = {}) =>
+    app.inject({
+      method: 'GET',
+      url: `/api/audit?${new URLSearchParams({ limit: '200', ...query })}`,
+      headers: { cookie },
+    });
+  const items = async (query: Record<string, string> = {}) => {
+    const res = await search(admin, query);
+    expect(res.statusCode, res.body).toBe(200);
+    return res.json<{ items: AuditEntry[] }>().items;
+  };
+
+  it('shows audit admins role assignments and session revocations, filterable by action', async () => {
+    const assigned = await items({ action: 'assign' });
+    expect(assigned.length).toBeGreaterThan(0);
+    expect(assigned[assigned.length - 1]).toMatchObject({
+      action: 'assign',
+      entity: 'warden.role_assignments',
+      actor: { subject: 'admin', email: 'admin@example.com' },
+      before: null,
+      after: { email: 'viewer@example.com', role: 'ops', assignedBy: 'admin' },
+    });
+    const unassigned = await items({ action: 'unassign' });
+    expect(unassigned[unassigned.length - 1]).toMatchObject({
+      entity: 'warden.role_assignments',
+      before: { email: 'viewer@example.com', role: 'ops' },
+      after: null,
+    });
+    expect(await items({ action: 'revoke_sessions' })).toEqual([
+      expect.objectContaining({
+        entity: 'warden.sessions',
+        actor: expect.objectContaining({ subject: 'admin' }),
+        details: { subject: 'editor', email: 'editor@example.com', sessions: 3 },
+      }),
+    ]);
+
+    // Unfiltered, they're listed with everything else; filtered to a table, they aren't.
+    const all = (await items()).map((e) => e.action);
+    expect(all).toEqual(expect.arrayContaining(['assign', 'unassign', 'revoke_sessions']));
+    expect(await items({ entity: 'users' })).toEqual([]);
+  });
+
+  it('shows revocations recorded before the email was kept', async () => {
+    await sqlPool.query(
+      `insert into warden.audit_log (actor_subject, action, entity, primary_key, details)
+       values ('admin', 'revoke_sessions', 'warden.sessions', '{"subject": "old"}', '{"sessions": 1}')`,
+    );
+    expect((await items({ action: 'revoke_sessions' }))[0]!.details).toEqual({
+      subject: 'old',
+      sessions: 1,
+    });
+  });
+
+  it('never shows them to anyone else', async () => {
+    for (const cookie of [viewer, editor]) {
+      expect((await search(cookie)).statusCode).toBe(404);
+      expect((await search(cookie, { action: 'assign' })).statusCode).toBe(404);
+    }
+    // Nor do they appear as a record's history, as they belong to no entity.
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/entities/warden.role_assignments/1/history',
+      headers: { cookie: admin },
+    });
+    expect(res.statusCode).toBe(404);
   });
 });
