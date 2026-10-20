@@ -34,6 +34,10 @@ export const routes: RouteObject[] = [
             element: page(async () => (await import('@/pages/schema-drift-page')).SchemaDriftPage),
           },
           {
+            path: 'admin/audit',
+            element: page(async () => (await import('@/pages/audit-log-page')).AuditLogPage),
+          },
+          {
             path: '*',
             element: page(async () => (await import('@/pages/not-found-page')).NotFoundPage),
           },

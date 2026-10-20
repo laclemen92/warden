@@ -1,5 +1,7 @@
-import { auditDiff, encodeRecordId } from '@wardenhq/core';
-import { sql } from 'kysely';
+import { auditDiff, encodeRecordId, projectAuditEntry, type AuditEntry } from '@wardenhq/core';
+import { sql, type Expression, type SqlBool } from 'kysely';
+import type { Database } from './database.js';
+import { escapeLike } from './filter.js';
 import { WARDEN_SCHEMA } from './introspect.js';
 import type { WriteHook } from './writes.js';
 
@@ -51,5 +53,104 @@ export function auditHook({ actor, requestId, reason }: AuditContext): WriteHook
     } catch (err) {
       throw new AuditWriteError(err);
     }
+  };
+}
+
+export interface AuditQuery {
+  /**
+   * Per entity key, the fields the caller can read. Only these entities' entries are returned,
+   * cut down to these fields, and an entry whose changes are all to other fields is left out, so
+   * fields the caller can't see leave no trace.
+   */
+  visible: Record<string, readonly string[]>;
+  entity?: string;
+  recordId?: string;
+  /** Case-insensitive substring of the actor's email or subject. */
+  actor?: string;
+  action?: string;
+  /** Inclusive lower bound on `occurred_at`, as a timestamp Postgres accepts. */
+  from?: string;
+  /** Exclusive upper bound on `occurred_at`. */
+  to?: string;
+  /** Only entries older than this entry id (the previous page's last id). */
+  before?: string;
+  limit: number;
+}
+
+export interface AuditPage {
+  entries: AuditEntry[];
+  hasMore: boolean;
+}
+
+interface AuditRow {
+  id: string;
+  occurred_at: string;
+  request_id: string | null;
+  actor_subject: string;
+  actor_email: string | null;
+  actor_roles: string[];
+  action: string;
+  entity: string;
+  record_id: string | null;
+  reason: string | null;
+  before: Record<string, unknown> | null;
+  after: Record<string, unknown> | null;
+  diff: AuditEntry['diff'] | null;
+}
+
+/** Audit entries matching `query`, newest first. */
+export async function listAuditEntries(db: Database, query: AuditQuery): Promise<AuditPage> {
+  const { visible, entity, recordId, actor, action, from, to, before, limit } = query;
+  const fields = sql`${JSON.stringify(visible)}::jsonb`;
+  const conditions: Expression<SqlBool>[] = [
+    sql<SqlBool>`${fields} ? a.entity`,
+    // The case keeps jsonb_object_keys away from diffs that aren't objects.
+    sql<SqlBool>`case
+      when a.diff is null or jsonb_typeof(a.diff) <> 'object' or a.diff = '{}'::jsonb then true
+      else exists (select from jsonb_object_keys(a.diff) as k (field) where (${fields} -> a.entity) ? k.field)
+    end`,
+  ];
+  if (entity !== undefined) conditions.push(sql<SqlBool>`a.entity = ${entity}`);
+  if (recordId !== undefined) conditions.push(sql<SqlBool>`a.record_id = ${recordId}`);
+  if (actor !== undefined) {
+    const pattern = `%${escapeLike(actor)}%`;
+    conditions.push(
+      sql<SqlBool>`(a.actor_email ilike ${pattern} or a.actor_subject ilike ${pattern})`,
+    );
+  }
+  if (action !== undefined) conditions.push(sql<SqlBool>`a.action = ${action}`);
+  if (from !== undefined) conditions.push(sql<SqlBool>`a.occurred_at >= ${from}::timestamptz`);
+  if (to !== undefined) conditions.push(sql<SqlBool>`a.occurred_at < ${to}::timestamptz`);
+  if (before !== undefined) conditions.push(sql<SqlBool>`a.id < ${before}::bigint`);
+
+  const { rows } = await sql<AuditRow>`
+    select a.id::text as id, to_json(a.occurred_at) #>> '{}' as occurred_at, a.request_id,
+           a.actor_subject, a.actor_email, a.actor_roles, a.action, a.entity, a.record_id,
+           a.reason, a.before, a.after, a.diff
+    from ${sql.id(WARDEN_SCHEMA, 'audit_log')} as a
+    where ${sql.join(conditions, sql` and `)}
+    order by a.id desc
+    limit ${limit + 1}`.execute(db);
+
+  return {
+    entries: rows.slice(0, limit).map((row) =>
+      projectAuditEntry(
+        {
+          id: row.id,
+          occurredAt: row.occurred_at,
+          requestId: row.request_id,
+          actor: { subject: row.actor_subject, email: row.actor_email, roles: row.actor_roles },
+          action: row.action,
+          entity: row.entity,
+          recordId: row.record_id,
+          reason: row.reason,
+          before: row.before,
+          after: row.after,
+          diff: row.diff ?? {},
+        },
+        visible[row.entity] ?? [],
+      ),
+    ),
+    hasMore: rows.length > limit,
   };
 }

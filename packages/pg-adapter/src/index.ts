@@ -19,7 +19,14 @@ export {
   type VersionCheck,
   type WriteResult,
 } from './writes.js';
-export { AuditWriteError, auditHook, type AuditContext } from './audit.js';
+export {
+  AuditWriteError,
+  auditHook,
+  listAuditEntries,
+  type AuditContext,
+  type AuditPage,
+  type AuditQuery,
+} from './audit.js';
 export { mapWriteError, type WriteErrorResult } from './errors.js';
 export { migrate, MIGRATIONS, pendingMigrations, type Migration } from './migrate.js';
 export {

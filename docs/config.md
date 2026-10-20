@@ -198,7 +198,7 @@ Roles grant actions on tables. Create, update, and delete are denied unless a ro
 | Key                           | Type                                         | Default |
 | ----------------------------- | -------------------------------------------- | ------- |
 | `roles.<role>.grants.<table>` | list of `read`, `create`, `update`, `delete` | None    |
-| `roles.<role>.admin`          | list of `schema`                             | None    |
+| `roles.<role>.admin`          | list of `schema`, `audit`                    | None    |
 
 Each grant key is a table (`users`, `billing.invoices`) or `*` for every exposed table. A user with several roles gets every action any of them grants. A role name that isn't defined here grants nothing.
 
@@ -230,6 +230,7 @@ Here `ops` may update users and create or update companies. Nobody may create or
 **`admin`** lists the Warden administration areas the role may use:
 
 - `schema`: the [schema drift](#schema-drift) page. It names every table and column in the database, including ones config hides, so give it only to people who may see the whole schema.
+- `audit`: the [audit log](#audit-log) page, which searches every change made through Warden.
 
 Users get roles from [`access`](#access) when they sign in. The API enforces every rule; the UI only hides controls a user can't use. To restrict individual columns by role, see [field-level rules](#field-level-rules).
 
@@ -281,6 +282,15 @@ The page also shows a YAML snippet for the new tables and columns. It writes dow
 
 The page reflects the schema as of Warden's last start. **Acknowledge** makes that schema the new baseline and records the change in the [audit log](database.md#the-audit-log).
 
+## Audit log
+
+Every create, update, and delete made through Warden is recorded in the [audit log](database.md#the-audit-log). Entries are shown in two places:
+
+- **History** on a record lists its changes, newest first, with who made each one, why, and the before and after values. Anyone who may read the record sees it.
+- **Audit log** in the sidebar searches every entry by actor (email or subject), entity, action, and date range. Only users with a role that has `admin: [audit]` can open it.
+
+Both show an entry only for entities the user may read now, and only the fields they may read now: columns since hidden by config or restricted by a [field-level rule](#field-level-rules) are left out, and an update that changed only such fields isn't listed. Schema drift acknowledgements are recorded in the log but not shown.
+
 ## Full example
 
 ```yaml
@@ -326,7 +336,7 @@ roles:
       companies: [read, create, update]
       orders: [update]
   dba:
-    admin: [schema]
+    admin: [schema, audit]
   finance:
     grants:
       billing.invoices: [read, update]

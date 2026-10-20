@@ -5,6 +5,7 @@ import fastifyStatic from '@fastify/static';
 import type { EffectiveSchema, Policy } from '@wardenhq/core';
 import type { Database } from '@wardenhq/pg-adapter';
 import Fastify, { type FastifyServerOptions } from 'fastify';
+import { registerAuditRoutes } from './routes/audit.js';
 import { registerAuth, type AuthOptions } from './routes/auth.js';
 import { registerCapabilityRoutes } from './routes/capabilities.js';
 import { registerEntityRoutes } from './routes/entities.js';
@@ -67,6 +68,7 @@ export async function buildApp({
     registerPolicy(app, schema, policy);
     registerEntityRoutes(app, schema, db, policy, views);
     registerCapabilityRoutes(app, schema, policy);
+    registerAuditRoutes(app, { db, policy, views, roles: auth?.roles ?? {} });
   }
   if (drift && db) registerSchemaDriftRoutes(app, { ...drift, db });
 

@@ -2,6 +2,7 @@ import { useState, type MouseEvent } from 'react';
 import type { Entity, Field, Relation } from '@wardenhq/core';
 import { Trash2 } from 'lucide-react';
 import { Link, useNavigate, useParams } from 'react-router';
+import { AuditEntryItem } from '@/components/audit-entry';
 import { displayText, FieldValue } from '@/components/field-value';
 import {
   AlertDialog,
@@ -18,6 +19,7 @@ import { Button, buttonVariants } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { ApiError } from '@/lib/api';
+import { useRecordHistory } from '@/lib/audit';
 import { useCan } from '@/lib/capabilities';
 import {
   recordPath,
@@ -81,42 +83,84 @@ function RecordView({ entity, id, entities }: { entity: Entity; id: string; enti
         <DeleteRecord entity={entity} record={{ ...record, id }} />
       </div>
 
-      <dl className="grid gap-x-6 gap-y-3 sm:grid-cols-[minmax(8rem,max-content)_1fr]">
-        {entity.fields.map((field) => (
-          <div key={field.name} className="contents">
-            <dt className="text-sm font-medium text-muted-foreground" title={field.comment}>
-              {field.label}
-            </dt>
-            <dd className="min-w-0 text-sm">
-              <FieldCell entity={entity} field={field} row={row} entities={entities} />
-            </dd>
-          </div>
-        ))}
-      </dl>
+      <Tabs defaultValue="details">
+        <TabsList>
+          <TabsTrigger value="details">Details</TabsTrigger>
+          <TabsTrigger value="history">History</TabsTrigger>
+        </TabsList>
+        <TabsContent value="details" className="space-y-8 pt-4">
+          <dl className="grid gap-x-6 gap-y-3 sm:grid-cols-[minmax(8rem,max-content)_1fr]">
+            {entity.fields.map((field) => (
+              <div key={field.name} className="contents">
+                <dt className="text-sm font-medium text-muted-foreground" title={field.comment}>
+                  {field.label}
+                </dt>
+                <dd className="min-w-0 text-sm">
+                  <FieldCell entity={entity} field={field} row={row} entities={entities} />
+                </dd>
+              </div>
+            ))}
+          </dl>
 
-      {children.length > 0 && (
-        <section aria-label="Related records" className="space-y-3">
-          <h2 className="text-lg font-semibold">Related</h2>
-          <Tabs defaultValue={tabValue(children[0]!)}>
-            <TabsList className="h-auto flex-wrap">
-              {children.map((relation) => (
-                <TabsTrigger key={tabValue(relation)} value={tabValue(relation)}>
-                  {childLabel(relation, children, entities)}
-                </TabsTrigger>
-              ))}
-            </TabsList>
-            {children.map((relation) => {
-              const child = entities.get(relation.entity);
-              return (
-                child && (
-                  <TabsContent key={tabValue(relation)} value={tabValue(relation)}>
-                    <ChildList relation={relation} child={child} row={row} />
-                  </TabsContent>
-                )
-              );
-            })}
-          </Tabs>
-        </section>
+          {children.length > 0 && (
+            <section aria-label="Related records" className="space-y-3">
+              <h2 className="text-lg font-semibold">Related</h2>
+              <Tabs defaultValue={tabValue(children[0]!)}>
+                <TabsList className="h-auto flex-wrap">
+                  {children.map((relation) => (
+                    <TabsTrigger key={tabValue(relation)} value={tabValue(relation)}>
+                      {childLabel(relation, children, entities)}
+                    </TabsTrigger>
+                  ))}
+                </TabsList>
+                {children.map((relation) => {
+                  const child = entities.get(relation.entity);
+                  return (
+                    child && (
+                      <TabsContent key={tabValue(relation)} value={tabValue(relation)}>
+                        <ChildList relation={relation} child={child} row={row} />
+                      </TabsContent>
+                    )
+                  );
+                })}
+              </Tabs>
+            </section>
+          )}
+        </TabsContent>
+        <TabsContent value="history" className="pt-4">
+          <RecordHistory entity={entity} id={id} />
+        </TabsContent>
+      </Tabs>
+    </div>
+  );
+}
+
+/** The record's audit entries, newest first. */
+function RecordHistory({ entity, id }: { entity: Entity; id: string }) {
+  const { data, isPending, isError, hasNextPage, fetchNextPage, isFetchingNextPage } =
+    useRecordHistory(entity, id);
+
+  if (isPending) return <Skeleton className="h-24 w-full" />;
+  if (isError) return <p className="text-sm text-muted-foreground">Couldn't load history.</p>;
+
+  const entries = data.pages.flatMap((p) => p.items);
+  if (entries.length === 0) {
+    return <p className="text-sm text-muted-foreground">No changes recorded.</p>;
+  }
+  return (
+    <div className="space-y-3">
+      {entries.map((entry) => (
+        <AuditEntryItem key={entry.id} entry={entry} entity={entity} />
+      ))}
+      {hasNextPage && (
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={isFetchingNextPage}
+          onClick={() => void fetchNextPage()}
+        >
+          {isFetchingNextPage ? 'Loading…' : 'Load more'}
+        </Button>
       )}
     </div>
   );
