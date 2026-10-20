@@ -130,6 +130,10 @@ describe('policy enforcement', () => {
       const res = await send(user, method, url, payload);
       if (allowed) {
         expect(res.statusCode, `${method} ${url}: ${res.body}`).toBe(status);
+      } else if (ALLOWED[entity]![user].length === 0) {
+        // An entity the user may do nothing with is as absent as a nonexistent one.
+        expect(res.statusCode, `${method} ${url}`).toBe(404);
+        if (method !== 'HEAD') expect(res.json()).toEqual(NOT_FOUND);
       } else {
         expect(res.statusCode, `${method} ${url}`).toBe(403);
         if (method !== 'HEAD') expect(res.json()).toEqual(FORBIDDEN);
@@ -144,7 +148,7 @@ describe('policy enforcement', () => {
       ['GET', '/api/entities/orders/does-not-exist'],
       ['POST', '/api/entities/orders', {}],
     ] as const) {
-      const res = await send('viewer', method, url, payload);
+      const res = await send('editor', method, url, payload);
       expect(res.statusCode, `${method} ${url}`).toBe(403);
     }
     // The same requests from someone allowed fail validation instead.
@@ -181,14 +185,55 @@ describe('policy enforcement', () => {
     }
   });
 
+  it('404s entities the user may do nothing with exactly like nonexistent ones', async () => {
+    for (const [user, entity] of [
+      ['viewer', 'orders'],
+      ['outsider', 'users'],
+      ['outsider', 'orders'],
+    ] as const) {
+      for (const action of ['read', 'create', 'update', 'delete'] as const) {
+        for (const [method, url, payload] of requests(entity, action)) {
+          const res = await send(user, method, url, payload);
+          const missing = await send(user, method, url.replace(entity, 'nope'), payload);
+          expect(res.statusCode, `${user} ${method} ${url}`).toBe(404);
+          expect(res.body).toBe(missing.body);
+        }
+      }
+    }
+  });
+
   it('applies the decoded route, not the raw URL', async () => {
-    expect((await send('viewer', 'GET', '/%61pi/entities/orders')).statusCode).toBe(403);
-    expect((await send('viewer', 'GET', '/api/entities/%6frders')).statusCode).toBe(403);
+    expect((await send('editor', 'GET', '/%61pi/entities/orders')).statusCode).toBe(403);
+    expect((await send('editor', 'GET', '/api/entities/%6frders')).statusCode).toBe(403);
   });
 
   it('still requires a session before the policy', async () => {
     const res = await app.inject({ method: 'GET', url: '/api/entities/users' });
     expect(res.statusCode).toBe(401);
+  });
+});
+
+describe('GET /api/schema', () => {
+  const schemaOf = async (user: User) =>
+    (await send(user, 'GET', '/api/schema')).json() as {
+      entities: { key: string; relations: { entity: string }[] }[];
+    };
+
+  it('lists only the entities the user may do something with', async () => {
+    expect((await schemaOf('viewer')).entities.map((e) => e.key)).toEqual(['users']);
+    // ops may update orders without reading them, so it still gets their form.
+    expect((await schemaOf('editor')).entities.map((e) => e.key).sort()).toEqual([
+      'orders',
+      'users',
+    ]);
+    expect(await schemaOf('outsider')).toEqual({ entities: [] });
+  });
+
+  it('prunes relations to entities the user can no longer see', async () => {
+    const users = (await schemaOf('viewer')).entities.find((e) => e.key === 'users')!;
+    expect(users.relations).toEqual([]);
+    const editorUsers = (await schemaOf('editor')).entities.find((e) => e.key === 'users')!;
+    expect(editorUsers.relations.map((r) => r.entity)).toEqual(['orders']);
   });
 });
 
@@ -198,7 +243,10 @@ describe('GET /api/capabilities', () => {
     expect(res.statusCode).toBe(200);
     const { entities } = res.json() as { entities: Record<string, { actions: Action[] }> };
     for (const [entity, byUser] of Object.entries(ALLOWED)) {
-      expect(entities[entity]).toEqual({ actions: byUser[user] });
+      // Entities the user may do nothing with aren't listed at all.
+      expect(entities[entity]).toEqual(
+        byUser[user].length > 0 ? { actions: byUser[user] } : undefined,
+      );
     }
     // The capabilities agree with what each route actually does.
     for (const [entity, { actions }] of Object.entries(entities)) {
@@ -206,15 +254,16 @@ describe('GET /api/capabilities', () => {
         for (const [method, url, payload] of requests(entity, action)) {
           const status = (await send(user, method, url, payload)).statusCode;
           expect(status === 403, `${user} ${method} ${url}`).toBe(!actions.includes(action));
+          expect(status, `${user} ${method} ${url}`).not.toBe(404);
         }
       }
     }
   });
 
-  it('leaves out hidden entities', async () => {
-    const { entities } = (await send('admin', 'GET', '/api/capabilities')).json();
+  it.each(USERS)('leaves out hidden entities and agrees with the schema for %s', async (user) => {
+    const { entities } = (await send(user, 'GET', '/api/capabilities')).json();
     expect(entities).not.toHaveProperty('companies');
-    const schema = (await send('admin', 'GET', '/api/schema')).json() as {
+    const schema = (await send(user, 'GET', '/api/schema')).json() as {
       entities: { key: string }[];
     };
     expect(Object.keys(entities).sort()).toEqual(schema.entities.map((e) => e.key).sort());
