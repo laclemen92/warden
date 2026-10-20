@@ -144,8 +144,9 @@ function createProvider(
         accountId: user.sub,
         claims: () => ({
           sub: user.sub,
-          email: user.email,
-          email_verified: true,
+          ...(user.email !== undefined
+            ? { email: user.email, email_verified: user.emailVerified ?? true }
+            : {}),
           name: user.name,
           groups: user.groups,
         }),
@@ -210,7 +211,7 @@ function loginPage(uid: string, users: readonly MockUser[]): string {
     .map(
       (user) => `<button type="submit" name="user" value="${escape(user.sub)}">
         <strong>${escape(user.name)}</strong>
-        <span>${escape(user.email)}</span>
+        <span>${escape(user.email ?? 'no email')}</span>
         <small>${user.groups.length ? escape(user.groups.join(', ')) : 'no groups'}</small>
       </button>`,
     )

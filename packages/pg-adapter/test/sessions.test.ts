@@ -56,6 +56,34 @@ describe('migrate', () => {
     expect(rows).toEqual([]);
   });
 
+  it('drops unverified emails stored on sessions before 0009', async () => {
+    const verified = [true, 'true'];
+    const unverified = [false, 'false', null, undefined];
+    const subjects = [...verified, ...unverified].map((v, i) => ({ subject: `m${i}`, v }));
+    for (const { subject, v } of subjects) {
+      await insertSession(handle.db, {
+        tokenHash: newHash(),
+        subject,
+        email: `${subject}@example.com`,
+        claims: { sub: subject, ...(v === undefined ? {} : { email_verified: v }) },
+      });
+    }
+    await sql`delete from warden.schema_migrations
+              where version = '0009_session_verified_email'`.execute(handle.db);
+    expect(await migrate(handle.db)).toEqual(['0009_session_verified_email']);
+
+    const { rows } = await sql<{ subject: string; email: string | null }>`
+      select subject, email from warden.sessions where subject like 'm%'
+      order by subject`.execute(handle.db);
+    expect(rows).toEqual(
+      subjects.map(({ subject }, i) => ({
+        subject,
+        email: i < verified.length ? `${subject}@example.com` : null,
+      })),
+    );
+    await sql`delete from warden.sessions where subject like 'm%'`.execute(handle.db);
+  });
+
   it("keeps Warden's own tables out of introspection", async () => {
     const model = await introspect(handle.pool, { schemas: ['public', 'warden'] });
     expect(model.tables.map((t) => `${t.schema}.${t.name}`)).toEqual(['public.widgets']);

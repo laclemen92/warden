@@ -253,12 +253,14 @@ function SignedInSection({ users }: { users: SignedInUser[] }) {
 
 function SignedInRow({ subject, email, name, sessions, lastSeenAt }: SignedInUser) {
   const revoke = useRevokeSessions();
-  const label = email ?? name ?? subject;
+  // Only a verified email or the subject identifies someone; a name is whatever they set.
+  const label = email ?? subject;
   return (
     <TableRow>
       <TableCell>
         <div className="font-mono">{label}</div>
         {label !== subject && <div className="text-xs text-muted-foreground">{subject}</div>}
+        {name && <div className="text-xs text-muted-foreground">{name}</div>}
       </TableCell>
       <TableCell className="text-muted-foreground">{sessions}</TableCell>
       <TableCell className="text-muted-foreground">{lastSeenAt}</TableCell>

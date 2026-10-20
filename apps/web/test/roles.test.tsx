@@ -44,7 +44,8 @@ const report: RolesReport = {
     {
       subject: 'sub-x',
       email: null,
-      name: null,
+      // Self-set at the IdP, so it never stands in for the unverified email the server dropped.
+      name: 'cfo@example.org',
       sessions: 1,
       lastSeenAt: '2026-10-20 07:00:00+00',
     },
@@ -221,8 +222,8 @@ describe('roles page', () => {
 
     const signedIn = await screen.findByRole('region', { name: 'Signed in' });
     expect(rowsOf(signedIn)).toEqual([
-      'sam@example.orgsub-sam22026-10-20 08:00:00+00Sign out everywhere',
-      'sub-x12026-10-20 07:00:00+00Sign out everywhere',
+      'sam@example.orgsub-samSam22026-10-20 08:00:00+00Sign out everywhere',
+      'sub-xcfo@example.org12026-10-20 07:00:00+00Sign out everywhere',
     ]);
 
     responses['GET /api/admin/roles'] = {

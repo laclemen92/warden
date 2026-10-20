@@ -47,8 +47,20 @@ export function assignmentEmail(
   access: AccessConfig | undefined,
   claims: Record<string, unknown>,
 ): string | undefined {
-  const email = verifiedEmail(claims, access?.requireVerifiedEmail ?? true);
+  const email = verifiedEmail(claims, access?.requireVerifiedEmail ?? true)?.toLowerCase();
   return email !== undefined && parseEmail(email) === email ? email : undefined;
+}
+
+/**
+ * The email to show for, and attribute actions to, a signed-in user, as the IdP sent it. Only a
+ * verified one (unless `requireVerifiedEmail` is off), so nobody can sign in as someone else's
+ * address and appear in the audit log as them; without it, the user is known by `sub`.
+ */
+export function sessionEmail(
+  access: AccessConfig | undefined,
+  claims: Record<string, unknown>,
+): string | undefined {
+  return verifiedEmail(claims, access?.requireVerifiedEmail ?? true) || undefined;
 }
 
 const MAX_EMAIL_LENGTH = 254;
@@ -72,11 +84,11 @@ function verifiedEmail(claims: Record<string, unknown>, requireVerified: boolean
   if (typeof email !== 'string') return undefined;
   // Some IdPs send the string "true"; anything else counts as unverified.
   if (requireVerified && verified !== true && verified !== 'true') return undefined;
-  return email.toLowerCase();
+  return email;
 }
 
 function emailDomain(claims: Record<string, unknown>, requireVerified: boolean) {
-  const email = verifiedEmail(claims, requireVerified);
+  const email = verifiedEmail(claims, requireVerified)?.toLowerCase();
   if (email === undefined) return undefined;
   const at = email.lastIndexOf('@');
   return at > 0 ? email.slice(at + 1) : undefined;

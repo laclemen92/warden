@@ -35,7 +35,7 @@ const oidc = await startMockOidc({
 });
 
 console.log(`Mock OIDC provider at ${oidc.issuer} (development only)`);
-console.log(`Users: ${oidc.users.map((u) => `${u.sub} <${u.email}>`).join(', ')}`);
+console.log(`Users: ${oidc.users.map((u) => `${u.sub} <${u.email ?? 'no email'}>`).join(', ')}`);
 
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   process.once(signal, () => void oidc.close().then(() => process.exit(0)));
