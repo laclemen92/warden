@@ -1,7 +1,9 @@
 import { z } from 'zod';
 import type { Entity } from './effective-schema.js';
-import { validateFilter, type Filter, type FilterError } from './filter.js';
-import { resolveSort } from './sort.js';
+import { filterFields } from './audit.js';
+import { filterSchema, validateFilter, type Filter, type FilterError } from './filter.js';
+import { isFieldReadable, type Policy } from './policy.js';
+import { parseSortFields, resolveSort } from './sort.js';
 
 /** A grid's filter, search, sort, and visible columns, as a saved view stores them. */
 export interface ViewState {
@@ -73,6 +75,30 @@ export function validateViewState(entity: Entity, input: unknown): ViewStateVali
   }
 
   return errors.length > 0 ? { ok: false, errors } : { ok: true, state };
+}
+
+/**
+ * Whether a stored view's state names a field that `roles` may not read because of `readableBy`.
+ * Such a view must not exist for them at all: even its name may describe the field. A view that
+ * is merely out of date (its field dropped or hidden for everyone) reveals nothing.
+ */
+export function namesRestrictedField(
+  policy: Policy,
+  roles: readonly string[],
+  entity: string,
+  state: unknown,
+): boolean {
+  const parsed = viewStateSchema.safeParse(state);
+  // Stored states were valid when saved; if one can't be read, assume the worst.
+  if (!parsed.success) return true;
+  const { filter, sort, columns } = parsed.data;
+  const fields = [...(columns ?? []), ...(sort ? parseSortFields(sort) : [])];
+  if (filter !== undefined) {
+    const result = filterSchema.safeParse(filter);
+    if (!result.success) return true;
+    fields.push(...filterFields(result.data));
+  }
+  return fields.some((field) => !isFieldReadable(policy, roles, entity, field));
 }
 
 const joinPath = (prefix: string, path: string) => (path ? `${prefix}.${path}` : prefix);

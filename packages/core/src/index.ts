@@ -19,7 +19,7 @@ export { decodeRecordId, encodeRecordId } from './record-id.js';
 export type * from './cursor.js';
 export { decodeCursor, encodeCursor } from './cursor.js';
 export type * from './policy.js';
-export { allowedActions, isAllowed, resolvePolicy, schemaFor } from './policy.js';
+export { allowedActions, isAllowed, isFieldReadable, resolvePolicy, schemaFor } from './policy.js';
 export type * from './validation.js';
 export { fieldSchema, recordSchema, toFieldErrors, validateRecord } from './validation.js';
 export { assignmentEmail, parseEmail, resolveRoles } from './roles.js';
@@ -37,7 +37,7 @@ export {
   projectAuditEntry,
 } from './audit.js';
 export type * from './saved-view.js';
-export { VIEW_LIMITS, validateViewState, viewName } from './saved-view.js';
+export { namesRestrictedField, VIEW_LIMITS, validateViewState, viewName } from './saved-view.js';
 export { csvCell, csvHeader, csvRow } from './csv.js';
 export { checkTimestamp } from './values.js';
 export type * from './actions.js';

@@ -1,6 +1,7 @@
 import { wardenConfigSchema } from '@wardenhq/config';
 import { describe, expect, it } from 'vitest';
 import {
+  namesRestrictedField,
   resolvePolicy,
   resolveSchema,
   schemaFor,
@@ -244,5 +245,35 @@ describe('schemaFor and entity actions', () => {
     const narrowed = schemaFor(schema, policy, ['ops']);
     expect(keys(narrowed)).toEqual(['users']);
     expect(fieldNames(entity(narrowed, 'users'))).not.toContain('salary');
+  });
+});
+
+describe('namesRestrictedField', () => {
+  const { policy } = resolve(RULES);
+  const restricted = (roles: string[], state: unknown) =>
+    namesRestrictedField(policy, roles, 'users', state);
+
+  it('finds restricted fields in columns, sort, and nested filters', () => {
+    expect(restricted(['ops'], { columns: ['full_name', 'salary'] })).toBe(true);
+    expect(restricted(['ops'], { sort: 'full_name,-salary' })).toBe(true);
+    const filter = { and: [{ not: { or: [{ field: 'salary', op: 'gt', value: 200000 }] } }] };
+    expect(restricted(['ops'], { filter })).toBe(true);
+    expect(restricted(['hr'], { filter, columns: ['salary'], sort: '-salary' })).toBe(false);
+  });
+
+  it('ignores fields that are unrestricted or that no one can see', () => {
+    expect(restricted([], { columns: ['id', 'full_name'], sort: 'role', q: 'salary' })).toBe(false);
+    expect(restricted([], { columns: ['dropped'], filter: { field: 'gone', op: 'isNull' } })).toBe(
+      false,
+    );
+    // A missing field doesn't mask a restricted one.
+    expect(restricted(['ops'], { columns: ['dropped', 'salary'] })).toBe(true);
+    expect(namesRestrictedField(policy, ['ops'], 'companies', { columns: ['salary'] })).toBe(false);
+  });
+
+  it('assumes the worst of states it cannot read', () => {
+    expect(restricted(['admin'], 'columns=salary')).toBe(true);
+    expect(restricted(['admin'], { filter: { field: 'id' } })).toBe(true);
+    expect(restricted(['admin'], { columns: ['id'], extra: true })).toBe(true);
   });
 });

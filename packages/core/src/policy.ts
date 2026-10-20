@@ -150,6 +150,14 @@ function addAll(map: Map<string, Set<Action>>, key: string, actions: readonly Ac
 const holdsAny = (roles: readonly string[], allowed: Set<string> | undefined) =>
   allowed === undefined || roles.some((role) => allowed.has(role));
 
+/** Whether `readableBy` lets `roles` read a field. Fields without a rule are readable. */
+export const isFieldReadable = (
+  policy: Policy,
+  roles: readonly string[],
+  entity: string,
+  field: string,
+): boolean => holdsAny(roles, policy.fields.get(entity)?.get(field)?.readableBy);
+
 /**
  * The schema as someone holding `roles` sees it. Entities they may do nothing with are removed,
  * and so are fields they can't read, exactly as if config hid them; fields they can't write

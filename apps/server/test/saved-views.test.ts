@@ -17,6 +17,7 @@ tables:
     columns:
       password_hash: { hidden: true }
       last_login_at: { readableBy: [admin, ops] }
+      metadata: { readableBy: [ops] }
   internal_notes:
     hidden: true
 roles:
@@ -291,6 +292,64 @@ describe('saved views', () => {
       await send('admin', 'PATCH', `/api/views/${id}`, { state: { columns: ['email'] } }),
     ).toMatchObject({ status: 200, body: { state: { columns: ['email'] } } });
     expect(await names('editor')).toContain('Stale');
+  });
+
+  it("hides shared views that name a restricted field from views admins who can't read it", async () => {
+    // Saved by someone who can read metadata, and shared by a views admin who can too.
+    const insert = async (name: string, state: unknown) => {
+      const { rows } = await sqlPool.query<{ id: string }>(
+        `insert into warden.saved_views (entity, name, owner_subject, owner_name, shared, state)
+         values ('users', $1, 'editor', 'Eddie Editor', true, $2) returning id::text`,
+        [name, JSON.stringify(state)],
+      );
+      return rows[0]!.id;
+    };
+    const restricted = await insert('VIP metadata', {
+      filter: { not: { field: 'metadata', op: 'isNull' } },
+      columns: ['email'],
+    });
+    // A missing field must not make it look merely out of date.
+    const mixed = await insert('VIP metadata, stale', { columns: ['metadata', 'dropped'] });
+    const stale = await insert('Plain stale', { columns: ['dropped'] });
+
+    for (const id of [restricted, mixed]) {
+      for (const user of ['admin', 'viewer'] as const) {
+        for (const [method, payload] of [
+          ['GET', undefined],
+          ['PATCH', { name: 'Renamed' }],
+          ['DELETE', undefined],
+        ] as const) {
+          expect(await send(user, method, `/api/views/${id}`, payload)).toMatchObject({
+            status: 404,
+            body: NOT_FOUND,
+          });
+        }
+      }
+    }
+    for (const user of ['admin', 'viewer'] as const) {
+      const res = await send(user, 'GET', '/api/views?entity=users');
+      expect(res.raw).not.toContain('VIP metadata');
+      expect(res.raw).not.toContain('metadata');
+    }
+    // A view that is out of date for everyone reveals nothing, so views admins can still clean
+    // it up.
+    expect(await send('admin', 'GET', `/api/views/${stale}`)).toMatchObject({
+      status: 200,
+      body: { name: 'Plain stale', state: null, canEdit: true },
+    });
+    expect(await names('viewer')).not.toContain('Plain stale');
+
+    // Its owner, who can read the field, still sees and manages it.
+    expect(await send('editor', 'GET', `/api/views/${restricted}`)).toMatchObject({
+      status: 200,
+      body: { name: 'VIP metadata', mine: true, state: { columns: ['email'] } },
+    });
+    expect(await names('editor')).toEqual(
+      expect.arrayContaining(['VIP metadata', 'VIP metadata, stale', 'Plain stale']),
+    );
+    for (const id of [restricted, mixed, stale]) {
+      expect((await send('editor', 'DELETE', `/api/views/${id}`)).status).toBe(204);
+    }
   });
 
   it('treats unreadable, hidden, and missing entities the same', async () => {
