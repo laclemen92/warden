@@ -32,6 +32,8 @@ describe('validateViewState', () => {
       validateViewState(users, { filter, q: '  ada ', sort: '-email', columns: ['email', 'id'] }),
     ).toEqual({ ok: true, state: { filter, q: 'ada', sort: '-email', columns: ['email', 'id'] } });
     expect(validateViewState(users, { q: ' ', sort: '' })).toEqual({ ok: true, state: {} });
+    expect(validateViewState(users, { q: 'a\u0000da' })).toEqual({ ok: true, state: { q: 'ada' } });
+    expect(validateViewState(users, { q: '\u0000' })).toEqual({ ok: true, state: {} });
   });
 
   it('rejects fields the entity does not have, wherever they appear', () => {

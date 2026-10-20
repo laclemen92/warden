@@ -7,6 +7,7 @@ import {
   type Entity,
   type Field,
   type Filter,
+  type Scalar,
 } from '../src/index.js';
 
 const field = (name: string, dataType: string, overrides: Partial<Field> = {}): Field => ({
@@ -68,9 +69,9 @@ describe('validateFilter', () => {
     });
   });
 
-  it('accepts big integers and decimals as numeric strings', () => {
+  it('accepts big integers as numeric strings', () => {
     valid({ field: 'id', op: 'eq', value: '9223372036854775807' });
-    valid({ field: 'id', op: 'lt', value: '-12.50' });
+    valid({ field: 'id', op: 'lt', value: '-9223372036854775808' });
   });
 
   it('treats hidden and nonexistent fields the same', () => {
@@ -108,14 +109,100 @@ describe('validateFilter', () => {
         ],
       }),
     ).toEqual([
-      { path: 'and.0.value', message: 'expected a number' },
-      { path: 'and.1.value.1', message: 'expected a number' },
+      { path: 'and.0.value', message: 'expected an integer' },
+      { path: 'and.1.value.1', message: 'expected an integer' },
       { path: 'and.2.value', message: 'expected a string' },
       { path: 'and.3.value', message: 'expected a boolean' },
-      { path: 'and.4.value', message: 'expected an ISO 8601 date/time' },
+      { path: 'and.4.value', message: 'expected an ISO 8601 date-time' },
       { path: 'and.5.value', message: 'expected a UUID' },
       { path: 'and.6.value', message: 'expected one of "member", "admin"' },
     ]);
+  });
+
+  describe('rejects values the column cannot hold', () => {
+    const typed: Entity = {
+      ...users,
+      fields: [
+        field('i2', 'int2'),
+        field('i8', 'int8'),
+        field('f4', 'float4'),
+        field('f8', 'float8'),
+        field('n', 'numeric', { precision: 5, scale: 2 }),
+        field('m', 'money'),
+        field('d', 'date'),
+        field('t', 'time'),
+        field('ts', 'timestamptz'),
+        field('s', 'varchar', { maxLength: 3 }),
+      ],
+    };
+    const check = (name: string, value: Scalar) => {
+      const result = validateFilter(typed, { field: name, op: 'eq', value });
+      return result.ok || result.errors[0]!.message;
+    };
+
+    it.each<[string, Scalar, true | string]>([
+      ['i2', '32767', true],
+      ['i2', 32768, 'must be between -32768 and 32767'],
+      ['i8', '1.5', 'expected an integer'],
+      ['i8', 1.5, 'expected an integer'],
+      ['i8', '9223372036854775808', 'must be between -9223372036854775808 and 9223372036854775807'],
+      ['f4', '3.4028235e38', true],
+      ['f4', '1e39', 'is out of range for real'],
+      ['f4', '1e-46', 'is out of range for real'],
+      ['f4', '0e-99', true],
+      ['f8', '1e308', true],
+      ['f8', '5e-324', true],
+      ['f8', '1e400', 'is out of range for double precision'],
+      ['f8', '-1e-400', 'is out of range for double precision'],
+      ['f8', '-0.000', true],
+      // Typmods don't constrain comparisons, only writes.
+      ['n', '123456.789', true],
+      ['n', '1e131071', true],
+      ['n', '1e131072', 'is out of range for numeric'],
+      ['n', '1e-16383', true],
+      ['n', '1e-16384', 'is out of range for numeric'],
+      ['n', '0e-20000', 'is out of range for numeric'],
+      ['n', '0e1073741823', true],
+      ['n', '0e1073741824', 'is out of range for numeric'],
+      ['m', '-92233720368547758.08', true],
+      ['m', '92233720368547758.0749', true],
+      ['m', '92233720368547758.075', 'is out of range for money'],
+      ['m', '-92233720368547758.085', 'is out of range for money'],
+      ['m', '.5', true],
+      ['m', '1e5', 'expected an amount without an exponent'],
+      ['d', '2024-02-29', true],
+      ['d', '2026-02-30', 'is not a valid date/time'],
+      ['d', '0000-01-01', 'is not a valid date/time'],
+      ['d', '2026-12-31', true],
+      ['d', '2026-01-01T00:00', 'expected a date (YYYY-MM-DD)'],
+      ['t', '24:00:00', true],
+      ['t', '24:00:01', 'is not a valid date/time'],
+      ['t', '2026-01-01', 'expected a time (HH:MM:SS)'],
+      ['ts', '2026-01-01T23:59:60', true],
+      ['ts', '2026-01-01T23:59:60.5', 'is not a valid date/time'],
+      ['ts', '2026-01-01T00:00+15:59', true],
+      ['ts', '2026-01-01T00:00+16:00', 'is not a valid date/time'],
+      ['ts', '2026-01-01T00:00-1560', 'is not a valid date/time'],
+      ['ts', '13:00', 'expected an ISO 8601 date-time'],
+      ['s', 'longer than three', true],
+      ['s', 'a\u0000b', 'cannot contain NUL characters'],
+    ])('%s = %j: %s', (name, value, expected) => {
+      expect(check(name, value)).toBe(expected);
+    });
+
+    it('checks every value of a list and text operators too', () => {
+      expect(
+        errorsFor({
+          and: [
+            { field: 'id', op: 'in', value: ['1', '2.5', '3'] },
+            { field: 'email', op: 'contains', value: '\u0000' },
+          ],
+        }),
+      ).toEqual([
+        { path: 'and.0.value.1', message: 'expected an integer' },
+        { path: 'and.1.value', message: 'cannot contain NUL characters' },
+      ]);
+    });
   });
 
   it('rejects malformed structure', () => {
@@ -207,6 +294,14 @@ describe('searchFilter', () => {
 
   it('returns undefined for blank queries', () => {
     expect(searchFilter(users, '   ')).toBeUndefined();
+    expect(searchFilter(users, ' \u0000 ')).toBeUndefined();
+  });
+
+  it('drops NUL characters, which Postgres rejects in patterns', () => {
+    expect(validateFilter(users, searchFilter(users, 'a\u0000da'))).toMatchObject({
+      ok: true,
+      filter: { or: [{ value: 'ada' }, { value: 'ada' }] },
+    });
   });
 
   it('produces filters that validate', () => {

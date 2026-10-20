@@ -49,7 +49,10 @@ export function validateViewState(entity: Entity, input: unknown): ViewStateVali
     if (result.ok) state.filter = result.filter;
     else errors.push(...result.errors.map((e) => ({ ...e, path: joinPath('filter', e.path) })));
   }
-  if (q?.trim()) state.q = q.trim();
+  // Search ignores NUL (see searchFilter), and dropping it here keeps it out of the jsonb the
+  // state is stored and audited in, which can't hold one.
+  const search = q?.replaceAll('\0', '').trim();
+  if (search) state.q = search;
   if (sort?.trim()) {
     const result = resolveSort(entity, sort);
     if (result.ok) state.sort = sort.trim();

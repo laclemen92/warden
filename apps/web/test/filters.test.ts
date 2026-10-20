@@ -75,8 +75,8 @@ describe('draftToCondition', () => {
 
   it.each([
     [draft('total', 'eq', ['12abc']), 'Total: expected a number'],
-    [draft('id', 'in', ['1', 'two']), 'Id: expected a number'],
-    [draft('ship_by', 'between', ['yesterday', '']), 'Ship by: expected an ISO 8601 date/time'],
+    [draft('id', 'in', ['1', 'two']), 'Id: expected an integer'],
+    [draft('ship_by', 'between', ['yesterday', '']), 'Ship by: expected a date (YYYY-MM-DD)'],
     [draft('status', 'eq', ['lost']), 'Status: expected one of "pending", "paid", "shipped"'],
     [draft('secret', 'eq', ['x']), 'Unknown field'],
   ])('rejects %j', (input, message) => {

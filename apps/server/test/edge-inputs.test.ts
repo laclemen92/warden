@@ -12,8 +12,13 @@ const SCHEMA = `
   create table docs (id int primary key, body json, data jsonb);
   create table stamps (at date primary key, note text);
   create table codes (code text primary key);
+  create table measures (
+    id int8 primary key, f4 float4, f8 float8, n numeric(5, 2), m money,
+    d date, t time, ts timestamptz, s varchar(3)
+  );
   insert into docs values (1, '{"a": "x\\u0000y", "k\\u0000": ["\\\\u0000", "\\\\\\u0000"]}', null);
   insert into stamps values ('2026-01-01', null);
+  insert into measures (id, d) values (1, '2026-01-01'), (2, '2026-01-02'), (3, null);
 `;
 
 const CONFIG = `
@@ -21,7 +26,7 @@ tables:
   stamps:
     requireReason: [update, delete]
 roles:
-  admin: { grants: { '*': [read, create, update, delete] }, admin: [audit] }
+  admin: { grants: { '*': [read, create, update, delete, export] }, admin: [audit] }
 access:
   groups:
     warden-admins: [admin]
@@ -76,7 +81,8 @@ const send = async (method: string, url: string, payload?: object | string) => {
     },
     ...(payload !== undefined ? { payload } : {}),
   });
-  return { status: res.statusCode, body: res.body ? res.json() : undefined, raw: res.body };
+  const json = res.headers['content-type']?.toString().startsWith('application/json');
+  return { status: res.statusCode, body: json ? res.json() : undefined, raw: res.body };
 };
 const sqlRows = async (query: string, params: unknown[] = []) =>
   (await sqlPool.query<Record<string, unknown>>(query, params)).rows;
@@ -202,5 +208,92 @@ describe('NUL characters in json columns', () => {
     const res = await send('POST', '/api/entities/docs', { values: { id: 5, body: ['\u0000'] } });
     expect(res.status, res.raw).toBe(201);
     expect((await auditOf('create'))!.after).toEqual({ id: 5, body: ['\\u0000'], data: null });
+  });
+});
+
+describe('filter and cursor values the column cannot hold', () => {
+  const list = (query: Record<string, string>) =>
+    send('GET', `/api/entities/measures?${new URLSearchParams(query)}`);
+  const exportCsv = (query: Record<string, string>) =>
+    send('GET', `/api/export/measures?${new URLSearchParams(query)}`);
+  // Cursors are opaque but only base64url JSON, so a client can build one.
+  const forge = (s: string, v: unknown[]) =>
+    Buffer.from(JSON.stringify({ s, v })).toString('base64url');
+
+  // Each value either is rejected with a 400 or runs in Postgres; none may reach it and fail.
+  const values: [string, string, boolean][] = [
+    ['id', '1.5', false],
+    ['id', '1e0', false],
+    ['id', '9223372036854775808', false],
+    ['id', '-9223372036854775808', true],
+    ['f4', '1e39', false],
+    ['f4', '1e-46', false],
+    ['f4', '3.4028235e38', true],
+    ['f8', '1e400', false],
+    ['f8', '1e-400', false],
+    ['f8', '5e-324', true],
+    ['n', '1e131072', false],
+    ['n', '0e-20000', false],
+    ['n', '123456.789', true],
+    ['m', '1e5', false],
+    ['m', '92233720368547758.08', false],
+    ['m', '-92233720368547758.08', true],
+    ['d', '2026-02-30', false],
+    ['d', '0000-01-01', false],
+    ['d', '2024-02-29', true],
+    ['t', '24:00:01', false],
+    ['t', '24:00:00', true],
+    ['ts', '2026-01-01T00:00+16:00', false],
+    ['ts', '2026-01-01T23:59:60.5', false],
+    ['ts', '2026-01-01T00:00+15:59', true],
+    ['s', 'a\u0000b', false],
+    ['s', 'longer than the column', true],
+  ];
+
+  it.each(values)('%s = %j on list and count (valid: %s)', async (field, value, ok) => {
+    for (const filter of [
+      { field, op: 'eq', value },
+      { field, op: 'lt', value },
+      { field, op: 'in', value: [value] },
+    ]) {
+      for (const count of ['false', 'true']) {
+        const res = await list({ filter: JSON.stringify(filter), count });
+        expect(res.status, res.raw).toBe(ok ? 200 : 400);
+        if (!ok) expect(res.body.message).toBe('invalid filter');
+      }
+    }
+  });
+
+  it.each(values)('%s = %j on export (valid: %s)', async (field, value, ok) => {
+    const res = await exportCsv({ filter: JSON.stringify({ field, op: 'eq', value }) });
+    expect(res.status, res.raw).toBe(ok ? 200 : 400);
+    if (!ok) expect(res.body.message).toBe('invalid export');
+  });
+
+  it('rejects NUL in text operators, and ignores it in search', async () => {
+    const filter = JSON.stringify({ field: 's', op: 'contains', value: '\u0000' });
+    expect((await list({ filter })).status).toBe(400);
+    expect((await exportCsv({ filter })).status).toBe(400);
+    for (const res of [await list({ q: 'a\u0000' }), await exportCsv({ q: 'a\u0000' })]) {
+      expect(res.status, res.raw).toBe(200);
+    }
+  });
+
+  it.each(values)('%s = %j in a cursor (valid: %s)', async (field, value, ok) => {
+    const sort = field === 'id' ? 'id' : `${field},id`;
+    const cursor = forge(sort, field === 'id' ? [value] : [value, '1']);
+    for (const count of ['false', 'true']) {
+      const res = await list({ sort, cursor, count });
+      expect(res.status, res.raw).toBe(ok ? 200 : 400);
+      if (!ok) expect(res.body.message).toBe('invalid cursor');
+    }
+  });
+
+  it('still pages with real cursors', async () => {
+    const first = await list({ sort: 'd', limit: '1' });
+    expect(first.status, first.raw).toBe(200);
+    const second = await list({ sort: 'd', limit: '1', cursor: first.body.nextCursor });
+    expect(second.status, second.raw).toBe(200);
+    expect(second.body.items.map((i: Item) => i.values.d)).toEqual(['2026-01-02']);
   });
 });

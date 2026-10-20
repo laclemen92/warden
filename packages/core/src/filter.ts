@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { Entity, Field } from './effective-schema.js';
+import { UUID, checkNumber, checkTemporal, checkText, expectedTemporal } from './values.js';
 
 /**
  * Filter AST sent by clients. Validate with {@link validateFilter} before compiling: validation
@@ -103,14 +104,11 @@ export const OPERATORS_BY_CATEGORY: Record<FieldCategory, readonly Operator[]> =
   other: NULL_CHECKS,
 };
 
-const NUMERIC = /^-?(\d+(\.\d*)?|\.\d+)([eE][-+]?\d+)?$/;
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-// ISO 8601 date, date-time, or time of day, each with optional fraction and offset. Also matches
-// Postgres' text output (`2026-01-02 03:04:05.123456+00`), which is how the API returns them.
-const TEMPORAL =
-  /^(\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}(:?\d{2})?)?)?|\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}(:?\d{2})?)?)$/;
-
-/** Error message when `value` can't be compared against field `f`, otherwise undefined. */
+/**
+ * Error message when `value` can't be compared against field `f`, otherwise undefined. Values are
+ * checked like write values for the column's type (integers in range, real dates, no NUL), but
+ * not its typmods: comparing a varchar(5) to a longer string is fine.
+ */
 export function checkFieldValue(f: Field, value: Scalar): string | undefined {
   return checkValue(f, fieldCategory(f), value);
 }
@@ -118,17 +116,13 @@ export function checkFieldValue(f: Field, value: Scalar): string | undefined {
 function checkValue(f: Field, category: FieldCategory, value: Scalar): string | undefined {
   switch (category) {
     case 'text':
-      return typeof value === 'string' ? undefined : 'expected a string';
+      return typeof value === 'string' ? checkText(value) : 'expected a string';
     case 'number':
-      if (typeof value === 'number')
-        return Number.isFinite(value) ? undefined : 'expected a finite number';
-      return typeof value === 'string' && NUMERIC.test(value) ? undefined : 'expected a number';
+      return typeof value === 'boolean' ? 'expected a number' : checkNumber(f, value);
     case 'boolean':
       return typeof value === 'boolean' ? undefined : 'expected a boolean';
     case 'temporal':
-      return typeof value === 'string' && TEMPORAL.test(value)
-        ? undefined
-        : 'expected an ISO 8601 date/time';
+      return typeof value === 'string' ? checkTemporal(f, value) : expectedTemporal(f);
     case 'uuid':
       return typeof value === 'string' && UUID.test(value) ? undefined : 'expected a UUID';
     case 'enum':
@@ -223,7 +217,8 @@ export function validateFilter(entity: Entity, input: unknown): FilterValidation
 
 /** Free-text search across the entity's searchable fields, as an `or` of `contains`. */
 export function searchFilter(entity: Entity, query: string): Filter | undefined {
-  const term = query.trim().slice(0, FILTER_LIMITS.maxStringLength);
+  // Postgres rejects NUL in a pattern, and no text value can contain one anyway.
+  const term = query.replaceAll('\0', '').trim().slice(0, FILTER_LIMITS.maxStringLength);
   if (!term) return undefined;
   const fields = entity.searchable.filter((name) => {
     const f = entity.fields.find((x) => x.name === name);
