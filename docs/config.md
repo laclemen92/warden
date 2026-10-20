@@ -317,7 +317,7 @@ Config is the source of truth for which roles exist and what they grant. On top 
 
 The page also lists who is signed in: each user with a live session, how many sessions (browsers or devices) they have, and when they were last seen. **Sign out everywhere** deletes all of that user's sessions, so their next request fails and they must sign in again, which reads their claims from the IdP afresh. Use it after removing someone from a group or disabling them at the IdP, or if a session token may have leaked. It doesn't stop them signing in again if the IdP and your access rules still let them. The API is `DELETE /api/admin/roles/sessions` with `{ "subject": "<OIDC subject>" }`; it returns `{ "revoked": <count> }`.
 
-Each assignment and removal is recorded in the [audit log](database.md#role-assignments). Assignments are stored in the `warden` schema, so they survive restarts and config changes.
+Each assignment and removal, and each sign-out everywhere, is recorded in the [audit log](database.md#role-assignments) and listed on the audit log page (filter by action `assign`, `unassign`, or `revoke_sessions`). Assignments are stored in the `warden` schema, so they survive restarts and config changes.
 
 ## Schema drift
 
@@ -336,7 +336,7 @@ The page reflects the schema as of Warden's last start. **Acknowledge** makes th
 Every create, update, and delete made through Warden is recorded in the [audit log](database.md#the-audit-log), with the reason given for it, if any. A table's [`requireReason`](#tables) makes the reason mandatory for chosen actions. Entries are shown in two places:
 
 - **History** on a record lists its changes, newest first, with who made each one, why, and the before and after values. Anyone who may read the record sees it.
-- **Audit log** in the sidebar searches every entry by actor (email or subject), entity, action, and date range. Only users with a role that has `admin: [audit]` can open it.
+- **Audit log** in the sidebar searches every entry by actor (email or subject), entity, action, and date range. Only users with a role that has `admin: [audit]` can open it. Besides changes to tables, it lists [role assignments](#role-assignments) and removals (`assign`, `unassign`: who gave or removed which role from whom) and sign-outs everywhere (`revoke_sessions`: whose sessions, and how many). These are shown in full, and only here: they belong to no table, so no record's History includes them.
 
 Both show an entry only for entities the user may read now, and only the fields they may read now: columns since hidden by config or restricted by a [field-level rule](#field-level-rules) are left out. An update is listed only if it changed a field the user can read that the request itself set; columns the database changed on its own, such as an `updated_at` maintained by a trigger, don't count. So an update to a salary only HR can read, with its reason, doesn't appear for anyone else at all. Creates and deletes are always listed, with their reason, since anyone who can read the table can see a row appear or go. Older updates, recorded before Warden tracked which fields a request set, can't tell the two apart: they are listed if any readable field changed, but their reason is shown only to users who can read every changed field. Schema drift acknowledgements are recorded in the log but not shown. [Exports](#csv-export) are listed with what they included.
 

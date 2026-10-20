@@ -54,8 +54,9 @@ const notFound = (reply: FastifyReply) =>
 
 /**
  * Reading the audit log: a record's history for anyone who may read the record, and a search
- * across every entity for roles with `admin: [audit]`. Either way an entry only shows what the
- * caller could read today, on entities they may read.
+ * across every entity for roles with `admin: [audit]`. Either way an entity's entry only shows
+ * what the caller could read today, on entities they may read. The search also lists role
+ * assignments and session revocations.
  */
 export function registerAuditRoutes(
   app: FastifyInstance,
@@ -119,6 +120,8 @@ export function registerAuditRoutes(
       }
       return page({
         visible,
+        // The route is only open to the audit area, which also covers who was given access.
+        includeAccessEntries: true,
         limit,
         ...(entity !== undefined ? { entity } : {}),
         ...(actor !== undefined ? { actor } : {}),

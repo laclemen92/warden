@@ -118,8 +118,11 @@ export async function deleteSessionsForSubject(
   { subject, actor }: { subject: string; actor: AssignmentActor },
 ): Promise<number> {
   return db.transaction().execute(async (trx) => {
-    const result = await sql`delete from ${SESSIONS} where subject = ${subject}`.execute(trx);
-    const count = Number(result.numAffectedRows ?? 0);
+    const { rows } = await sql<{ email: string | null }>`
+      delete from ${SESSIONS} where subject = ${subject} returning email`.execute(trx);
+    const count = rows.length;
+    // Recorded so the audit log can say whose sessions they were.
+    const email = rows.find((r) => r.email)?.email;
     if (count > 0) {
       await sql`
         insert into ${AUDIT_LOG}
@@ -128,7 +131,9 @@ export async function deleteSessionsForSubject(
         values (${actor.requestId ?? null}, ${actor.subject}, ${actor.email ?? null},
                 ${[...actor.roles]}, 'revoke_sessions', 'warden.sessions',
                 ${JSON.stringify({ subject })}::jsonb,
-                ${JSON.stringify({ sessions: count })}::jsonb)`.execute(trx);
+                ${JSON.stringify({ sessions: count, ...(email ? { email } : {}) })}::jsonb)`.execute(
+        trx,
+      );
     }
     return count;
   });

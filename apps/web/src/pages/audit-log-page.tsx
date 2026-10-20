@@ -19,7 +19,7 @@ import { NotFoundPage } from '@/pages/not-found-page';
 
 // Radix selects can't have an empty value, so "any" stands for no filter.
 const ANY = '*';
-const ACTIONS = ['create', 'update', 'delete', 'export'];
+const ACTIONS = ['create', 'update', 'delete', 'export', 'assign', 'unassign', 'revoke_sessions'];
 
 export function AuditLogPage() {
   const [params, setParams] = useSearchParams();
@@ -36,7 +36,7 @@ export function AuditLogPage() {
       <div className="space-y-1">
         <h1 className="text-2xl font-semibold">Audit log</h1>
         <p className="text-sm text-muted-foreground">
-          Every change made through Warden, newest first.
+          Every change made through Warden, and who was given access, newest first.
         </p>
       </div>
 
