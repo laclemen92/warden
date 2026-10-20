@@ -99,7 +99,11 @@ async function openViews() {
   return screen.findByRole('dialog');
 }
 
-describe('column picker', () => {
+// These tests click through menus, and the first also waits on a cold lazy-route import, which
+// together can outlast the default 5s on CI runners.
+const SLOW = { timeout: 15_000 };
+
+describe('column picker', SLOW, () => {
   it('hides columns through the URL and keeps the page', async () => {
     const router = renderAt('/entities/orders?page=2');
     expect(await headers()).toHaveLength(orders.fields.length);
@@ -125,7 +129,7 @@ describe('column picker', () => {
   });
 });
 
-describe('saved views', () => {
+describe('saved views', SLOW, () => {
   it('saves the current filters, sort, and columns as a private view', async () => {
     const filter = { field: 'status', op: 'eq', value: 'paid' };
     renderAt(
