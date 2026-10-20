@@ -183,6 +183,34 @@ export const wardenConfigSchema = z
     for (const [role, { grants }] of Object.entries(config.roles)) {
       for (const key of Object.keys(grants)) checkSchema(key, ['roles', role, 'grants', key]);
     }
+    // `users` and `public.users` (against the first schema) are the same table. The resolvers
+    // would each pick or merge the two entries differently, dropping hidden columns and field
+    // rules, so two spellings are invalid config rather than a warning.
+    const checkDuplicateKeys = (keys: string[], path: string[]) => {
+      const defaultSchema = config.schemas[0] ?? 'public';
+      const seen = new Map<string, string>();
+      for (const key of keys) {
+        if (key === '*') continue;
+        const qualified = key.includes('.') ? key : `${defaultSchema}.${key}`;
+        const first = seen.get(qualified);
+        if (first === undefined) {
+          seen.set(qualified, key);
+          continue;
+        }
+        for (const k of [first, key]) {
+          ctx.addIssue({
+            code: 'custom',
+            path: [...path, k],
+            message: `"${first}" and "${key}" are the same table; configure it under one key`,
+            params: { at: 'key' },
+          });
+        }
+      }
+    };
+    checkDuplicateKeys(Object.keys(config.tables), ['tables']);
+    for (const [role, { grants }] of Object.entries(config.roles)) {
+      checkDuplicateKeys(Object.keys(grants), ['roles', role, 'grants']);
+    }
     const checkRoles = (rules: Record<string, string[]>, section: string) => {
       for (const [key, roles] of Object.entries(rules)) {
         roles.forEach((role, i) => {

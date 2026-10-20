@@ -122,7 +122,7 @@ describe('policy grants', () => {
     const policy = policyFor({
       roles: {
         r: {
-          grants: { users: ['create'], 'public.users': ['delete'], 'billing.invoices': ['update'] },
+          grants: { 'public.users': ['create', 'delete'], 'billing.invoices': ['update'] },
         },
       },
     });

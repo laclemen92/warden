@@ -266,6 +266,76 @@ access:
     ]);
   });
 
+  it('rejects a table configured as both `table` and `schema.table`, pointing at both keys', () => {
+    // Field rules split across the two keys would let support write salary.
+    expect(
+      issues(`roles:
+  hr: {}
+  support: {}
+tables:
+  users:
+    columns:
+      salary: { readableBy: [hr], writableBy: [hr] }
+  public.users:
+    columns:
+      salary: { writableBy: [hr, support] }
+`),
+    ).toEqual([
+      {
+        path: 'tables.users',
+        message: '"users" and "public.users" are the same table; configure it under one key',
+        line: 5,
+        column: 3,
+      },
+      {
+        path: 'tables.public.users',
+        message: '"users" and "public.users" are the same table; configure it under one key',
+        line: 8,
+        column: 3,
+      },
+    ]);
+    // A hidden column under the second key would be ignored.
+    expect(
+      issues(`tables:
+  users: { label: Users }
+  public.users:
+    columns:
+      ssn: { hidden: true }
+`).map((i) => [i.path, i.line]),
+    ).toEqual([
+      ['tables.users', 2],
+      ['tables.public.users', 3],
+    ]);
+  });
+
+  it('resolves duplicate keys against the first schema', () => {
+    expect(
+      issues('schemas: [ops, public]\ntables:\n  audit: {}\n  ops.audit: {}\n').map((i) => i.path),
+    ).toEqual(['tables.audit', 'tables.ops.audit']);
+    // `users` is ops.users here, so public.users is a different table.
+    expect(() =>
+      parseConfig('schemas: [ops, public]\ntables:\n  users: {}\n  public.users: {}\n', FILE),
+    ).not.toThrow();
+  });
+
+  it("rejects a table granted under both spellings in one role's grants", () => {
+    expect(
+      issues(`roles:
+  ops:
+    grants:
+      '*': [read]
+      users: [read]
+      public.users: [update]
+  other:
+    grants:
+      users: [read]
+`),
+    ).toMatchObject([
+      { path: 'roles.ops.grants.users', line: 5 },
+      { path: 'roles.ops.grants.public.users', line: 6 },
+    ]);
+  });
+
   it('parses per-column readableBy and writableBy', () => {
     const config = parseConfig(
       `roles:

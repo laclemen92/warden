@@ -218,6 +218,28 @@ describe('resolveSchema with config', () => {
     expect(ops.schema.entities.find((e) => e.key === 'ops.audit_events')?.label).toBe('Audit');
   });
 
+  it('fails when two exposed tables would share an entity key', () => {
+    const colliding: SchemaModel = {
+      enums: [],
+      tables: [table('a.b', [id]), table('b', [id], { schema: 'a' })],
+    };
+    const resolveColliding = (config: unknown) =>
+      resolveSchema(
+        colliding,
+        wardenConfigSchema.parse({ schemas: ['public', 'a'], ...(config as object) }),
+      );
+    expect(() => resolveColliding({})).toThrow(
+      'tables "public"."a.b" and "a"."b" both have the key "a.b"',
+    );
+    // Only one is exposed, so there is no collision.
+    expect(resolveColliding({ tables: { 'a.b': { hidden: true } } }).schema.entities).toEqual([
+      expect.objectContaining({ schema: 'public', name: 'a.b', key: 'a.b' }),
+    ]);
+    expect(
+      resolveColliding({ defaults: { expose: 'none' }, tables: { 'a.b': {} } }).schema.entities,
+    ).toEqual([expect.objectContaining({ schema: 'a', name: 'b', key: 'a.b' })]);
+  });
+
   it('uses the first schema as the default for keys', () => {
     const { schema } = resolve({ schemas: ['ops', 'public'] });
     expect(schema.entities.map((e) => e.key)).toEqual([
@@ -243,16 +265,11 @@ describe('resolveSchema warnings', () => {
             password_hash: { hidden: true },
           },
         },
-        'public.users': { label: 'Again' },
       },
     });
 
     expect(warnings).toEqual([
       { path: 'tables.orders', message: 'table "public.orders" does not exist' },
-      {
-        path: 'tables.public.users',
-        message: 'duplicate config for "public.users"; using tables.users',
-      },
       { path: 'tables.users.columns.nickname', message: 'column "nickname" does not exist' },
       { path: 'tables.users.columns.id', message: 'primary key columns cannot be hidden' },
       { path: 'tables.users.displayField', message: 'column "nickname" does not exist' },
