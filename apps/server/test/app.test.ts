@@ -12,6 +12,12 @@ describe('server', () => {
     expect(res.json()).toEqual({ status: 'ok' });
   });
 
+  it('reports the release version from /healthz', async () => {
+    const app = await buildApp({ version: '1.2.3-rc.1' });
+    const res = await app.inject({ method: 'GET', url: '/healthz' });
+    expect(res.json()).toEqual({ status: 'ok', version: '1.2.3-rc.1' });
+  });
+
   it('serves index.html for client routes but 404s unknown API routes', async () => {
     const webDir = mkdtempSync(join(tmpdir(), 'warden-web-'));
     writeFileSync(join(webDir, 'index.html'), '<div id="root"></div>');

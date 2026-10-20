@@ -56,6 +56,7 @@ export async function createWarden({
   const authSettings = parseAuthSettings(env);
   const runMigrations = parseMigrateFlag(env.WARDEN_MIGRATE);
   const bodyLimit = parseBodyLimit(env.WARDEN_BODY_LIMIT);
+  const version = env.WARDEN_VERSION?.trim() || 'dev';
 
   const loaded = await loadConfig({ cwd, env });
   requireAccess(loaded);
@@ -110,12 +111,14 @@ export async function createWarden({
         },
       },
       bodyLimit,
+      version,
       logger,
       ...(webDir ? { webDir } : {}),
     });
     app.addHook('onClose', close);
     logIdleError = (err) => app.log.error({ err }, 'idle database connection error');
 
+    app.log.info({ version }, 'starting warden');
     if (migrations.length > 0) app.log.info({ migrations }, 'applied migrations');
     app.log.info(
       { config: configPath ?? '(defaults)', entities: schema.entities.length },

@@ -10,7 +10,10 @@ RUN pnpm --filter @wardenhq/server deploy --prod --legacy /out \
   && cp -r apps/web/dist /out/web
 
 FROM node:22-alpine
+# Set by the release workflow from the tag; reported by /healthz and logged at startup.
+ARG WARDEN_VERSION=dev
 ENV NODE_ENV=production \
+    WARDEN_VERSION=$WARDEN_VERSION \
     PORT=3000 \
     WARDEN_WEB_DIR=/app/web
 WORKDIR /app
