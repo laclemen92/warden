@@ -83,6 +83,8 @@ Both URLs must use https, except on `localhost`. When `WARDEN_PUBLIC_URL` is htt
 
 Request bodies are limited to 1 MiB; larger ones get a `413`. Set `WARDEN_BODY_LIMIT` (bytes, or a size like `512kb` or `2mb`) to change it. JSON values written to `json`/`jsonb` columns may nest at most 100 levels deep.
 
+Database timeouts and CSV export limits (how many may run at once, and when a stalled download is ended) are set with the `WARDEN_DB_*` and `WARDEN_EXPORT_*` variables in [timeouts and exports](docs/database.md#timeouts-and-exports).
+
 ## Development
 
 Requires Node 22 and pnpm (`corepack enable`).

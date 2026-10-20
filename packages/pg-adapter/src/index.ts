@@ -11,6 +11,7 @@ export {
   listRows,
   openExport,
   type ExportOptions,
+  type ExportTimeout,
   type ListOptions,
   type ListResult,
   type Row,

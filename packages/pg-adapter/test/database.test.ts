@@ -51,6 +51,29 @@ describe('createDatabase', () => {
     expect(rows).toEqual([{ ok: 1 }]);
   });
 
+  it('ends transactions left idle, without crashing on the checked-out connection', async () => {
+    const short = createDatabase({
+      connectionString: pgContainer.connectionString,
+      idleInTransactionTimeoutMs: 200,
+      maxConnections: 1,
+    });
+    try {
+      const trx = await short.db.startTransaction().execute();
+      await sql`select 1`.execute(trx);
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      await expect(sql`select 1`.execute(trx)).rejects.toThrow();
+      await trx
+        .rollback()
+        .execute()
+        .catch(() => {});
+      // The pool discards the dead connection and opens a new one.
+      const { rows } = await sql<{ ok: number }>`select 1 as ok`.execute(short.db);
+      expect(rows).toEqual([{ ok: 1 }]);
+    } finally {
+      await short.close();
+    }
+  });
+
   it('can be closed more than once', async () => {
     const extra = createDatabase({ connectionString: pgContainer.connectionString });
     await extra.close();

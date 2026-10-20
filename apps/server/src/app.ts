@@ -10,7 +10,7 @@ import { registerAuditRoutes } from './routes/audit.js';
 import { registerAuth, type AuthOptions } from './routes/auth.js';
 import { registerCapabilityRoutes } from './routes/capabilities.js';
 import { registerEntityRoutes } from './routes/entities.js';
-import { registerExportRoutes } from './routes/export.js';
+import { registerExportRoutes, type ExportRouteOptions } from './routes/export.js';
 import { registerPolicy } from './routes/policy.js';
 import { registerRoleRoutes, type RoleRoutesOptions } from './routes/roles.js';
 import { registerSavedViewRoutes } from './routes/saved-views.js';
@@ -30,6 +30,8 @@ export interface AppOptions {
   drift?: Omit<SchemaDriftOptions, 'db'>;
   /** Config for the roles page; registered when `db` is given. */
   roles?: Omit<RoleRoutesOptions, 'db'>;
+  /** Export pool and limits; exports use `db` and the default limits when absent. */
+  exports?: Pick<ExportRouteOptions, 'exportDb' | 'limits'>;
   /** Directory containing the built web UI. Served with SPA fallback when present. */
   webDir?: string;
   /** Largest request body in bytes; larger ones get a 413. Fastify's default (1 MiB) if unset. */
@@ -46,6 +48,7 @@ export async function buildApp({
   auth,
   drift,
   roles,
+  exports,
   webDir,
   bodyLimit,
   version,
@@ -87,7 +90,7 @@ export async function buildApp({
     registerEntityRoutes(app, schema, db, policy, views);
     registerCapabilityRoutes(app, policy, views);
     registerAuditRoutes(app, { db, policy, views, roles: auth?.roles ?? {} });
-    registerExportRoutes(app, { db, policy, views });
+    registerExportRoutes(app, { db, policy, views, ...exports });
     registerSavedViewRoutes(app, { db, policy, views, roles: auth?.roles ?? {} });
   }
   if (drift && db) registerSchemaDriftRoutes(app, { ...drift, db });

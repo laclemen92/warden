@@ -8,6 +8,11 @@ export interface DatabaseOptions {
   connectionString: string;
   /** Per-statement timeout so one expensive grid query can't tie up the database. */
   statementTimeoutMs?: number;
+  /**
+   * Postgres ends a session that sits in an open transaction without running anything for this
+   * long, so a stalled code path can't hold a connection or a snapshot (which blocks vacuum).
+   */
+  idleInTransactionTimeoutMs?: number;
   maxConnections?: number;
   /**
    * Called when an idle pooled connection errors (e.g. the database restarts). Without a handler
@@ -43,6 +48,7 @@ const typeParsers = {
 export function createDatabase({
   connectionString,
   statementTimeoutMs = 15_000,
+  idleInTransactionTimeoutMs = 60_000,
   maxConnections = 10,
   onIdleError = (err) => console.error('idle database connection error', err),
 }: DatabaseOptions): DatabaseHandle {
@@ -50,9 +56,14 @@ export function createDatabase({
     connectionString,
     max: maxConnections,
     statement_timeout: statementTimeoutMs,
+    idle_in_transaction_session_timeout: idleInTransactionTimeoutMs,
     types: typeParsers,
   });
   pool.on('error', onIdleError);
+  // The pool only listens for errors on idle connections. One that is checked out and gets
+  // terminated (e.g. by the idle-in-transaction timeout) would otherwise emit an unhandled
+  // 'error' and crash the process; its pending or next query fails instead, and the pool discards it.
+  pool.on('connect', (client) => client.on('error', () => {}));
   const db: Database = new Kysely({ dialect: new PostgresDialect({ pool }) });
 
   // Kysely only ends the pool if it has run a query itself, so end it directly as well.
