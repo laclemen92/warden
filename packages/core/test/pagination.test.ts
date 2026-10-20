@@ -183,6 +183,11 @@ describe('cursors', () => {
       forge(['yesterday', 1]),
       forge([null]),
       forge([null, { x: 1 }]),
+      // Values of the right shape that the columns can't hold.
+      forge([null, '1.5']),
+      forge([null, '2147483648']),
+      forge(['2026-02-30', 1]),
+      forge(['2026-01-01 00:00:00+16', 1]),
     ]) {
       expect(decodeCursor(e, sort, cursor)).toMatchObject({ ok: false });
     }
