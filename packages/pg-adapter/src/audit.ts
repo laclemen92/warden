@@ -1,4 +1,11 @@
-import { auditDiff, encodeRecordId, projectAuditEntry, type AuditEntry } from '@wardenhq/core';
+import {
+  auditDiff,
+  encodeRecordId,
+  projectAuditEntry,
+  type AuditEntry,
+  type Entity,
+  type ExportDetails,
+} from '@wardenhq/core';
 import { sql, type Expression, type SqlBool } from 'kysely';
 import type { Database } from './database.js';
 import { escapeLike } from './filter.js';
@@ -56,6 +63,33 @@ export function auditHook({ actor, requestId, reason }: AuditContext): WriteHook
   };
 }
 
+/**
+ * Record an export. It is written, and must commit, before any row is sent, so an export that
+ * can't be audited never happens.
+ */
+export async function recordExport(
+  db: Database,
+  {
+    actor,
+    requestId,
+    entity,
+    details,
+  }: Omit<AuditContext, 'reason'> & {
+    entity: Entity;
+    details: ExportDetails;
+  },
+): Promise<void> {
+  try {
+    await sql`
+      insert into ${sql.id(WARDEN_SCHEMA, 'audit_log')}
+        (request_id, actor_subject, actor_email, actor_roles, action, entity, details)
+      values (${requestId ?? null}, ${actor.subject}, ${actor.email ?? null}, ${[...actor.roles]},
+              'export', ${entity.key}, ${JSON.stringify(details)}::jsonb)`.execute(db);
+  } catch (err) {
+    throw new AuditWriteError(err);
+  }
+}
+
 export interface AuditQuery {
   /**
    * Per entity key, the fields the caller can read. Only these entities' entries are returned,
@@ -96,6 +130,7 @@ interface AuditRow {
   before: Record<string, unknown> | null;
   after: Record<string, unknown> | null;
   diff: AuditEntry['diff'] | null;
+  details: ExportDetails | null;
 }
 
 /** Audit entries matching `query`, newest first. */
@@ -126,7 +161,7 @@ export async function listAuditEntries(db: Database, query: AuditQuery): Promise
   const { rows } = await sql<AuditRow>`
     select a.id::text as id, to_json(a.occurred_at) #>> '{}' as occurred_at, a.request_id,
            a.actor_subject, a.actor_email, a.actor_roles, a.action, a.entity, a.record_id,
-           a.reason, a.before, a.after, a.diff
+           a.reason, a.before, a.after, a.diff, a.details
     from ${sql.id(WARDEN_SCHEMA, 'audit_log')} as a
     where ${sql.join(conditions, sql` and `)}
     order by a.id desc
@@ -147,6 +182,7 @@ export async function listAuditEntries(db: Database, query: AuditQuery): Promise
           before: row.before,
           after: row.after,
           diff: row.diff ?? {},
+          details: row.details,
         },
         visible[row.entity] ?? [],
       ),

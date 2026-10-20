@@ -122,6 +122,13 @@ export const MIGRATIONS: readonly Migration[] = [
       create index saved_views_shared_idx on warden.saved_views (entity) where shared;
     `,
   },
+  {
+    version: '0006_audit_details',
+    sql: `
+      -- What an action that changes no row did, e.g. an export's filter and row count.
+      alter table warden.audit_log add column details jsonb;
+    `,
+  },
 ];
 
 // Arbitrary constant shared by every Warden instance, so replicas don't migrate concurrently.

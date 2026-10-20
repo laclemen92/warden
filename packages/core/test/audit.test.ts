@@ -52,6 +52,7 @@ describe('projectAuditEntry', () => {
     before: { id: '1', email: 'a@x', salary: 1 },
     after: { id: '1', email: 'b@x', salary: 2 },
     diff: { email: { from: 'a@x', to: 'b@x' }, salary: { from: 1, to: 2 } },
+    details: null,
   };
 
   it('keeps only the given fields in before, after, and diff', () => {

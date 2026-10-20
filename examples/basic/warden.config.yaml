@@ -40,7 +40,7 @@ tables:
 roles:
   viewer: { grants: { '*': [read] } }
   admin:
-    grants: { '*': [read, create, update, delete] }
+    grants: { '*': [read, create, update, delete, export] }
     # The schema drift page shows every table and column, including hidden ones. The audit log
     # page searches every change made through Warden. The roles page can give anyone any role,
     # admin included. `views` lets admins share saved grid views with everyone.

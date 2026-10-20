@@ -11,7 +11,9 @@ Warden works with no config at all: it introspects the database and exposes ever
 - [`roles`](#roles)
 - [`access`](#access)
 - [Schema drift](#schema-drift)
+- [Audit log](#audit-log)
 - [Saved views](#saved-views)
+- [CSV export](#csv-export)
 - [Full example](#full-example)
 
 ## Loading the config
@@ -113,7 +115,7 @@ Each key is a table, as `table` (in the default schema) or `schema.table`. Warde
 | `tables.<table>.defaultSort.column`    | column name                                                | None                                           |
 | `tables.<table>.defaultSort.direction` | `asc`, `desc`                                              | `asc`                                          |
 | `tables.<table>.searchable`            | list of column names                                       | Visible text columns                           |
-| `tables.<table>.deny`                  | list of `read`, `create`, `update`, `delete`               | None                                           |
+| `tables.<table>.deny`                  | list of `read`, `create`, `update`, `delete`, `export`     | None                                           |
 | `tables.<table>.requireReason`         | list of `create`, `update`, `delete`                       | None                                           |
 | `tables.<table>.columns`               | map of column name to [column config](#tablestablecolumns) | None                                           |
 
@@ -200,10 +202,10 @@ Version tokens are computed from the fields each user can see, so a change to a 
 
 Roles grant actions on tables. Create, update, and delete are denied unless a role grants them, and reading follows [`defaults.read`](#defaults).
 
-| Key                           | Type                                         | Default |
-| ----------------------------- | -------------------------------------------- | ------- |
-| `roles.<role>.grants.<table>` | list of `read`, `create`, `update`, `delete` | None    |
-| `roles.<role>.admin`          | list of `schema`, `audit`, `roles`           | None    |
+| Key                           | Type                                                   | Default |
+| ----------------------------- | ------------------------------------------------------ | ------- |
+| `roles.<role>.grants.<table>` | list of `read`, `create`, `update`, `delete`, `export` | None    |
+| `roles.<role>.admin`          | list of `schema`, `audit`, `roles`, `views`            | None    |
 
 Each grant key is a table (`users`, `billing.invoices`) or `*` for every exposed table. A user with several roles gets every action any of them grants. A role name that isn't defined here grants nothing.
 
@@ -212,7 +214,10 @@ How a request is decided:
 1. A table that is hidden or doesn't exist is denied every action.
 2. An action in the table's `deny` is denied.
 3. `read` is allowed when `defaults.read` is `all`.
-4. Otherwise the action is allowed only if one of the user's roles grants it on that table or on `*`.
+4. `export` is denied unless the user may also `read` the table.
+5. Otherwise the action is allowed only if one of the user's roles grants it on that table or on `*`.
+
+**`export`** lets a role download a table's grid as CSV (see [CSV export](#csv-export)). `defaults.read: all` doesn't grant it, so nobody can export until a role is granted `export`.
 
 A grant naming a table that isn't exposed has no effect and produces a warning.
 
@@ -307,7 +312,7 @@ Every create, update, and delete made through Warden is recorded in the [audit l
 - **History** on a record lists its changes, newest first, with who made each one, why, and the before and after values. Anyone who may read the record sees it.
 - **Audit log** in the sidebar searches every entry by actor (email or subject), entity, action, and date range. Only users with a role that has `admin: [audit]` can open it.
 
-Both show an entry only for entities the user may read now, and only the fields they may read now: columns since hidden by config or restricted by a [field-level rule](#field-level-rules) are left out, and an update that changed only such fields isn't listed. Schema drift acknowledgements are recorded in the log but not shown.
+Both show an entry only for entities the user may read now, and only the fields they may read now: columns since hidden by config or restricted by a [field-level rule](#field-level-rules) are left out, and an update that changed only such fields isn't listed. Schema drift acknowledgements are recorded in the log but not shown. [Exports](#csv-export) are listed with what they included.
 
 ## Saved views
 
@@ -318,6 +323,26 @@ Each view has a link, `/entities/<table>?view=<id>`, that opens the grid with th
 Views follow the same rules as everything else. A view can only use columns its author can see. A shared view that uses a column someone can't see (because of [`readableBy`](#field-level-rules), or because the column was hidden or dropped since) doesn't appear for them at all. Its owner, and anyone who may delete it, see it marked as out of date so they can fix or delete it.
 
 Views are stored in [`warden.saved_views`](database.md#saved-views).
+
+## CSV export
+
+Users with the [`export`](#roles) action on a table see **Export CSV** above its grid. It downloads every row that matches the grid's current filter and search, in its current sort, with its visible columns. Paging doesn't apply.
+
+- **Fields:** only columns the user can read. Hidden columns and columns a [field-level rule](#field-level-rules) keeps from them are never included, and naming one in the export request fails exactly as for a column that doesn't exist.
+- **Audit:** every export writes an `export` entry to the [audit log](#audit-log) before the first row is sent, with the row count, columns, filter, search, and sort. If the entry can't be written, nothing is exported. On the audit log page, a reader who can't see some of those columns sees them left out, and the filter or sort too if it names one.
+- **Size:** an export may have at most 100,000 rows. A larger one is refused with a message to narrow the filter, rather than cut short.
+- **Format:** UTF-8 with a byte order mark (so Excel reads it correctly), comma-separated, CRLF line endings, a header row of column names, empty cells for nulls, and JSON for `json`/`jsonb` and array values. Text that a spreadsheet would run as a formula (starting with `=`, `+`, `-`, `@`, tab, or carriage return) is prefixed with `'`. Numbers and dates are written as is.
+- **Consistency:** the count and the rows come from one snapshot of the database, so concurrent writes don't make the file disagree with the audit entry.
+
+```yaml
+roles:
+  analyst:
+    grants:
+      '*': [read, export]
+tables:
+  users:
+    deny: [export] # nobody exports users, whatever their role
+```
 
 ## Full example
 

@@ -5,7 +5,8 @@ const name = z.string().min(1);
 /** `table` (resolved against the first entry in `schemas`) or `schema.table`. */
 const tableKey = z.string().regex(/^[^.]+(\.[^.]+)?$/, 'Expected "table" or "schema.table"');
 
-export const ACTIONS = ['read', 'create', 'update', 'delete'] as const;
+/** `export`: downloading a grid as CSV. It also needs `read`, and `defaults.read` doesn't grant it. */
+export const ACTIONS = ['read', 'create', 'update', 'delete', 'export'] as const;
 const actions = z.array(z.enum(ACTIONS));
 export const WRITE_ACTIONS = ['create', 'update', 'delete'] as const;
 

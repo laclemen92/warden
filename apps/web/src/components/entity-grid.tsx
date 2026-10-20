@@ -27,6 +27,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useLocation, useSearchParams } from 'react-router';
 import { cn } from 'cn';
 import { ColumnPicker } from '@/components/column-picker';
+import { ExportButton } from '@/components/export-button';
 import { FilterBuilder } from '@/components/filter-builder';
 import { SavedViewsMenu } from '@/components/saved-views-menu';
 import { Badge } from '@/components/ui/badge';
@@ -49,6 +50,8 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { apiFetch } from '@/lib/api';
+import { useCan } from '@/lib/capabilities';
+import { exportUrl } from '@/lib/export';
 import { conditionsToFilter, describeCondition, filterToConditions } from '@/lib/filters';
 import {
   PAGE_SIZES,
@@ -238,6 +241,7 @@ export function EntityGrid({ entity }: { entity: Entity }) {
     total !== undefined ? Math.max(1, Math.ceil(total / state.pageSize)) : Infinity,
   );
   const hasFilters = Boolean(state.filter || state.q);
+  const canExport = useCan(entity.key, 'export');
 
   return (
     <div className="space-y-3">
@@ -287,6 +291,14 @@ export function EntityGrid({ entity }: { entity: Entity }) {
           <Button variant="ghost" size="sm" onClick={() => update({ filter: null, q: '' })}>
             Clear filters
           </Button>
+        )}
+        {canExport && (
+          <div className="ml-auto">
+            <ExportButton
+              url={exportUrl(entity, state, params.get('sort'))}
+              fallbackName={`${entity.key}.csv`}
+            />
+          </div>
         )}
       </div>
 

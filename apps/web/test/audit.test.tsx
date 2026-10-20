@@ -52,6 +52,7 @@ const entry = (id: string, extra: Partial<AuditEntry> = {}): AuditEntry => ({
     is_active: { from: true, to: false },
     email: { from: 'old@example.com', to: 'new@example.com' },
   },
+  details: null,
   ...extra,
 });
 
@@ -248,6 +249,50 @@ describe('audit log page', () => {
     const deleted = screen.getByRole('article', { name: 'delete 3' });
     expect(within(deleted).getByText(/Companies/)).toBeInTheDocument();
     expect(within(deleted).queryByRole('link')).not.toBeInTheDocument();
+  });
+
+  it('summarizes exports instead of field changes', async () => {
+    const exported = (id: string, details: AuditEntry['details']) =>
+      entry(id, { action: 'export', recordId: null, before: null, after: null, diff: {}, details });
+    stubFetch(
+      (url) =>
+        url.pathname === '/api/audit'
+          ? page([
+              exported('5', {
+                rowCount: 1234,
+                columns: ['id', 'email'],
+                filter: { field: 'is_active', op: 'eq', value: true },
+                q: 'ada',
+                sort: '-email',
+              }),
+              exported('4', { rowCount: 2, columns: ['email'], redacted: true }),
+            ])
+          : undefined,
+      ['audit'],
+    );
+    renderAt('/admin/audit');
+
+    const full = await screen.findByRole('article', { name: 'export 5' });
+    const terms = (article: HTMLElement) =>
+      [...article.querySelectorAll('dt')].map((dt) => [
+        dt.textContent,
+        dt.nextSibling?.textContent,
+      ]);
+    expect(terms(full)).toEqual([
+      ['Rows', (1234).toLocaleString()],
+      ['Columns', 'ID, Email'],
+      ['Filter', expect.stringContaining('Active')],
+      ['Search', 'ada'],
+      ['Sort', 'Email (descending)'],
+    ]);
+    expect(within(full).queryByText('No field changes.')).not.toBeInTheDocument();
+
+    const redacted = screen.getByRole('article', { name: 'export 4' });
+    expect(terms(redacted)).toEqual([
+      ['Rows', '2'],
+      ['Columns', 'Email'],
+    ]);
+    expect(within(redacted).getByText(/used columns you can't see/)).toBeInTheDocument();
   });
 
   it('applies filters from the form to the request and the URL', async () => {
