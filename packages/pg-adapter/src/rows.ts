@@ -7,7 +7,10 @@ export type Row = Record<string, unknown>;
 
 const ALIAS = 't';
 const column = (name: string) => sql.id(ALIAS, name);
-const from = (entity: Entity) => sql`${sql.id(entity.schema, entity.name)} as ${sql.id(ALIAS)}`;
+// `only` keeps rows of tables that INHERIT from this one out: those are separate entities, which
+// config may hide or deny, and the parent's primary key isn't unique across them.
+const from = (entity: Entity) =>
+  sql`only ${sql.id(entity.schema, entity.name)} as ${sql.id(ALIAS)}`;
 // Only exposed fields are ever selected, so hidden columns never leave the database.
 const selection = (entity: Entity) => sql.join(entity.fields.map((f) => column(f.name)));
 
