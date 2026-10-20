@@ -7,6 +7,7 @@ const tableKey = z.string().regex(/^[^.]+(\.[^.]+)?$/, 'Expected "table" or "sch
 
 export const ACTIONS = ['read', 'create', 'update', 'delete'] as const;
 const actions = z.array(z.enum(ACTIONS));
+export const WRITE_ACTIONS = ['create', 'update', 'delete'] as const;
 
 /**
  * Warden administration areas a role can be given. `schema`: the schema drift page. `audit`: the
@@ -77,6 +78,8 @@ const tableConfigSchema = z
     columns: z.record(name, columnConfigSchema).default({}),
     /** Actions nobody may perform on this table, whatever their roles grant. */
     deny: actions.optional(),
+    /** Writes that must say why; the reason is stored in the audit log. */
+    requireReason: z.array(z.enum(WRITE_ACTIONS)).optional(),
   })
   .superRefine((table, ctx) => {
     for (const [column, config] of Object.entries(table.columns)) {
@@ -211,4 +214,5 @@ export type ColumnConfig = z.infer<typeof columnConfigSchema>;
 export type RoleConfig = z.infer<typeof roleConfigSchema>;
 export type AccessConfig = z.infer<typeof accessConfigSchema>;
 export type Action = (typeof ACTIONS)[number];
+export type WriteAction = (typeof WRITE_ACTIONS)[number];
 export type AdminArea = (typeof ADMIN_AREAS)[number];

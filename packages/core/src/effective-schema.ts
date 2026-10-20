@@ -1,4 +1,5 @@
-import type { TableConfig, WardenConfig } from '@wardenhq/config';
+import type { TableConfig, WardenConfig, WriteAction } from '@wardenhq/config';
+import { WRITE_ACTIONS } from '@wardenhq/config/schema';
 import type { Column, SchemaModel, Table } from './schema-model.js';
 
 /**
@@ -23,6 +24,8 @@ export interface Entity {
   displayField: string;
   defaultSort?: { column: string; direction: 'asc' | 'desc' };
   searchable: string[];
+  /** Writes that must give a reason (stored in the audit log); absent when none must. */
+  requireReason?: WriteAction[];
   fields: Field[];
   relations: Relation[];
 }
@@ -136,6 +139,11 @@ export function resolveSchema(model: SchemaModel, config: WardenConfig): Resolve
       relations: [],
     };
     if (table.comment) entity.comment = table.comment;
+    if (tableConfig?.requireReason?.length) {
+      // Canonical order, without duplicates.
+      const required = new Set(tableConfig.requireReason);
+      entity.requireReason = WRITE_ACTIONS.filter((a) => required.has(a));
+    }
     const sort = tableConfig?.defaultSort;
     if (sort && usable(sort.column, `${path}.defaultSort.column`)) entity.defaultSort = sort;
 

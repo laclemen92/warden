@@ -34,11 +34,10 @@ import {
   type FormErrors,
   type FormField,
 } from '@/lib/form-fields';
-import type { Row } from '@/lib/records';
+import { MAX_REASON_LENGTH, REASON_REQUIRED, type Row } from '@/lib/records';
 
 // apps/server/src/routes/entities.ts: a stale version, as opposed to a constraint conflict.
 const STALE_MESSAGE = 'the record has changed since it was read';
-const MAX_REASON_LENGTH = 2000;
 
 // Radix Select items can't have an empty value, and Postgres enum labels can't contain NUL.
 const NONE = '\0';
@@ -78,6 +77,8 @@ export function RecordForm({
   const pickers = useMemo(() => pickerRelations(entity), [entity]);
   const [drafts, setDrafts] = useState<Drafts>(initial);
   const [reason, setReason] = useState('');
+  const [reasonError, setReasonError] = useState(false);
+  const reasonRequired = entity.requireReason?.includes(mode) ?? false;
   const [errors, setErrors] = useState<FormErrors>({});
   const [stale, setStale] = useState(false);
   const [pending, setPending] = useState(false);
@@ -121,8 +122,10 @@ export function RecordForm({
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     const result = formValues(entity, fields, drafts, mode, initial);
-    if (!result.ok) {
-      setErrors(place(result.errors));
+    const missingReason = reasonRequired && reason.trim() === '';
+    setReasonError(missingReason);
+    if (!result.ok || missingReason) {
+      setErrors(result.ok ? {} : place(result.errors));
       return;
     }
     setErrors({});
@@ -132,6 +135,11 @@ export function RecordForm({
       const trimmed = reason.trim();
       await onSubmit({ values: result.values, ...(trimmed ? { reason: trimmed } : {}) });
     } catch (error) {
+      // Config changed since the schema was loaded.
+      if (error instanceof ApiError && error.message === REASON_REQUIRED) {
+        setReasonError(true);
+        return;
+      }
       const failure = describeFailure(error, mode);
       setStale(failure.stale);
       setErrors(place(failure.errors));
@@ -186,18 +194,34 @@ export function RecordForm({
 
         <label htmlFor={`${formId}-reason`} className="pt-2 text-sm font-medium">
           Reason
+          {reasonRequired && (
+            <span className="text-destructive" aria-hidden="true">
+              {' '}
+              *
+            </span>
+          )}
         </label>
         <div className="space-y-1">
           <Input
             id={`${formId}-reason`}
             value={reason}
             maxLength={MAX_REASON_LENGTH}
-            aria-describedby={`${formId}-reason-help`}
-            onChange={(e) => setReason(e.target.value)}
+            aria-required={reasonRequired || undefined}
+            aria-invalid={reasonError || undefined}
+            aria-describedby={`${formId}-reason-help${reasonError ? ` ${formId}-reason-error` : ''}`}
+            onChange={(e) => {
+              setReason(e.target.value);
+              setReasonError(false);
+            }}
           />
           <p id={`${formId}-reason-help`} className="text-xs text-muted-foreground">
-            Optional. Saved in the audit log with this change.
+            {reasonRequired ? 'Required' : 'Optional'}. Saved in the audit log with this change.
           </p>
+          {reasonError && (
+            <p id={`${formId}-reason-error`} className="text-xs text-destructive">
+              Say why you're making this change.
+            </p>
+          )}
         </div>
       </div>
 

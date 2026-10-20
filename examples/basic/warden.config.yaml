@@ -26,6 +26,8 @@ tables:
       # when someone last logged in.
       role: { writableBy: [admin] }
       last_login_at: { readableBy: [admin, ops] }
+    # Deleting a user must say why; the reason is kept in the audit log.
+    requireReason: [delete]
 
   orders:
     defaultSort: { column: placed_at, direction: desc }

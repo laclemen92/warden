@@ -121,8 +121,11 @@ type Handler = (url: URL, init?: RequestInit) => { status: number; body?: unknow
 function stubFetch(handler: Handler) {
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input), 'http://warden.test');
-    const res = (url.pathname === '/api/schema' ? { status: 200, body: schema } : undefined) ??
-      handler(url, init) ?? { status: 404, body: { message: 'Not Found' } };
+    const res = handler(url, init) ??
+      (url.pathname === '/api/schema' ? { status: 200, body: schema } : undefined) ?? {
+        status: 404,
+        body: { message: 'Not Found' },
+      };
     return new Response(res.body === undefined ? null : JSON.stringify(res.body), {
       status: res.status,
       headers: { 'Content-Type': 'application/json' },
@@ -397,5 +400,65 @@ describe('deleting a record', () => {
     const dialog = await openDialog();
     await userEvent.click(within(dialog).getByRole('button', { name: 'Delete' }));
     await waitFor(() => expect(router.state.location.pathname).toBe('/entities/users'));
+  });
+
+  describe('when config requires a reason', () => {
+    /** The schema with deletes of users requiring a reason. */
+    const withReason =
+      (handler: ReturnType<typeof withDelete>) => (url: URL, init?: RequestInit) =>
+        url.pathname === '/api/schema'
+          ? {
+              status: 200,
+              body: {
+                entities: schema.entities.map((e) =>
+                  e.key === 'users' ? { ...e, requireReason: ['delete'] } : e,
+                ),
+              },
+            }
+          : handler(url, init);
+
+    it('asks for one and sends it with the delete', async () => {
+      const deletes: RequestInit[] = [];
+      stubFetch(
+        withReason(
+          withDelete(['delete'], (init) => {
+            deletes.push(init);
+            return { status: 204 };
+          }),
+        ),
+      );
+      const router = renderAt('/entities/users/42');
+      const dialog = await openDialog();
+      const confirm = within(dialog).getByRole('button', { name: 'Delete' });
+      const reason = within(dialog).getByRole('textbox', { name: 'Reason' });
+      expect(reason).toHaveAttribute('aria-required', 'true');
+      expect(confirm).toBeDisabled();
+      await userEvent.type(reason, '   ');
+      expect(confirm).toBeDisabled();
+      await userEvent.type(reason, 'left the company ');
+      await userEvent.click(confirm);
+      await waitFor(() => expect(router.state.location.pathname).toBe('/entities/users'));
+      expect(JSON.parse(String(deletes[0]!.body))).toEqual({
+        version: 'v1',
+        reason: 'left the company',
+      });
+    });
+
+    it('explains a server rejection for a missing reason', async () => {
+      stubFetch(
+        withDelete(['delete'], () => ({
+          status: 400,
+          body: { message: 'a reason is required for this change' },
+        })),
+      );
+      renderAt('/entities/users/42');
+      const dialog = await openDialog();
+      // This schema doesn't require one, so there's no prompt; the server's config does.
+      expect(within(dialog).queryByRole('textbox', { name: 'Reason' })).not.toBeInTheDocument();
+      await userEvent.click(within(dialog).getByRole('button', { name: 'Delete' }));
+      expect(await within(dialog).findByRole('alert')).toHaveTextContent(
+        'Give a reason for deleting this record.',
+      );
+    });
   });
 });

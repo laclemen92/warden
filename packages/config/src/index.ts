@@ -1,6 +1,7 @@
 export {
   ACTIONS,
   ADMIN_AREAS,
+  WRITE_ACTIONS,
   type AccessConfig,
   wardenConfigSchema,
   type Action,
@@ -9,6 +10,7 @@ export {
   type RoleConfig,
   type TableConfig,
   type WardenConfig,
+  type WriteAction,
 } from './schema.js';
 export {
   CONFIG_FILE_NAMES,
