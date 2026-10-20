@@ -7,7 +7,13 @@ import {
   type SortingState,
   type Updater,
 } from '@tanstack/react-table';
-import { MAX_SORT_TERMS, isSortable, type Condition, type Entity } from '@wardenhq/core';
+import {
+  MAX_SORT_TERMS,
+  isSortable,
+  type Condition,
+  type Entity,
+  type ViewState,
+} from '@wardenhq/core';
 import {
   ArrowDown,
   ArrowUp,
@@ -17,10 +23,12 @@ import {
   Search,
   X,
 } from 'lucide-react';
-import { useMemo, useRef, useState } from 'react';
-import { Link, useSearchParams } from 'react-router';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Link, useLocation, useSearchParams } from 'react-router';
 import { cn } from 'cn';
+import { ColumnPicker } from '@/components/column-picker';
 import { FilterBuilder } from '@/components/filter-builder';
+import { SavedViewsMenu } from '@/components/saved-views-menu';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -47,10 +55,12 @@ import {
   listUrl,
   maxPage,
   readGridState,
+  viewParams,
   writeGridState,
   type GridUpdate,
 } from '@/lib/grid-state';
 import { recordPath, type RecordItem, type RecordList } from '@/lib/records';
+import { useSavedView } from '@/lib/saved-views';
 
 const features = tableFeatures({ rowSortingFeature });
 const helper = createColumnHelper<typeof features, RecordItem>();
@@ -101,25 +111,70 @@ function SearchBox({ value, onSearch }: { value: string; onSearch: (q: string) =
   );
 }
 
-/** Server-backed grid for one entity. Sort, filter, search, and page all live in the URL. */
+/**
+ * Server-backed grid for one entity. Sort, filter, search, columns, and page all live in the
+ * URL. A `?view=<id>` link is replaced by the saved view's state once it loads.
+ */
 export function EntityGrid({ entity }: { entity: Entity }) {
   const [params, setParams] = useSearchParams();
   const state = useMemo(() => readGridState(params, entity), [params, entity]);
   const conditions = useMemo(() => filterToConditions(state.filter), [state.filter]);
   const url = listUrl(entity, state);
 
+  const viewId = params.get('view');
+  const linked = useSavedView(viewId);
+  // Carried in history state, so it goes away with the next change to the grid.
+  const viewError = (useLocation().state as { viewError?: string } | null)?.viewError;
+  useEffect(() => {
+    if (!viewId || linked.isPending) return;
+    const view = linked.data;
+    if (view?.state && view.entity === entity.key) {
+      setParams(viewParams(view.state), { replace: true });
+      return;
+    }
+    const next = new URLSearchParams(params);
+    next.delete('view');
+    setParams(next, {
+      replace: true,
+      state: {
+        viewError:
+          view?.state === null
+            ? `The view "${view.name}" uses a column you can't see.`
+            : "This saved view doesn't exist or isn't available to you.",
+      },
+    });
+  }, [viewId, linked.isPending, linked.data, entity.key, params, setParams]);
+
   const rows = useQuery({
     queryKey: ['rows', entity.key, url],
     queryFn: () => apiFetch<RecordList>(url),
     placeholderData: keepPreviousData,
+    // Don't load rows for the default state while a view link is about to replace it.
+    enabled: !viewId,
   });
 
   const update = (change: GridUpdate, options?: { replace?: boolean }) =>
     setParams((current) => writeGridState(current, change), options);
 
+  const applyView = (view: ViewState) => {
+    // Page size is the user's preference, not part of the view.
+    setParams((current) => {
+      const next = viewParams(view);
+      const pageSize = current.get('pageSize');
+      if (pageSize) next.set('pageSize', pageSize);
+      return next;
+    });
+  };
+
+  const fields = useMemo(
+    () =>
+      state.columns ? entity.fields.filter((f) => state.columns!.includes(f.name)) : entity.fields,
+    [entity, state.columns],
+  );
+
   const columns = useMemo(
     () =>
-      entity.fields.map((field) =>
+      fields.map((field) =>
         helper.accessor((row) => row.values[field.name], {
           id: field.name,
           header: field.label,
@@ -140,7 +195,7 @@ export function EntityGrid({ entity }: { entity: Entity }) {
           },
         }),
       ),
-    [entity],
+    [entity, fields],
   );
 
   const sorting = useMemo<SortingState>(
@@ -186,11 +241,22 @@ export function EntityGrid({ entity }: { entity: Entity }) {
 
   return (
     <div className="space-y-3">
+      {viewError && (
+        <div role="alert" className="rounded-md border border-destructive/50 p-3 text-sm">
+          {viewError}
+        </div>
+      )}
       <div className="flex flex-wrap items-center gap-2">
+        <SavedViewsMenu entity={entity} params={params} onApply={applyView} />
         {entity.searchable.length > 0 && (
           <SearchBox value={state.q} onSearch={(q) => update({ q }, { replace: true })} />
         )}
         <FilterBuilder entity={entity} conditions={conditions} onApply={applyConditions} />
+        <ColumnPicker
+          entity={entity}
+          columns={state.columns}
+          onChange={(next) => update({ columns: next })}
+        />
         <ul aria-label="Active filters" className="flex flex-wrap items-center gap-1.5">
           {conditions === undefined ? (
             <li>

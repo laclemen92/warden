@@ -53,3 +53,14 @@ export {
   type SchemaSnapshot,
   type SnapshotActor,
 } from './snapshots.js';
+export {
+  createSavedView,
+  deleteSavedView,
+  getSavedView,
+  listSavedViews,
+  updateSavedView,
+  type NewSavedView,
+  type SavedView,
+  type SavedViewChanges,
+  type SavedViewResult,
+} from './saved-views.js';
