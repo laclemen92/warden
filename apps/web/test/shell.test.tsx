@@ -127,6 +127,22 @@ describe('web shell', () => {
     expect(await screen.findByRole('link', { name: 'Continue with SSO' })).toBeInTheDocument();
   });
 
+  it('sends the browser to the IdP to log out there too when it supports it', async () => {
+    const idpLogout = 'https://idp.example/logout?client_id=warden';
+    stubFetch({
+      ...signedIn,
+      'POST /auth/logout': { status: 200, body: { redirectTo: idpLogout } },
+    });
+    const assign = vi.fn();
+    vi.stubGlobal('location', { ...window.location, assign });
+    renderAt('/entities/users');
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Account' }));
+    await userEvent.click(await screen.findByRole('menuitem', { name: 'Log out' }));
+
+    await waitFor(() => expect(assign).toHaveBeenCalledWith(idpLogout));
+  });
+
   it('shows an anonymous user until the session endpoint exists', async () => {
     stubFetch({ 'GET /api/schema': { status: 200, body: schema } });
     renderAt('/');

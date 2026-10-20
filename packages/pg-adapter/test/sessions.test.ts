@@ -79,8 +79,23 @@ describe('sessions', () => {
       claims: { groups: ['warden-editors'] },
     });
 
-    await deleteSession(handle.db, tokenHash);
+    expect(await deleteSession(handle.db, tokenHash)).toEqual({ idToken: null });
     expect(await touchSession(handle.db, tokenHash, TIMEOUTS)).toBeUndefined();
+    expect(await deleteSession(handle.db, tokenHash)).toBeUndefined();
+  });
+
+  it("returns a deleted session's ID token, without exposing it on load", async () => {
+    const tokenHash = newHash();
+    await insertSession(handle.db, {
+      tokenHash,
+      subject: 'viewer',
+      claims: {},
+      idToken: 'header.payload.signature',
+    });
+    expect(await touchSession(handle.db, tokenHash, TIMEOUTS)).not.toHaveProperty('idToken');
+    expect(await deleteSession(handle.db, tokenHash)).toEqual({
+      idToken: 'header.payload.signature',
+    });
   });
 
   it('returns nothing for an unknown token', async () => {

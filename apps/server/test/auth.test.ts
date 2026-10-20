@@ -18,7 +18,10 @@ import {
   callback,
   cookiesFrom,
   HTTPS_PUBLIC_URL,
+  idpRequest,
   login,
+  logoutAtIdp,
+  PUBLIC_URL,
   signInAtIdp,
   startTestIdp,
   writeConfig,
@@ -329,7 +332,7 @@ describe('sessions', () => {
   it('logout revokes the session server-side and clears the cookie', async () => {
     const cookie = await login(app, 'editor');
     const res = await app.inject({ method: 'POST', url: '/auth/logout', headers: { cookie } });
-    expect(res.statusCode).toBe(204);
+    expect(res.statusCode).toBe(200);
     expect(String(res.headers['set-cookie'])).toMatch(/^warden_session=;.*Max-Age=0/);
     // Replaying the old cookie no longer works.
     expect((await get('/api/me', cookie)).statusCode).toBe(401);
@@ -366,7 +369,7 @@ describe('sessions', () => {
 
   it('logout without a session still succeeds', async () => {
     const res = await app.inject({ method: 'POST', url: '/auth/logout' });
-    expect(res.statusCode).toBe(204);
+    expect(res.statusCode).toBe(200);
   });
 
   it('logout is not available over GET', async () => {
@@ -403,6 +406,100 @@ describe('sessions', () => {
       expect(res.statusCode).toBe(401);
     } finally {
       await shortApp.close();
+    }
+  });
+});
+
+describe('IdP logout', () => {
+  const logout = (cookie?: string) =>
+    app.inject({ method: 'POST', url: '/auth/logout', ...(cookie ? { headers: { cookie } } : {}) });
+  const jwtPayload = (jwt: string) =>
+    JSON.parse(Buffer.from(jwt.split('.')[1] ?? '', 'base64url').toString()) as Record<
+      string,
+      unknown
+    >;
+  /** Where the IdP sends a browser with `jar`'s cookies when Warden starts a login. */
+  const authorizeAs = async (jar: Map<string, string>) =>
+    (await idpRequest(jar, (await beginLogin(app)).authorizeUrl)).location;
+
+  it('ends the IdP session too, so the next sign-in asks who you are', async () => {
+    const jar = new Map<string, string>();
+    const { authorizeUrl, cookies } = await beginLogin(app);
+    const res = await callback(app, await signInAtIdp(authorizeUrl, 'editor', jar), cookies);
+    const [name, value] = [...cookiesFrom(res.headers['set-cookie'])].find(([k]) =>
+      k.includes('warden_session'),
+    )!;
+    const cookie = `${name}=${value}`;
+    // The IdP still has a session: without logging out there, the next login is silent.
+    expect(await authorizeAs(jar)).toMatch(new RegExp(`^${PUBLIC_URL}/auth/callback\\?`));
+
+    const out = await logout(cookie);
+    expect(out.statusCode).toBe(200);
+    const { redirectTo } = out.json<{ redirectTo: string }>();
+    const url = new URL(redirectTo);
+    expect(url.origin).toBe(idp.issuer);
+    expect(url.searchParams.get('client_id')).toBe('warden');
+    expect(url.searchParams.get('post_logout_redirect_uri')).toBe(`${PUBLIC_URL}/`);
+    expect(jwtPayload(url.searchParams.get('id_token_hint') ?? '')).toMatchObject({
+      sub: 'editor',
+      aud: 'warden',
+    });
+    expect((await get('/api/me', cookie)).statusCode).toBe(401);
+
+    expect(await logoutAtIdp(redirectTo, jar)).toBe(`${PUBLIC_URL}/`);
+    expect(new URL((await authorizeAs(jar))!).pathname).toMatch(/^\/interaction\//);
+  });
+
+  it('sends a browser without a session to the IdP without a hint', async () => {
+    const out = await logout();
+    expect(out.statusCode).toBe(200);
+    const url = new URL(out.json<{ redirectTo: string }>().redirectTo);
+    expect(url.searchParams.get('client_id')).toBe('warden');
+    expect(url.searchParams.has('id_token_hint')).toBe(false);
+  });
+
+  it("doesn't keep the ID token on a session after logout", async () => {
+    const cookie = await login(app, 'viewer');
+    const count = async () =>
+      (
+        await sqlPool.query(
+          `select count(*)::int as n from warden.sessions where id_token is not null`,
+        )
+      ).rows[0].n as number;
+    const before = await count();
+    expect(before).toBeGreaterThan(0);
+    await logout(cookie);
+    expect(await count()).toBe(before - 1);
+  });
+
+  it("only logs out of Warden when the IdP doesn't support it", async () => {
+    const plainIdp = await startTestIdp({ endSession: false });
+    const plainApp = await start({ OIDC_ISSUER: plainIdp.issuer });
+    try {
+      const cookie = await login(plainApp, 'editor');
+      const out = await plainApp.inject({
+        method: 'POST',
+        url: '/auth/logout',
+        headers: { cookie },
+      });
+      expect(out.statusCode).toBe(204);
+      expect(out.body).toBe('');
+      const me = await plainApp.inject({ method: 'GET', url: '/api/me', headers: { cookie } });
+      expect(me.statusCode).toBe(401);
+    } finally {
+      await plainApp.close();
+      await plainIdp.close();
+    }
+  });
+
+  it('still logs out of Warden when the IdP is down', async () => {
+    const downApp = await start({ OIDC_ISSUER: 'http://127.0.0.1:9' });
+    try {
+      const out = await downApp.inject({ method: 'POST', url: '/auth/logout' });
+      expect(out.statusCode).toBe(204);
+      expect(String(out.headers['set-cookie'])).toMatch(/warden_session=;.*Max-Age=0/);
+    } finally {
+      await downApp.close();
     }
   });
 });

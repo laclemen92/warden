@@ -21,6 +21,8 @@ export interface MockOidcOptions {
   host?: string;
   clients: MockOidcClient[];
   users?: readonly MockUser[];
+  /** RP-initiated logout (`end_session_endpoint`). On by default; off mimics IdPs without it. */
+  endSession?: boolean;
 }
 
 export interface MockOidc {
@@ -40,6 +42,7 @@ export async function startMockOidc({
   host = '127.0.0.1',
   clients,
   users = MOCK_USERS,
+  endSession = true,
 }: MockOidcOptions): Promise<MockOidc> {
   // The issuer may depend on the bound port, so the provider is created after listen().
   let handler: http.RequestListener = (_req, res) => res.writeHead(503).end();
@@ -51,7 +54,7 @@ export async function startMockOidc({
   const address = server.address() as AddressInfo;
   const resolvedIssuer = issuer ?? `http://${host}:${address.port}`;
 
-  const provider = createProvider(resolvedIssuer, clients, users);
+  const provider = createProvider(resolvedIssuer, clients, users, endSession);
   const callback = provider.callback();
   handler = (req, res) => {
     const url = new URL(req.url ?? '/', resolvedIssuer);
@@ -77,6 +80,7 @@ function createProvider(
   issuer: string,
   clients: MockOidcClient[],
   users: readonly MockUser[],
+  endSession: boolean,
 ): Provider {
   // Fresh keys per process are fine for a mock; relying parties refetch the JWKS on unknown kids.
   const { privateKey } = generateKeyPairSync('ec', { namedCurve: 'P-256' });
@@ -107,6 +111,7 @@ function createProvider(
     features: {
       devInteractions: { enabled: false },
       rpInitiatedLogout: {
+        enabled: endSession,
         // Sign out without the default confirmation page.
         logoutSource: (ctx, form) => {
           ctx.body = page(

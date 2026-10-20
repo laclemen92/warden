@@ -17,6 +17,7 @@ export interface SessionUser {
   email?: string;
   name?: string;
   claims: Record<string, unknown>;
+  idToken?: string;
 }
 
 export interface Sessions {
@@ -27,8 +28,11 @@ export interface Sessions {
   start(req: FastifyRequest, reply: FastifyReply, user: SessionUser): Promise<void>;
   /** The request's live session, refreshing its idle timer; `undefined` if absent or expired. */
   load(req: FastifyRequest): Promise<Session | undefined>;
-  /** Revoke the request's session (if any) and clear its cookie. */
-  end(req: FastifyRequest, reply: FastifyReply): Promise<void>;
+  /**
+   * Revoke the request's session (if any) and clear its cookie. Returns the session's ID token,
+   * if it had one, for logging out at the IdP.
+   */
+  end(req: FastifyRequest, reply: FastifyReply): Promise<string | undefined>;
   /** Options for other short-lived auth cookies, matching the session cookie's security. */
   cookie(name: string, maxAgeSeconds: number): { name: string; options: CookieSerializeOptions };
 }
@@ -84,8 +88,9 @@ export function createSessions(db: Database, settings: AuthSettings): Sessions {
 
     async end(req, reply) {
       const token = readToken(req);
-      if (token) await deleteSession(db, hashToken(token));
+      const ended = token ? await deleteSession(db, hashToken(token)) : undefined;
       reply.clearCookie(session.name, { ...session.options, maxAge: 0 });
+      return ended?.idToken ?? undefined;
     },
   };
 }

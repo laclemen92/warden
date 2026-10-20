@@ -129,6 +129,14 @@ export const MIGRATIONS: readonly Migration[] = [
       alter table warden.audit_log add column details jsonb;
     `,
   },
+  {
+    version: '0007_session_id_token',
+    sql: `
+      -- Sent back to the IdP as id_token_hint when the user logs out. It only identifies the
+      -- user to the IdP; Warden never accepts it as a credential.
+      alter table warden.sessions add column id_token text;
+    `,
+  },
 ];
 
 // Arbitrary constant shared by every Warden instance, so replicas don't migrate concurrently.

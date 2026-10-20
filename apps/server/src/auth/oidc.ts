@@ -10,14 +10,22 @@ export interface LoginChecks {
 
 export interface OidcClient {
   redirectUri: string;
+  /** Where the IdP sends the browser after logging out; register it at the IdP. */
+  postLogoutRedirectUri: string;
   /** Fresh checks plus the IdP URL to send the browser to. */
   begin(): Promise<{ url: URL; checks: LoginChecks }>;
-  /** Exchange the callback's code and return the validated ID token claims. */
-  finish(callbackUrl: URL, checks: LoginChecks): Promise<oidc.IDToken>;
+  /** Exchange the callback's code and return the validated ID token and its claims. */
+  finish(callbackUrl: URL, checks: LoginChecks): Promise<{ claims: oidc.IDToken; idToken: string }>;
+  /**
+   * The IdP's logout URL (RP-initiated logout), so it ends its own session too; `undefined` when
+   * the IdP doesn't advertise an `end_session_endpoint`.
+   */
+  endSessionUrl(idToken?: string): Promise<URL | undefined>;
 }
 
 export function createOidcClient(settings: AuthSettings): OidcClient {
   const redirectUri = new URL('/auth/callback', settings.publicUrl).href;
+  const postLogoutRedirectUri = new URL('/', settings.publicUrl).href;
   // Settings only allow http for loopback issuers.
   const options =
     settings.issuer.protocol === 'http:' ? { execute: [oidc.allowInsecureRequests] } : {};
@@ -34,6 +42,7 @@ export function createOidcClient(settings: AuthSettings): OidcClient {
 
   return {
     redirectUri,
+    postLogoutRedirectUri,
 
     async begin() {
       const config = await configuration();
@@ -62,8 +71,18 @@ export function createOidcClient(settings: AuthSettings): OidcClient {
         idTokenExpected: true,
       });
       const claims = tokens.claims();
-      if (!claims) throw new Error('token response has no ID token');
-      return claims;
+      if (!claims || !tokens.id_token) throw new Error('token response has no ID token');
+      return { claims, idToken: tokens.id_token };
+    },
+
+    async endSessionUrl(idToken) {
+      const config = await configuration();
+      if (!config.serverMetadata().end_session_endpoint) return undefined;
+      // buildEndSessionUrl adds client_id, which some IdPs need when the hint is missing.
+      return oidc.buildEndSessionUrl(config, {
+        post_logout_redirect_uri: postLogoutRedirectUri,
+        ...(idToken ? { id_token_hint: idToken } : {}),
+      });
     },
   };
 }
