@@ -1,6 +1,7 @@
 import type { Entity } from './effective-schema.js';
 import { checkFieldValue, fieldCategory, type Filter, type Scalar } from './filter.js';
 import { fromBase64Url, toBase64Url } from './encoding.js';
+import { fieldSchema } from './validation.js';
 
 /**
  * Opaque, URL-safe id for a row. Single-column keys use the value itself (`/users/42`);
@@ -46,7 +47,14 @@ export function decodeRecordId(entity: Entity, id: string): RecordIdDecoding {
     }
     const scalar =
       typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean';
-    if (!f || !scalar || checkFieldValue(f, value as Scalar)) {
+    // Ids are checked like write values too (integers in range, real dates, no NUL), so a value
+    // the column can't hold is a 404 here rather than a Postgres error.
+    if (
+      !f ||
+      !scalar ||
+      checkFieldValue(f, value as Scalar) ||
+      !fieldSchema({ ...f, nullable: false }).safeParse(value).success
+    ) {
       return { ok: false, message: 'malformed record id' };
     }
     conditions.push({ field: key, op: 'eq', value: value as Scalar });

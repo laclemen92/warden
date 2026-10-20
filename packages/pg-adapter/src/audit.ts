@@ -31,7 +31,17 @@ export class AuditWriteError extends Error {
   }
 }
 
-const json = (value: unknown) => (value === null ? null : JSON.stringify(value));
+/**
+ * JSON text for a jsonb audit column. `json` columns can hold strings with NUL characters, which
+ * jsonb rejects; failing the audit insert would leave such rows unwritable, so each NUL is
+ * recorded as the six characters `\u0000` instead. In the JSON text, `\u0000` is a NUL escape
+ * only after an even number of backslashes; after an odd number it is an escaped backslash
+ * followed by the text `u0000`, which jsonb accepts as-is.
+ */
+const json = (value: unknown) =>
+  value === null
+    ? null
+    : JSON.stringify(value).replace(/(?<!\\)((?:\\\\)*)\\u0000/g, '$1\\\\u0000');
 
 /**
  * Write hook that appends an entry to `warden.audit_log` in the write's own transaction, so a
