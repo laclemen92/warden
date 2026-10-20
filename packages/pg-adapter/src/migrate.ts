@@ -101,6 +101,27 @@ export const MIGRATIONS: readonly Migration[] = [
       );
     `,
   },
+  {
+    version: '0005_saved_views',
+    sql: `
+      create table warden.saved_views (
+        id            bigint generated always as identity primary key,
+        -- Entity key, as in /api/entities/:entity.
+        entity        text not null,
+        name          text not null,
+        owner_subject text not null,
+        -- The owner's name or email when they saved it, to show next to shared views.
+        owner_name    text,
+        shared        boolean not null default false,
+        state         jsonb not null,
+        created_at    timestamptz not null default now(),
+        updated_at    timestamptz not null default now()
+      );
+      create unique index saved_views_name_idx
+        on warden.saved_views (entity, owner_subject, lower(name));
+      create index saved_views_shared_idx on warden.saved_views (entity) where shared;
+    `,
+  },
 ];
 
 // Arbitrary constant shared by every Warden instance, so replicas don't migrate concurrently.
