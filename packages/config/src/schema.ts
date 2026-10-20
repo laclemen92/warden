@@ -10,9 +10,9 @@ const actions = z.array(z.enum(ACTIONS));
 
 /**
  * Warden administration areas a role can be given. `schema`: the schema drift page. `audit`: the
- * audit log page.
+ * audit log page. `roles`: assigning roles to users in the app.
  */
-export const ADMIN_AREAS = ['schema', 'audit'] as const;
+export const ADMIN_AREAS = ['schema', 'audit', 'roles'] as const;
 
 const roleConfigSchema = z.strictObject({
   /** Actions this role may perform, keyed by table, or `*` for every exposed table. */

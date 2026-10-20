@@ -5,12 +5,14 @@ import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   acknowledgeSchemaSnapshot,
+  assignRole,
   createDatabase,
   ensureSchemaSnapshot,
   migrate,
   MIGRATIONS,
   pendingMigrations,
   type DatabaseHandle,
+  unassignRole,
 } from '../src/index.js';
 
 let pgContainer: TestDatabase;
@@ -158,5 +160,20 @@ describe('documented runtime grants', () => {
       await appHandle.close();
     }
     await expect(app.query('delete from warden.schema_snapshots')).rejects.toMatchObject(DENIED);
+  });
+
+  it('lets the runtime role assign and unassign roles', async () => {
+    const appHandle = createDatabase({ connectionString: appConnectionString });
+    const change = {
+      email: 'grant@example.com',
+      role: 'ops',
+      actor: { subject: 'admin', roles: [] },
+    };
+    try {
+      expect(await assignRole(appHandle.db, change)).toBeDefined();
+      expect(await unassignRole(appHandle.db, change)).toBeDefined();
+    } finally {
+      await appHandle.close();
+    }
   });
 });

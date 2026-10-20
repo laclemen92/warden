@@ -1,6 +1,7 @@
 import { loadConfig } from '@wardenhq/config';
 import { resolvePolicy, resolveSchema } from '@wardenhq/core';
 import {
+  assignedRoles,
   createDatabase,
   ensureSchemaSnapshot,
   introspect,
@@ -76,6 +77,7 @@ export async function createWarden({
       oidc: createOidcClient(authSettings),
       ...(config.access ? { access: config.access } : {}),
       roles: config.roles,
+      assignedRoles: (email: string) => assignedRoles(db, email),
     };
     const app = await buildApp({
       schema,
@@ -83,6 +85,7 @@ export async function createWarden({
       policy,
       auth,
       drift: { model, config },
+      roles: { config },
       logger,
       ...(webDir ? { webDir } : {}),
     });

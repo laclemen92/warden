@@ -40,8 +40,9 @@ roles:
   admin:
     grants: { '*': [read, create, update, delete] }
     # The schema drift page shows every table and column, including hidden ones. The audit log
-    # page searches every change made through Warden.
-    admin: [schema, audit]
+    # page searches every change made through Warden. The roles page can give anyone any role,
+    # admin included.
+    admin: [schema, audit, roles]
   ops:
     grants:
       users: [read, update]

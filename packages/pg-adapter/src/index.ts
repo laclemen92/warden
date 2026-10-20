@@ -39,6 +39,14 @@ export {
   type SessionTimeouts,
 } from './sessions.js';
 export {
+  assignedRoles,
+  assignRole,
+  listRoleAssignments,
+  unassignRole,
+  type AssignmentActor,
+  type RoleAssignment,
+} from './role-assignments.js';
+export {
   acknowledgeSchemaSnapshot,
   ensureSchemaSnapshot,
   latestSchemaSnapshot,

@@ -198,7 +198,7 @@ Roles grant actions on tables. Create, update, and delete are denied unless a ro
 | Key                           | Type                                         | Default |
 | ----------------------------- | -------------------------------------------- | ------- |
 | `roles.<role>.grants.<table>` | list of `read`, `create`, `update`, `delete` | None    |
-| `roles.<role>.admin`          | list of `schema`, `audit`                    | None    |
+| `roles.<role>.admin`          | list of `schema`, `audit`, `roles`           | None    |
 
 Each grant key is a table (`users`, `billing.invoices`) or `*` for every exposed table. A user with several roles gets every action any of them grants. A role name that isn't defined here grants nothing.
 
@@ -231,8 +231,9 @@ Here `ops` may update users and create or update companies. Nobody may create or
 
 - `schema`: the [schema drift](#schema-drift) page. It names every table and column in the database, including ones config hides, so give it only to people who may see the whole schema.
 - `audit`: the [audit log](#audit-log) page, which searches every change made through Warden.
+- `roles`: the [roles page](#role-assignments), where admins assign roles to people. Someone who can assign roles can give anyone, themselves included, any role config defines, so treat it like the most powerful role you have.
 
-Users get roles from [`access`](#access) when they sign in. The API enforces every rule; the UI only hides controls a user can't use. To restrict individual columns by role, see [field-level rules](#field-level-rules).
+Users get roles from [`access`](#access) when they sign in, plus any [assigned in the app](#role-assignments). The API enforces every rule; the UI only hides controls a user can't use. To restrict individual columns by role, see [field-level rules](#field-level-rules).
 
 ## `access`
 
@@ -247,7 +248,7 @@ Decides who may sign in and which [roles](#roles) they get, from the claims in t
 
 **Without `access`**, everyone the IdP authenticates may sign in, with no roles: they can read per [`defaults.read`](#defaults) and write nothing. Limit who can sign in at the IdP (for example, assign the Warden app to specific users or groups), or configure `access`.
 
-**With `access`**, a user gets every role of every rule they match, and a user who matches no rule is denied. The login fails with `/login?error=access_denied`, and no session is created.
+**With `access`**, a user gets every role of every rule they match, and a user who matches no rule (and has no [role assignment](#role-assignments)) is denied. The login fails with `/login?error=access_denied`, and no session is created.
 
 - **`groups`** maps an IdP group to roles. It matches when the group is in the ID token claim named by **`groupsClaim`** (a list of strings, or a single string). Group names match exactly and are case-sensitive. Most IdPs only send groups when asked, so add the right scope to `OIDC_SCOPES` (often `groups`) or configure the claim at the IdP. Entra ID sends group object IDs, not names; Keycloak may prefix groups with `/`.
 - **`emailDomains`** maps an email domain to roles, a default for everyone at that domain. It matches the part of the `email` claim after the last `@`, case-insensitively, and only that exact domain: `example.com` doesn't match `eu.example.com`.
@@ -269,6 +270,17 @@ access:
   emailDomains:
     example.com: [viewer] # everyone at example.com can sign in and read
 ```
+
+## Role assignments
+
+Config is the source of truth for which roles exist and what they grant. On top of the roles [`access`](#access) gives people, users with a role that has `admin: [roles]` can open **Roles** in the sidebar to assign extra roles to individual people by email. The page also shows the roles and access rules from config, read-only.
+
+- An assignment matches the user's `email` claim case-insensitively, and only when the IdP says it is verified (`email_verified: true`), unless [`access.requireVerifiedEmail`](#access) is `false`.
+- An assignment counts as an access rule: a user who matches no rule in `access` can sign in if they have one.
+- Only roles defined under `roles` can be assigned. If a role is later removed from config, its assignments stop having any effect (the page marks them "Not in config") and come back if the role does.
+- Roles are resolved on every request, so assigning or removing a role applies to existing sessions immediately.
+
+Each assignment and removal is recorded in the [audit log](database.md#role-assignments). Assignments are stored in the `warden` schema, so they survive restarts and config changes.
 
 ## Schema drift
 
