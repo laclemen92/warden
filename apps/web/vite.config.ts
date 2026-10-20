@@ -38,5 +38,9 @@ export default defineConfig({
   test: {
     environment: 'jsdom',
     setupFiles: ['./test/setup.ts'],
+    // CI runners share their CPU with every other package's tests, and jsdom tests that type
+    // into several fields can take well over the default 5s there. Keep this above the 5s
+    // `asyncUtilTimeout` in test/setup.ts, so a single slow wait fails with its own message.
+    testTimeout: 30_000,
   },
 });
