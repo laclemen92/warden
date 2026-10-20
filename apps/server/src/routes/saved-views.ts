@@ -22,6 +22,7 @@ import {
 } from '@wardenhq/pg-adapter';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { Views } from '../views.js';
+import { NO_NUL } from './schemas.js';
 
 export interface SavedViewOptions {
   db: Database;
@@ -53,7 +54,15 @@ export interface SavedViewItem {
 
 // Checked in the handler rather than by a schema, so a malformed id 404s like a missing one.
 const ID = /^[1-9][0-9]{0,18}$/;
-const nameSchema = { type: 'string', minLength: 1, maxLength: VIEW_LIMITS.maxNameLength } as const;
+const MAX_ID = 2n ** 63n - 1n;
+// Ids beyond bigint can't exist, and Postgres would fail on them rather than find nothing.
+const isId = (id: string) => ID.test(id) && BigInt(id) <= MAX_ID;
+const nameSchema = {
+  type: 'string',
+  minLength: 1,
+  maxLength: VIEW_LIMITS.maxNameLength,
+  pattern: NO_NUL,
+} as const;
 // The state's contents are checked against the entity by `validateViewState`.
 const stateSchema = { type: 'object' } as const;
 
@@ -139,7 +148,7 @@ export function registerSavedViewRoutes(
 
   /** Load a view the caller can see, sending a 404 otherwise. */
   const load = async (req: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
-    const view = ID.test(req.params.id) ? await getSavedView(db, req.params.id) : undefined;
+    const view = isId(req.params.id) ? await getSavedView(db, req.params.id) : undefined;
     const item = view && present(req, view);
     if (!view || !item) {
       notFound(reply);

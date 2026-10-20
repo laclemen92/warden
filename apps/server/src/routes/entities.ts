@@ -31,6 +31,7 @@ import {
 } from '@wardenhq/pg-adapter';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { Views } from '../views.js';
+import { NO_NUL } from './schemas.js';
 
 export const DEFAULT_LIMIT = 50;
 export const MAX_LIMIT = 500;
@@ -84,7 +85,7 @@ interface DeleteBody extends WriteBody {
 // Field values are validated against the entity by `validateRecord`; these only check the shape.
 const valuesSchema = { type: 'object' } as const;
 const versionSchema = { type: 'string', minLength: 1, maxLength: MAX_VERSION_LENGTH } as const;
-const reasonSchema = { type: 'string', maxLength: MAX_REASON_LENGTH } as const;
+const reasonSchema = { type: 'string', maxLength: MAX_REASON_LENGTH, pattern: NO_NUL } as const;
 const createBodySchema = {
   type: 'object',
   required: ['values'],

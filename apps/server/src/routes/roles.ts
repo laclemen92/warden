@@ -11,6 +11,7 @@ import {
   type SessionTimeouts,
 } from '@wardenhq/pg-adapter';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import { NO_NUL } from './schemas.js';
 
 export interface RoleRoutesOptions {
   config: WardenConfig;
@@ -38,7 +39,7 @@ const revokeSchema = {
     type: 'object',
     required: ['subject'],
     additionalProperties: false,
-    properties: { subject: { type: 'string', minLength: 1, maxLength: 1000 } },
+    properties: { subject: { type: 'string', minLength: 1, maxLength: 1000, pattern: NO_NUL } },
   },
 };
 
@@ -48,8 +49,8 @@ const assignmentSchema = {
     required: ['email', 'role'],
     additionalProperties: false,
     properties: {
-      email: { type: 'string', minLength: 1, maxLength: 320 },
-      role: { type: 'string', minLength: 1, maxLength: 200 },
+      email: { type: 'string', minLength: 1, maxLength: 320, pattern: NO_NUL },
+      role: { type: 'string', minLength: 1, maxLength: 200, pattern: NO_NUL },
     },
   },
 };

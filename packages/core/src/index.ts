@@ -33,3 +33,4 @@ export { ACCESS_AUDIT_ACTIONS, auditDiff, filterFields, projectAuditEntry } from
 export type * from './saved-view.js';
 export { VIEW_LIMITS, validateViewState, viewName } from './saved-view.js';
 export { csvCell, csvHeader, csvRow } from './csv.js';
+export { checkTimestamp } from './values.js';
