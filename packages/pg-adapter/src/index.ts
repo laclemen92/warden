@@ -68,6 +68,7 @@ export {
   assignedRoles,
   assignRole,
   listRoleAssignments,
+  LastHolderError,
   unassignRole,
   type AssignmentActor,
   type RoleAssignment,

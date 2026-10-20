@@ -1,8 +1,9 @@
 import type { WardenConfig } from '@wardenhq/config';
-import { adminAreas, parseEmail } from '@wardenhq/core';
+import { adminAreas, lastHolderRoles, parseEmail } from '@wardenhq/core';
 import {
   assignRole,
   deleteSessionsForSubject,
+  LastHolderError,
   listRoleAssignments,
   listSignedInUsers,
   unassignRole,
@@ -66,6 +67,7 @@ export function registerRoleRoutes(
   { config, db, sessionTimeouts }: RoleRoutesOptions,
 ) {
   const defined = (role: string) => Object.hasOwn(config.roles, role);
+  const protect = lastHolderRoles(config.roles, config.access);
 
   // Checked before the body is parsed, so non-admins can't tell the routes exist.
   const onRequest = async (req: FastifyRequest, reply: FastifyReply) => {
@@ -133,7 +135,24 @@ export function registerRoleRoutes(
       // Assignments stored before non-ASCII emails were refused can still be removed, by their
       // exact stored email; nothing is folded, so a look-alike can't remove someone else's.
       const email = parseEmail(req.body.email) ?? req.body.email;
-      const removed = await unassignRole(db, { email, role: req.body.role, actor: actorOf(req) });
+      let removed;
+      try {
+        removed = await unassignRole(db, {
+          email,
+          role: req.body.role,
+          actor: actorOf(req),
+          protect,
+        });
+      } catch (err) {
+        if (!(err instanceof LastHolderError)) throw err;
+        return reply.code(409).send({
+          statusCode: 409,
+          error: 'Conflict',
+          message:
+            `${email} is the last person assigned a role that can manage roles; ` +
+            'assign one to someone else first, or grant one through an access rule in config',
+        });
+      }
       if (!removed) {
         return reply
           .code(404)

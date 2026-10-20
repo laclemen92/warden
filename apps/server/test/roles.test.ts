@@ -5,7 +5,15 @@ import { readExampleSql, startPostgres, type TestDatabase } from '@wardenhq/test
 import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createWarden } from '../src/warden.js';
-import { authEnv, beginLogin, callback, login, signInAtIdp, startTestIdp } from './helpers/auth.js';
+import {
+  authEnv,
+  beginLogin,
+  callback,
+  login,
+  signInAtIdp,
+  startTestIdp,
+  writeConfig,
+} from './helpers/auth.js';
 
 type App = Awaited<ReturnType<typeof createWarden>>;
 
@@ -399,5 +407,70 @@ describe('access entries in the audit log', () => {
       headers: { cookie: admin },
     });
     expect(res.statusCode).toBe(404);
+  });
+});
+
+describe('the last holder of the roles admin area', () => {
+  // Only assignments give `owner`, so removing the last one would lock the roles page.
+  const CONFIG = `roles:
+  viewer: {}
+  owner: { admin: [roles] }
+access:
+  allowAll: true
+  groups: { warden-viewers: [viewer] }
+`;
+  let ownerApp: App;
+  beforeAll(async () => {
+    await sqlPool.query(`delete from warden.role_assignments`);
+    await sqlPool.query(
+      `insert into warden.role_assignments (email, role, assigned_by)
+       values ('admin@example.com', 'owner', 'setup')`,
+    );
+    ownerApp = await createWarden({
+      env: {
+        DATABASE_URL: db.connectionString,
+        WARDEN_CONFIG: writeConfig(CONFIG),
+        ...authEnv(idp),
+      },
+    });
+  });
+  afterAll(() => ownerApp?.close());
+
+  const call = (method: 'POST' | 'DELETE', cookie: string, payload: object) =>
+    ownerApp.inject({ method, url: ASSIGNMENTS, headers: { cookie }, payload });
+
+  it('refuses to remove it, even from yourself, until someone else holds it', async () => {
+    const owner = await login(ownerApp, 'admin');
+    const self = { email: 'admin@example.com', role: 'owner' };
+
+    const refused = await call('DELETE', owner, self);
+    expect(refused.statusCode, refused.body).toBe(409);
+    expect(refused.json()).toEqual({
+      statusCode: 409,
+      error: 'Conflict',
+      message:
+        'admin@example.com is the last person assigned a role that can manage roles; ' +
+        'assign one to someone else first, or grant one through an access rule in config',
+    });
+    const { rows } = await sqlPool.query(
+      `select email from warden.role_assignments where role = 'owner'`,
+    );
+    expect(rows).toEqual([{ email: 'admin@example.com' }]);
+
+    expect(
+      (await call('POST', owner, { email: 'editor@example.com', role: 'owner' })).statusCode,
+    ).toBe(201);
+    expect((await call('DELETE', owner, self)).statusCode).toBe(204);
+    const editor = await login(ownerApp, 'editor');
+    expect(
+      (await call('DELETE', editor, { email: 'editor@example.com', role: 'owner' })).statusCode,
+    ).toBe(409);
+  });
+
+  it('removes other roles and non-admin assignments as before', async () => {
+    const editor = await login(ownerApp, 'editor');
+    const viewer = { email: 'viewer@example.com', role: 'viewer' };
+    expect((await call('POST', editor, viewer)).statusCode).toBe(201);
+    expect((await call('DELETE', editor, viewer)).statusCode).toBe(204);
   });
 });
