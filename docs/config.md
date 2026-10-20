@@ -400,7 +400,7 @@ Everyone who can read a table can save its grid's filters, search, sort, and vis
 
 Each view has a link, `/entities/<table>?view=<id>`, that opens the grid with the view applied. It always applies the view's current state, so editing a shared view updates everyone's link. The grid's own URL already carries its state, so copying the address bar shares the grid as it is, without saving a view.
 
-Views follow the same rules as everything else. A view can only use columns its author can see. A shared view that uses a column someone can't see (because of [`readableBy`](#field-level-rules), or because the column was hidden or dropped since) doesn't appear for them at all. Its owner, and anyone who may delete it, see it marked as out of date so they can fix or delete it.
+Views follow the same rules as everything else. A view can only use columns its author can see. A shared view that uses a column someone can't see (because of [`readableBy`](#field-level-rules), or because the column was hidden or dropped since) doesn't appear for them at all. Its owner, and anyone who may delete it, see it marked as out of date so they can fix or delete it. The exception is a column hidden from someone by `readableBy`: then only the view's owner sees it, since even its name could describe that column, and anyone with `admin: [views]` who can't read the column can't see or delete it.
 
 Views are stored in [`warden.saved_views`](database.md#saved-views).
 

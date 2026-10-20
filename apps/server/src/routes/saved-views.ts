@@ -2,6 +2,7 @@ import type { WardenConfig } from '@wardenhq/config';
 import {
   adminAreas,
   isAllowed,
+  namesRestrictedField,
   validateViewState,
   viewName,
   VIEW_LIMITS,
@@ -46,7 +47,8 @@ export interface SavedViewItem {
   canEdit: boolean;
   /**
    * Null when the view names a field the current user can't see (dropped, hidden since, or
-   * restricted by `readableBy`). Only users who may delete such a view are shown it at all.
+   * restricted by `readableBy`). Only users who may delete such a view are shown it at all, and
+   * of those, only its owner when the field is restricted.
    */
   state: ViewState | null;
   updatedAt: string;
@@ -127,7 +129,14 @@ export function registerSavedViewRoutes(
     const entity = readable(req, view.entity);
     if (!entity) return undefined;
     const state = validateViewState(entity, view.state);
-    if (!state.ok && !mayDelete(req, view)) return undefined;
+    if (!state.ok) {
+      if (!mayDelete(req, view)) return undefined;
+      // Views admins could otherwise learn of a restricted field, and from the view's name what
+      // it's about. Its owner wrote the name and saw the field, so they still see it.
+      if (!mine && namesRestrictedField(policy, req.roles ?? [], view.entity, view.state)) {
+        return undefined;
+      }
+    }
     return {
       id: view.id,
       entity: view.entity,
