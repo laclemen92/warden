@@ -29,3 +29,10 @@ export {
   type Session,
   type SessionTimeouts,
 } from './sessions.js';
+export {
+  acknowledgeSchemaSnapshot,
+  ensureSchemaSnapshot,
+  latestSchemaSnapshot,
+  type SchemaSnapshot,
+  type SnapshotActor,
+} from './snapshots.js';

@@ -1,8 +1,10 @@
 export {
   ACTIONS,
+  ADMIN_AREAS,
   type AccessConfig,
   wardenConfigSchema,
   type Action,
+  type AdminArea,
   type ColumnConfig,
   type RoleConfig,
   type TableConfig,

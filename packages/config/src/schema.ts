@@ -8,6 +8,9 @@ const tableKey = z.string().regex(/^[^.]+(\.[^.]+)?$/, 'Expected "table" or "sch
 export const ACTIONS = ['read', 'create', 'update', 'delete'] as const;
 const actions = z.array(z.enum(ACTIONS));
 
+/** Warden administration areas a role can be given. `schema`: the schema drift page. */
+export const ADMIN_AREAS = ['schema'] as const;
+
 const roleConfigSchema = z.strictObject({
   /** Actions this role may perform, keyed by table, or `*` for every exposed table. */
   grants: z
@@ -16,6 +19,8 @@ const roleConfigSchema = z.strictObject({
       actions,
     )
     .default({}),
+  /** Admin areas this role may use. They show names that config hides, so grant them narrowly. */
+  admin: z.array(z.enum(ADMIN_AREAS)).default([]),
 });
 
 const roleList = z.array(name).min(1);
@@ -163,3 +168,4 @@ export type ColumnConfig = z.infer<typeof columnConfigSchema>;
 export type RoleConfig = z.infer<typeof roleConfigSchema>;
 export type AccessConfig = z.infer<typeof accessConfigSchema>;
 export type Action = (typeof ACTIONS)[number];
+export type AdminArea = (typeof ADMIN_AREAS)[number];

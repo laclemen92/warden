@@ -100,6 +100,7 @@ describe('login', () => {
       email: 'editor@example.com',
       name: 'Eddie Editor',
       roles: [],
+      admin: [],
     });
     expect((await get('/api/schema', cookie)).statusCode).toBe(200);
   });

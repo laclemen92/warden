@@ -129,15 +129,20 @@ roles:
       users: [read, update]
       companies: [read, create, update]
   nobody: {}
+  schema-admin: { admin: [schema] }
 tables:
   orders: { deny: [create, delete] }
 `,
       FILE,
     );
     expect(config.roles).toEqual({
-      viewer: { grants: { '*': ['read'] } },
-      ops: { grants: { users: ['read', 'update'], companies: ['read', 'create', 'update'] } },
-      nobody: { grants: {} },
+      viewer: { grants: { '*': ['read'] }, admin: [] },
+      ops: {
+        grants: { users: ['read', 'update'], companies: ['read', 'create', 'update'] },
+        admin: [],
+      },
+      nobody: { grants: {}, admin: [] },
+      'schema-admin': { grants: {}, admin: ['schema'] },
     });
     expect(config.tables.orders?.deny).toEqual(['create', 'delete']);
   });
@@ -151,10 +156,12 @@ roles:
     grants:
       users: [read, write]
     grant: {}
+    admin: [roles]
 `).map((i) => [i.path, i.line]),
     ).toEqual([
       ['tables.orders.deny.0', 2],
       ['roles.ops.grants.users.1', 6],
+      ['roles.ops.admin.0', 8],
       ['roles.ops.grant', 7],
     ]);
   });

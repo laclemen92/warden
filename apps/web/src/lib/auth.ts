@@ -10,6 +10,8 @@ export interface CurrentUser {
   name?: string;
   email?: string;
   roles?: string[];
+  /** Admin areas the user may open, e.g. `schema` for the schema drift page. */
+  admin?: string[];
 }
 
 /**

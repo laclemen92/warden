@@ -10,6 +10,7 @@ Warden works with no config at all: it introspects the database and exposes ever
 - [`tables.<table>.columns`](#tablestablecolumns)
 - [`roles`](#roles)
 - [`access`](#access)
+- [Schema drift](#schema-drift)
 - [Full example](#full-example)
 
 ## Loading the config
@@ -171,6 +172,7 @@ Roles grant actions on tables. Create, update, and delete are denied unless a ro
 | Key                           | Type                                         | Default |
 | ----------------------------- | -------------------------------------------- | ------- |
 | `roles.<role>.grants.<table>` | list of `read`, `create`, `update`, `delete` | None    |
+| `roles.<role>.admin`          | list of `schema`                             | None    |
 
 Each grant key is a table (`users`, `billing.invoices`) or `*` for every exposed table. A user with several roles gets every action any of them grants. A role name that isn't defined here grants nothing.
 
@@ -198,6 +200,10 @@ tables:
 ```
 
 Here `ops` may update users and create or update companies. Nobody may create or delete orders, even a role granted `*: [create, delete]`.
+
+**`admin`** lists the Warden administration areas the role may use:
+
+- `schema`: the [schema drift](#schema-drift) page. It names every table and column in the database, including ones config hides, so give it only to people who may see the whole schema.
 
 Users get roles from [`access`](#access) when they sign in.
 
@@ -238,6 +244,18 @@ access:
   emailDomains:
     example.com: [viewer] # everyone at example.com can sign in and read
 ```
+
+## Schema drift
+
+Warden keeps a baseline snapshot of the database schema in the `warden` schema. The first start records it. Users with a role that has `admin: [schema]` can open **Schema drift** in the sidebar, which lists:
+
+- tables and columns added since the baseline that config doesn't mention, with how Warden currently treats them (exposed or not, and visible, hidden, or read-only per [`defaults.newColumns`](#defaults)),
+- tables and columns removed since the baseline,
+- config entries that name tables or columns that no longer exist (the same mismatches startup logs as [warnings](#errors-and-warnings)).
+
+The page also shows a YAML snippet for the new tables and columns. It writes down the current treatment, so pasting it into `tables` changes nothing until you edit it, for example from `hidden: false` to `hidden: true`. Merge it with any entries you already have for those tables. Config entries for missing objects have to be removed by hand.
+
+The page reflects the schema as of Warden's last start. **Acknowledge** makes that schema the new baseline and records the change in the [audit log](database.md#the-audit-log).
 
 ## Full example
 
@@ -281,6 +299,8 @@ roles:
       users: [read, update]
       companies: [read, create, update]
       orders: [update]
+  dba:
+    admin: [schema]
   finance:
     grants:
       billing.invoices: [read, update]
@@ -289,6 +309,7 @@ access:
   groupsClaim: groups
   groups:
     warden-ops: [ops]
+    warden-dba: [dba]
     warden-finance: [finance]
   emailDomains:
     example.com: [viewer]

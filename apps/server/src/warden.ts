@@ -1,6 +1,12 @@
 import { loadConfig } from '@wardenhq/config';
 import { resolvePolicy, resolveSchema } from '@wardenhq/core';
-import { createDatabase, introspect, migrate, pendingMigrations } from '@wardenhq/pg-adapter';
+import {
+  createDatabase,
+  ensureSchemaSnapshot,
+  introspect,
+  migrate,
+  pendingMigrations,
+} from '@wardenhq/pg-adapter';
 import { buildApp, type AppOptions } from './app.js';
 import { createOidcClient } from './auth/oidc.js';
 import { createSessions } from './auth/session.js';
@@ -61,14 +67,25 @@ export async function createWarden({
     const { schema, warnings: schemaWarnings } = resolveSchema(model, config);
     const { policy, warnings: policyWarnings } = resolvePolicy(schema, config);
     const warnings = [...schemaWarnings, ...policyWarnings];
+    // The first start records the schema drift baseline.
+    await ensureSchemaSnapshot(db, model);
 
     const auth = {
       sessionSecret: authSettings.sessionSecret,
       sessions: createSessions(db, authSettings),
       oidc: createOidcClient(authSettings),
       ...(config.access ? { access: config.access } : {}),
+      roles: config.roles,
     };
-    const app = await buildApp({ schema, db, policy, auth, logger, ...(webDir ? { webDir } : {}) });
+    const app = await buildApp({
+      schema,
+      db,
+      policy,
+      auth,
+      drift: { model, config },
+      logger,
+      ...(webDir ? { webDir } : {}),
+    });
     app.addHook('onClose', close);
     logIdleError = (err) => app.log.error({ err }, 'idle database connection error');
 

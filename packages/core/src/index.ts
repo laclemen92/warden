@@ -24,3 +24,7 @@ export type * from './validation.js';
 export { fieldSchema, recordSchema, toFieldErrors, validateRecord } from './validation.js';
 export { resolveRoles } from './roles.js';
 export { relationFilter } from './relation.js';
+export type * from './admin.js';
+export { adminAreas } from './admin.js';
+export type * from './schema-drift.js';
+export { diffSchema } from './schema-drift.js';
