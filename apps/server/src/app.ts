@@ -54,7 +54,7 @@ export async function buildApp({
   if (schema) app.get('/api/schema', async () => schema);
   if (schema && db && policy) {
     registerPolicy(app, schema, policy);
-    registerEntityRoutes(app, schema, db);
+    registerEntityRoutes(app, schema, db, policy);
   }
 
   if (webDir && existsSync(webDir)) {

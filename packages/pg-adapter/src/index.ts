@@ -7,6 +7,17 @@ export {
 export { compileFilter, escapeLike } from './filter.js';
 export { introspect, WARDEN_SCHEMA, type IntrospectOptions } from './introspect.js';
 export { getRow, listRows, type ListOptions, type ListResult, type Row } from './rows.js';
+export {
+  createRow,
+  deleteRow,
+  rowVersion,
+  updateRow,
+  type WriteAction,
+  type WriteChange,
+  type WriteHook,
+  type WriteOptions,
+  type WriteResult,
+} from './writes.js';
 export { mapWriteError, type WriteErrorResult } from './errors.js';
 export { migrate, MIGRATIONS, pendingMigrations, type Migration } from './migrate.js';
 export {

@@ -61,18 +61,10 @@ beforeAll(async () => {
   app = await createWarden({
     env: { DATABASE_URL: db.connectionString, WARDEN_CONFIG: config, ...authEnv(idp) },
   });
-  // Stand-ins for write routes, registered after the policy hook like any later route would be.
-  // The body schema shows that denied callers get 403 before input validation.
-  const body = {
-    type: 'object',
-    required: ['name'],
-    properties: { name: { type: 'string' } },
-  } as const;
+  // Stand-ins for routes that don't exist yet, registered after the policy hook like any later
+  // route would be.
   const ok = async () => ({ ok: true });
-  app.post('/api/entities/:entity', { schema: { body } }, ok);
   app.put('/api/entities/:entity/:id', ok);
-  app.patch('/api/entities/:entity/:id', ok);
-  app.delete('/api/entities/:entity/:id', ok);
   app.options('/api/entities/:entity', ok);
   for (const user of USERS) cookies[user] = await login(app, user);
 }, 120_000);
@@ -91,25 +83,36 @@ const send = (user: User, method: string, url: string, payload?: object) =>
     ...(payload ? { payload } : {}),
   });
 
-/** Every request that performs `action` on `entity`. */
-function requests(entity: string, action: Action): [string, string, object?][] {
+// A nullable text field per entity, for updates that pass validation.
+const TEXT_FIELD: Record<string, string> = { users: 'full_name', orders: 'notes' };
+
+/**
+ * Every request that performs `action` on `entity`, and its status once the policy lets it
+ * through. None of them change data: creates are invalid and updates and deletes are stale.
+ */
+function requests(entity: string, action: Action): [string, string, object | undefined, number][] {
   const base = `/api/entities/${entity}`;
   switch (action) {
     case 'read':
       return [
-        ['GET', base],
-        ['GET', `${base}/1`],
-        ['HEAD', base],
+        ['GET', base, undefined, 200],
+        ['GET', `${base}/1`, undefined, 200],
+        ['HEAD', base, undefined, 200],
       ];
     case 'create':
-      return [['POST', base, { name: 'x' }]];
+      return [['POST', base, { values: {} }, 400]];
     case 'update':
       return [
-        ['PATCH', `${base}/1`],
-        ['PUT', `${base}/1`],
+        [
+          'PATCH',
+          `${base}/1`,
+          { version: 'stale', values: { [TEXT_FIELD[entity] ?? 'x']: 'x' } },
+          409,
+        ],
+        ['PUT', `${base}/1`, undefined, 200],
       ];
     case 'delete':
-      return [['DELETE', `${base}/1`]];
+      return [['DELETE', `${base}/1?version=stale`, undefined, 409]];
   }
 }
 
@@ -123,10 +126,10 @@ const matrix = Object.entries(ALLOWED).flatMap(([entity, byUser]) =>
 
 describe('policy enforcement', () => {
   it.each(matrix)('%s %s %s: allowed=%s', async (user, action, entity, allowed) => {
-    for (const [method, url, payload] of requests(entity, action)) {
+    for (const [method, url, payload, status] of requests(entity, action)) {
       const res = await send(user, method, url, payload);
       if (allowed) {
-        expect(res.statusCode, `${method} ${url}`).toBe(200);
+        expect(res.statusCode, `${method} ${url}: ${res.body}`).toBe(status);
       } else {
         expect(res.statusCode, `${method} ${url}`).toBe(403);
         if (method !== 'HEAD') expect(res.json()).toEqual(FORBIDDEN);
@@ -147,6 +150,19 @@ describe('policy enforcement', () => {
     // The same requests from someone allowed fail validation instead.
     expect((await send('admin', 'GET', '/api/entities/orders?limit=0')).statusCode).toBe(400);
     expect((await send('admin', 'POST', '/api/entities/users', {})).statusCode).toBe(400);
+  });
+
+  it('shows a written row only to callers who may read it', async () => {
+    const order = (await send('admin', 'GET', '/api/entities/orders/1')).json();
+    // ops may update orders but not read them.
+    const res = await send('editor', 'PATCH', '/api/entities/orders/1', {
+      version: order.version,
+      values: { notes: 'updated by ops' },
+    });
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.json()).toEqual({ id: '1' });
+    const after = (await send('admin', 'GET', '/api/entities/orders/1')).json();
+    expect(after.values.notes).toBe('updated by ops');
   });
 
   it('denies methods that map to no action', async () => {
