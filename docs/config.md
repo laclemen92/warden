@@ -322,7 +322,7 @@ A user gets every role of every rule they match, and a user who matches no rule 
 - **`allowAll`** lets in everyone the IdP authenticates. Users who match no rule sign in with no roles: they can read per [`defaults.read`](#defaults) and write nothing. Use it only when the IdP itself restricts who can sign in (for example, you assigned the Warden app to specific users or groups), never with a public or multi-tenant issuer. Warden logs a warning at startup while it is on. Rules still apply alongside it, giving roles to the users they match.
 
 - **`groups`** maps an IdP group to roles. It matches when the group is in the ID token claim named by **`groupsClaim`** (a list of strings, or a single string). Group names match exactly and are case-sensitive. Most IdPs only send groups when asked, so add the right scope to `OIDC_SCOPES` (often `groups`) or configure the claim at the IdP. Entra ID sends group object IDs, not names; Keycloak may prefix groups with `/`.
-- **`emailDomains`** maps an email domain to roles, a default for everyone at that domain. It matches the part of the `email` claim after the last `@`, case-insensitively, and only that exact domain: `example.com` doesn't match `eu.example.com`.
+- **`emailDomains`** maps an email domain to roles, a default for everyone at that domain. It matches the part of the `email` claim after the last `@`, case-insensitively, and only that exact domain: `example.com` doesn't match `eu.example.com`. Domains must be ASCII; write internationalized domains in their punycode form (`xn--...`). See [non-ASCII emails](#non-ascii-emails).
 - **`requireVerifiedEmail`**: `emailDomains` only match when the ID token has `email_verified: true`. Otherwise anyone who can set their own email at the IdP could claim a domain. It also decides whether Warden records the user's email at all: without a verified one, their sessions, audit entries, and the roles page identify them only by OIDC subject, so nobody can act under someone else's address. Set it to `false` only for an IdP that never sends `email_verified` and doesn't let users change their email address. It doesn't affect `groups`.
 
 Every role named here must be defined under `roles`, and a domain may only be listed once; otherwise startup fails.
@@ -354,6 +354,7 @@ access:
 Config is the source of truth for which roles exist and what they grant. On top of the roles [`access`](#access) gives people, users with a role that has `admin: [roles]` can open **Roles** in the sidebar to assign extra roles to individual people by email. The page also shows the roles and access rules from config, read-only.
 
 - An assignment matches the user's `email` claim case-insensitively, and only when the IdP says it is verified (`email_verified: true`), unless [`access.requireVerifiedEmail`](#access) is `false`.
+- Assignments are for ASCII email addresses only; the page refuses any other with a 400. To remove an assignment stored before that rule, send its email exactly as listed.
 - An assignment counts as an access rule: a user who matches no rule in `access` can sign in if they have one.
 - Only roles defined under `roles` can be assigned. If a role is later removed from config, its assignments stop having any effect (the page marks them "Not in config") and come back if the role does.
 - Roles are resolved on every request, so assigning or removing a role applies to existing sessions immediately.
@@ -361,6 +362,10 @@ Config is the source of truth for which roles exist and what they grant. On top 
 The page also lists who is signed in: each user with a live session, how many sessions (browsers or devices) they have, and when they were last seen. **Sign out everywhere** deletes all of that user's sessions, so their next request fails and they must sign in again, which reads their claims from the IdP afresh. Use it after removing someone from a group or disabling them at the IdP, or if a session token may have leaked. It doesn't stop them signing in again if the IdP and your access rules still let them. The API is `DELETE /api/admin/roles/sessions` with `{ "subject": "<OIDC subject>" }`; it returns `{ "revoked": <count> }`.
 
 Each assignment and removal, and each sign-out everywhere, is recorded in the [audit log](database.md#role-assignments) and listed on the audit log page (filter by action `assign`, `unassign`, or `revoke_sessions`). Assignments are stored in the `warden` schema, so they survive restarts and config changes.
+
+### Non-ASCII emails
+
+Warden only matches ASCII emails, against both `emailDomains` and assignments. An email claim with any other character matches neither, even when it's verified. Such a user can still sign in through `groups` or `allowAll`, and their email is still shown and audited. Unicode case folding and normalization turn look-alike characters into ASCII: the Kelvin sign `K` (U+212A) lowercases to `k`, and full-width `ｋ` normalizes to `k`. Without this rule, an IdP that marks such an address verified without proving the mailbox (admin-created users, some federated logins) could hand someone another person's assignment or domain. Users with internationalized addresses need a group rule or an ASCII alias. Internationalized domains match only when the IdP sends them in punycode.
 
 ## Schema drift
 

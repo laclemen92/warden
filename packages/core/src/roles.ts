@@ -47,7 +47,7 @@ export function assignmentEmail(
   access: AccessConfig | undefined,
   claims: Record<string, unknown>,
 ): string | undefined {
-  const email = verifiedEmail(claims, access?.requireVerifiedEmail ?? true)?.toLowerCase();
+  const email = asciiLower(verifiedEmail(claims, access?.requireVerifiedEmail ?? true));
   return email !== undefined && parseEmail(email) === email ? email : undefined;
 }
 
@@ -68,12 +68,16 @@ const MAX_EMAIL_LENGTH = 254;
 /**
  * An email address for a role assignment, trimmed and lowercased, or `undefined` if it isn't
  * one. Deliberately loose: the IdP decides what a valid address is; this only rejects input
- * that could never match one.
+ * that could never match one, including any non-ASCII address (see {@link asciiLower}).
  */
 export function parseEmail(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;
-  const email = value.trim().toLowerCase();
-  if (email.length > MAX_EMAIL_LENGTH || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+  const email = asciiLower(value.trim());
+  if (
+    email === undefined ||
+    email.length > MAX_EMAIL_LENGTH ||
+    !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)
+  ) {
     return undefined;
   }
   return email;
@@ -88,8 +92,19 @@ function verifiedEmail(claims: Record<string, unknown>, requireVerified: boolean
 }
 
 function emailDomain(claims: Record<string, unknown>, requireVerified: boolean) {
-  const email = verifiedEmail(claims, requireVerified)?.toLowerCase();
+  const email = asciiLower(verifiedEmail(claims, requireVerified));
   if (email === undefined) return undefined;
   const at = email.lastIndexOf('@');
   return at > 0 ? email.slice(at + 1) : undefined;
+}
+
+/**
+ * Lowercase an email for matching, or `undefined` if it isn't ASCII. Unicode case folding maps
+ * look-alikes onto ASCII (KELVIN SIGN "\u212A" lowercases to "k"), so an address an IdP marks
+ * verified without proving the mailbox could match someone else's assignment or domain.
+ * Normalizing (NFKC plus a confusables check) would be a moving target; refusing to match is
+ * not. Internationalized domains only match in their punycode (`xn--`) form.
+ */
+function asciiLower(value: string | undefined): string | undefined {
+  return value !== undefined && /^[\x20-\x7e]*$/.test(value) ? value.toLowerCase() : undefined;
 }

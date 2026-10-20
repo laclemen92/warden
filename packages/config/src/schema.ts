@@ -57,7 +57,11 @@ const accessConfigSchema = z.strictObject({
   /** Roles for everyone whose email is at each domain (exact match, not subdomains). */
   emailDomains: z
     .record(
-      z.string().regex(/^[^@\s]+\.[^@\s]+$/, 'Expected a domain such as "example.com"'),
+      z
+        .string()
+        .regex(/^[^@\s]+\.[^@\s]+$/, 'Expected a domain such as "example.com"')
+        // Matched as ASCII only, so look-alike characters can't fold onto another domain.
+        .regex(/^[\x21-\x7e]+$/, 'Expected an ASCII domain; write internationalized ones as xn--'),
       roleList,
     )
     .default({}),

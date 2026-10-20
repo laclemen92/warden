@@ -109,7 +109,7 @@ export function registerRoleRoutes(
     { onRequest, schema: assignmentSchema },
     async (req, reply) => {
       const email = parseEmail(req.body.email);
-      if (!email) return badRequest(reply, 'email must be an email address');
+      if (!email) return badRequest(reply, 'email must be an ASCII email address');
       const { role } = req.body;
       if (!defined(role)) return badRequest(reply, `role "${role}" is not defined in config`);
 
@@ -130,10 +130,10 @@ export function registerRoleRoutes(
     '/api/admin/roles/assignments',
     { onRequest, schema: assignmentSchema },
     async (req, reply) => {
-      const email = parseEmail(req.body.email);
-      const removed = email
-        ? await unassignRole(db, { email, role: req.body.role, actor: actorOf(req) })
-        : undefined;
+      // Assignments stored before non-ASCII emails were refused can still be removed, by their
+      // exact stored email; nothing is folded, so a look-alike can't remove someone else's.
+      const email = parseEmail(req.body.email) ?? req.body.email;
+      const removed = await unassignRole(db, { email, role: req.body.role, actor: actorOf(req) });
       if (!removed) {
         return reply
           .code(404)
