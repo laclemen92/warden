@@ -87,6 +87,7 @@ describe('export audit details', () => {
       q: 'ada',
       sort: '-email',
     },
+    parent: null,
   };
 
   it('keeps everything the reader can see', () => {

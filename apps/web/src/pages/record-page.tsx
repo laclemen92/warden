@@ -2,6 +2,7 @@ import { useId, useState, type MouseEvent } from 'react';
 import type { Entity, Field, Relation } from '@wardenhq/core';
 import { Pencil, Trash2 } from 'lucide-react';
 import { Link, useNavigate, useParams } from 'react-router';
+import { RecordActionsMenu } from '@/components/actions-menu';
 import { AuditEntryItem } from '@/components/audit-entry';
 import { displayText, FieldValue } from '@/components/field-value';
 import {
@@ -85,6 +86,7 @@ function RecordView({ entity, id, entities }: { entity: Entity; id: string; enti
           </h1>
         </div>
         <div className="flex gap-2">
+          <RecordActionsMenu entity={entity} id={id} />
           <EditRecord entity={entity} id={id} />
           <DeleteRecord entity={entity} record={{ ...record, id }} />
         </div>

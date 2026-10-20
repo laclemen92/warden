@@ -1,8 +1,15 @@
-import { parseSortFields, type Entity, type ExportDetails } from '@wardenhq/core';
+import {
+  isActionDetails,
+  parseSortFields,
+  type ActionDetails,
+  type Entity,
+  type ExportDetails,
+} from '@wardenhq/core';
 import { Link } from 'react-router';
 import { FieldValue } from '@/components/field-value';
 import { Badge } from '@/components/ui/badge';
-import type { AuditEntry } from '@/lib/audit';
+import { useActions } from '@/lib/actions';
+import { AUDIT_LOG_PATH, useCanViewAuditLog, type AuditEntry } from '@/lib/audit';
 import { describeCondition, filterToConditions } from '@/lib/filters';
 import { recordPath } from '@/lib/records';
 
@@ -64,6 +71,48 @@ function ExportSummary({
   );
 }
 
+/** A custom action's entry: what it was asked to do, and a link to the rows it changed. */
+function ActionSummary({ entry, details }: { entry: AuditEntry; details: ActionDetails }) {
+  const canViewLog = useCanViewAuditLog();
+  const input = Object.entries(details.input);
+  return (
+    <div className="space-y-2 text-sm">
+      {input.length > 0 && (
+        <dl className="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1">
+          {input.map(([name, value]) => (
+            <div key={name} className="contents">
+              <dt className="text-muted-foreground">{name}</dt>
+              <dd className="min-w-0">
+                <FieldValue field={{ dataType: 'text' }} value={value} />
+              </dd>
+            </div>
+          ))}
+        </dl>
+      )}
+      {details.records.length > 1 && (
+        <p className="text-muted-foreground">
+          Ran on {numberFormat.format(details.records.length)} records.
+        </p>
+      )}
+      {canViewLog && (
+        <Link
+          to={`${AUDIT_LOG_PATH}?${new URLSearchParams({ parent: entry.id })}`}
+          className="underline underline-offset-4"
+        >
+          Rows it changed
+        </Link>
+      )}
+    </div>
+  );
+}
+
+/** A custom action's label, when the user may run it; its name otherwise. */
+function useActionLabel(name: string | undefined): string | undefined {
+  const { data } = useActions();
+  if (name === undefined) return undefined;
+  return data?.actions.find((a) => a.name === name)?.label ?? name;
+}
+
 const formatTime = (iso: string) => {
   const date = new Date(iso);
   return Number.isNaN(date.getTime()) ? iso : date.toLocaleString();
@@ -91,6 +140,9 @@ export function AuditEntryItem({
   ];
   const fieldOf = (name: string) =>
     entity?.fields.find((f) => f.name === name) ?? { name, label: name, dataType: 'text' };
+  const actionDetails = entry.details && isActionDetails(entry.details) ? entry.details : null;
+  const parentLabel = useActionLabel(entry.parent?.action);
+  const ownLabel = useActionLabel(actionDetails ? entry.action : undefined);
   const recordLink =
     entity && entity.primaryKey.length > 0 && entry.recordId !== null && entry.action !== 'delete'
       ? recordPath(entity, entry.recordId)
@@ -99,7 +151,9 @@ export function AuditEntryItem({
   return (
     <article className="space-y-3 rounded-md border p-4" aria-label={`${entry.action} ${entry.id}`}>
       <header className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
-        <Badge variant={ACTION_VARIANTS[entry.action] ?? 'outline'}>{entry.action}</Badge>
+        <Badge variant={ACTION_VARIANTS[entry.action] ?? 'outline'}>
+          {ownLabel ?? entry.action}
+        </Badge>
         {showRecord && (
           <span className="font-medium">
             {entity?.label ?? entry.entity}
@@ -121,6 +175,11 @@ export function AuditEntryItem({
         <time dateTime={entry.occurredAt} className="text-muted-foreground">
           {formatTime(entry.occurredAt)}
         </time>
+        {entry.parent && (
+          <span className="text-muted-foreground">
+            as part of <span className="font-medium text-foreground">{parentLabel}</span>
+          </span>
+        )}
       </header>
       {entry.reason && (
         <p className="text-sm">
@@ -128,7 +187,9 @@ export function AuditEntryItem({
           {entry.reason}
         </p>
       )}
-      {entry.details ? (
+      {actionDetails ? (
+        <ActionSummary entry={entry} details={actionDetails} />
+      ) : entry.details && !isActionDetails(entry.details) ? (
         <ExportSummary details={entry.details} entity={entity} />
       ) : ordered.length > 0 ? (
         <div className="overflow-x-auto rounded-md border">

@@ -53,6 +53,7 @@ const entry = (id: string, extra: Partial<AuditEntry> = {}): AuditEntry => ({
     email: { from: 'old@example.com', to: 'new@example.com' },
   },
   details: null,
+  parent: null,
   ...extra,
 });
 

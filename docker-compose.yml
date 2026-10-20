@@ -44,6 +44,7 @@ services:
     environment:
       DATABASE_URL: postgres://warden:warden@postgres:5432/example
       WARDEN_CONFIG: /config/warden.config.yaml
+      WARDEN_ACTIONS: /actions/index.js
       WARDEN_PUBLIC_URL: http://localhost:${WARDEN_PORT:-3000}
       OIDC_ISSUER: http://localhost:${OIDC_PORT:-9400}
       OIDC_CLIENT_ID: warden
@@ -53,6 +54,7 @@ services:
       WARDEN_SESSION_SECRET: compose-dev-session-secret-not-for-production
     volumes:
       - ./examples/basic/warden.config.yaml:/config/warden.config.yaml:ro
+      - ./examples/basic/actions:/actions:ro
     depends_on:
       postgres:
         condition: service_healthy

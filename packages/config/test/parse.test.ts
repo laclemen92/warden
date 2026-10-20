@@ -20,6 +20,7 @@ describe('parseConfig', () => {
       defaults: { expose: 'all', newColumns: 'visible', read: 'all' },
       tables: {},
       roles: {},
+      actions: {},
     });
   });
 
@@ -136,15 +137,51 @@ tables:
       FILE,
     );
     expect(config.roles).toEqual({
-      viewer: { grants: { '*': ['read'] }, admin: [] },
+      viewer: { grants: { '*': ['read'] }, admin: [], actions: [] },
       ops: {
         grants: { users: ['read', 'update'], companies: ['read', 'create', 'update'] },
         admin: [],
+        actions: [],
       },
-      nobody: { grants: {}, admin: [] },
-      'schema-admin': { grants: {}, admin: ['schema', 'roles'] },
+      nobody: { grants: {}, admin: [], actions: [] },
+      'schema-admin': { grants: {}, admin: ['schema', 'roles'], actions: [] },
     });
     expect(config.tables.orders?.deny).toEqual(['create', 'delete']);
+  });
+
+  it('parses custom action grants and settings', () => {
+    const config = parseConfig(
+      `
+roles:
+  ops: { actions: [move-user] }
+  admin: { actions: ['*'] }
+actions:
+  move-user: { requireReason: true, label: Relocate }
+  old-thing: { disabled: true }
+`,
+      FILE,
+    );
+    expect(config.roles.ops?.actions).toEqual(['move-user']);
+    expect(config.roles.admin?.actions).toEqual(['*']);
+    expect(config.actions).toEqual({
+      'move-user': { requireReason: true, label: 'Relocate' },
+      'old-thing': { disabled: true },
+    });
+  });
+
+  it('rejects malformed action names and unknown action settings', () => {
+    const found = issues(`
+roles:
+  ops: { actions: [Move User] }
+actions:
+  move-user: { disable: true }
+  Bad_Name: {}
+`);
+    expect(found.map((i) => i.path)).toEqual([
+      'roles.ops.actions.0',
+      'actions.move-user.disable',
+      'actions.Bad_Name',
+    ]);
   });
 
   it('parses requireReason, which only takes write actions', () => {

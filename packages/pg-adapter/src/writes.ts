@@ -14,6 +14,8 @@ export interface WriteChange {
   before: Row | null;
   /** The row after the change; null for `delete`. */
   after: Row | null;
+  /** For `create`, the values that were given; the rest of the row came from defaults. */
+  values?: Record<string, unknown>;
 }
 
 /**
@@ -82,6 +84,19 @@ export async function createRow(
   db: Database,
   entity: Entity,
   values: Record<string, unknown>,
+  options: WriteOptions = {},
+): Promise<Row> {
+  return db.transaction().execute((trx) => insertIn(trx, entity, values, options));
+}
+
+/**
+ * Insert a row inside an open transaction. The CRUD routes and custom actions share this (and
+ * `updateIn`/`deleteIn`), so both write and audit rows the same way.
+ */
+export async function insertIn(
+  trx: Database,
+  entity: Entity,
+  values: Record<string, unknown>,
   { onWrite }: WriteOptions = {},
 ): Promise<Row> {
   const set = assignments(entity, values);
@@ -89,21 +104,27 @@ export async function createRow(
     set.length === 0
       ? sql`default values`
       : sql`(${sql.join(set.map((s) => sql.id(s.f.name)))}) values (${sql.join(set.map((s) => s.value))})`;
-  return db.transaction().execute(async (trx) => {
-    const { rows } = await sql<Row>`
-      insert into ${table(entity)} ${insert} ${returning(entity)}`.execute(trx);
-    const row = rows[0]!;
-    await onWrite?.(trx, { action: 'create', entity, before: null, after: row });
-    return row;
-  });
+  const { rows } = await sql<Row>`
+    insert into ${table(entity)} ${insert} ${returning(entity)}`.execute(trx);
+  const row = rows[0]!;
+  await onWrite?.(trx, { action: 'create', entity, before: null, after: row, values });
+  return row;
 }
 
 /** Lock the row a primary-key filter (from `decodeRecordId`) addresses. */
-async function lockRow(trx: Database, entity: Entity, filter: Filter) {
+export async function lockRow(trx: Database, entity: Entity, filter: Filter) {
   const { rows } = await sql<Row>`
     select ${selection(entity)} from ${onlyTable(entity)}
     where ${compileFilter(filter, ALIAS)} limit 1 for update`.execute(trx);
   return rows[0];
+}
+
+/** Lock every row matching a validated filter, at most `limit` of them. */
+export async function lockRows(trx: Database, entity: Entity, filter: Filter, limit: number) {
+  const { rows } = await sql<Row>`
+    select ${selection(entity)} from ${onlyTable(entity)}
+    where ${compileFilter(filter, ALIAS)} limit ${limit} for update`.execute(trx);
+  return rows;
 }
 
 /**
@@ -115,22 +136,36 @@ export async function updateRow(
   entity: Entity,
   filter: Filter,
   values: Record<string, unknown>,
-  { version, versionEntity = entity, onWrite }: WriteOptions & VersionCheck,
+  options: WriteOptions & VersionCheck,
+): Promise<WriteResult> {
+  if (assignments(entityFor(entity, 'update'), values).length === 0) {
+    throw new Error('nothing to update');
+  }
+  return db.transaction().execute((trx) => updateIn(trx, entity, filter, values, options));
+}
+
+/** Update a row inside an open transaction; without `version`, whatever its version. */
+export async function updateIn(
+  trx: Database,
+  entity: Entity,
+  filter: Filter,
+  values: Record<string, unknown>,
+  { version, versionEntity = entity, onWrite }: WriteOptions & Partial<VersionCheck> = {},
 ): Promise<WriteResult> {
   const set = assignments(entityFor(entity, 'update'), values);
   if (set.length === 0) throw new Error('nothing to update');
-  return db.transaction().execute(async (trx): Promise<WriteResult> => {
-    const before = await lockRow(trx, entity, filter);
-    if (!before) return { ok: false, reason: 'notFound' };
-    if (rowVersion(versionEntity, before) !== version) return { ok: false, reason: 'conflict' };
-    const { rows } = await sql<Row>`
-      update ${onlyTable(entity)}
-      set ${sql.join(set.map((s) => sql`${sql.id(s.f.name)} = ${s.value}`))}
-      where ${compileFilter(filter, ALIAS)} ${returning(entity)}`.execute(trx);
-    const row = rows[0]!;
-    await onWrite?.(trx, { action: 'update', entity, before, after: row });
-    return { ok: true, row };
-  });
+  const before = await lockRow(trx, entity, filter);
+  if (!before) return { ok: false, reason: 'notFound' };
+  if (version !== undefined && rowVersion(versionEntity, before) !== version) {
+    return { ok: false, reason: 'conflict' };
+  }
+  const { rows } = await sql<Row>`
+    update ${onlyTable(entity)}
+    set ${sql.join(set.map((s) => sql`${sql.id(s.f.name)} = ${s.value}`))}
+    where ${compileFilter(filter, ALIAS)} ${returning(entity)}`.execute(trx);
+  const row = rows[0]!;
+  await onWrite?.(trx, { action: 'update', entity, before, after: row });
+  return { ok: true, row };
 }
 
 /**
@@ -141,16 +176,24 @@ export async function deleteRow(
   db: Database,
   entity: Entity,
   filter: Filter,
+  options: WriteOptions & Partial<VersionCheck> = {},
+): Promise<WriteResult> {
+  return db.transaction().execute((trx) => deleteIn(trx, entity, filter, options));
+}
+
+/** Delete a row inside an open transaction. */
+export async function deleteIn(
+  trx: Database,
+  entity: Entity,
+  filter: Filter,
   { version, versionEntity = entity, onWrite }: WriteOptions & Partial<VersionCheck> = {},
 ): Promise<WriteResult> {
-  return db.transaction().execute(async (trx): Promise<WriteResult> => {
-    const before = await lockRow(trx, entity, filter);
-    if (!before) return { ok: false, reason: 'notFound' };
-    if (version !== undefined && rowVersion(versionEntity, before) !== version) {
-      return { ok: false, reason: 'conflict' };
-    }
-    await sql`delete from ${onlyTable(entity)} where ${compileFilter(filter, ALIAS)}`.execute(trx);
-    await onWrite?.(trx, { action: 'delete', entity, before, after: null });
-    return { ok: true, row: before };
-  });
+  const before = await lockRow(trx, entity, filter);
+  if (!before) return { ok: false, reason: 'notFound' };
+  if (version !== undefined && rowVersion(versionEntity, before) !== version) {
+    return { ok: false, reason: 'conflict' };
+  }
+  await sql`delete from ${onlyTable(entity)} where ${compileFilter(filter, ALIAS)}`.execute(trx);
+  await onWrite?.(trx, { action: 'delete', entity, before, after: null });
+  return { ok: true, row: before };
 }

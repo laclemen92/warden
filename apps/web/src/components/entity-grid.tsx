@@ -26,12 +26,15 @@ import {
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useLocation, useSearchParams } from 'react-router';
 import { cn } from 'cn';
+import { BulkActionsBar, EntityActionsMenu, RowActionsMenu } from '@/components/actions-menu';
 import { ColumnPicker } from '@/components/column-picker';
 import { ExportButton } from '@/components/export-button';
 import { FilterBuilder } from '@/components/filter-builder';
 import { SavedViewsMenu } from '@/components/saved-views-menu';
 import { Badge } from '@/components/ui/badge';
+import { displayText } from '@/components/field-value';
 import { Button } from '@/components/ui/button';
+import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
 import {
   Select,
@@ -49,6 +52,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
+import { useEntityActions } from '@/lib/actions';
 import { apiFetch } from '@/lib/api';
 import { useCan } from '@/lib/capabilities';
 import { exportUrl } from '@/lib/export';
@@ -175,7 +179,20 @@ export function EntityGrid({ entity }: { entity: Entity }) {
     [entity, state.columns],
   );
 
-  const columns = useMemo(
+  // Custom actions: per row, and on a selection of rows. Rows need ids for either.
+  const addressable = entity.primaryKey.length > 0;
+  const rowActions = useEntityActions(entity.key, 'one');
+  const bulkActions = useEntityActions(entity.key, 'many');
+  const selectable = addressable && bulkActions.length > 0;
+  // The selection belongs to the rows it was made on, so it clears when the grid changes.
+  const [selection, setSelection] = useState({ url, ids: [] as string[] });
+  const selected = useMemo(() => (selection.url === url ? selection.ids : []), [selection, url]);
+  const pageIds = useMemo(
+    () => (rows.data?.items ?? []).flatMap((item) => (item.id === null ? [] : [item.id])),
+    [rows.data],
+  );
+
+  const dataColumns = useMemo(
     () =>
       fields.map((field) =>
         helper.accessor((row) => row.values[field.name], {
@@ -200,6 +217,55 @@ export function EntityGrid({ entity }: { entity: Entity }) {
       ),
     [entity, fields],
   );
+
+  const columns = useMemo(() => {
+    const select = (ids: string[]) => setSelection({ url, ids });
+    const label = (item: RecordItem) => displayText(item.values[entity.displayField]);
+    const all = pageIds.length > 0 && pageIds.every((id) => selected.includes(id));
+    const selectColumn = helper.display({
+      id: '_select',
+      header: () => (
+        <Checkbox
+          aria-label="Select all rows on this page"
+          checked={all ? true : selected.length > 0 ? 'indeterminate' : false}
+          onCheckedChange={(checked) => select(checked === true ? pageIds : [])}
+        />
+      ),
+      cell: (info) => {
+        const item = info.row.original;
+        const id = item.id;
+        return (
+          id !== null && (
+            <Checkbox
+              aria-label={`Select ${label(item)}`}
+              checked={selected.includes(id)}
+              onCheckedChange={(checked) =>
+                select(checked === true ? [...selected, id] : selected.filter((x) => x !== id))
+              }
+            />
+          )
+        );
+      },
+    });
+    const actionsColumn = helper.display({
+      id: '_actions',
+      header: () => <span className="sr-only">Actions</span>,
+      cell: (info) => {
+        const item = info.row.original;
+        return (
+          item.id !== null && (
+            <RowActionsMenu actions={rowActions} id={item.id} label={label(item)} />
+          )
+        );
+      },
+    });
+    // Up front, so the row menu doesn't scroll out of view on wide tables.
+    return [
+      ...(selectable ? [selectColumn] : []),
+      ...(addressable && rowActions.length > 0 ? [actionsColumn] : []),
+      ...dataColumns,
+    ];
+  }, [addressable, dataColumns, entity, pageIds, rowActions, selectable, selected, url]);
 
   const sorting = useMemo<SortingState>(
     () => state.sort.map((t) => ({ id: t.field, desc: t.direction === 'desc' })),
@@ -292,15 +358,24 @@ export function EntityGrid({ entity }: { entity: Entity }) {
             Clear filters
           </Button>
         )}
-        {canExport && (
-          <div className="ml-auto">
+        <div className="ml-auto flex items-center gap-2">
+          <EntityActionsMenu entity={entity} />
+          {canExport && (
             <ExportButton
               url={exportUrl(entity, state, params.get('sort'))}
               fallbackName={`${entity.key}.csv`}
             />
-          </div>
-        )}
+          )}
+        </div>
       </div>
+
+      {selectable && (
+        <BulkActionsBar
+          actions={bulkActions}
+          selected={selected}
+          onClear={() => setSelection({ url, ids: [] })}
+        />
+      )}
 
       {rows.isError ? (
         <div role="alert" className="rounded-md border border-destructive/50 p-4 text-sm">

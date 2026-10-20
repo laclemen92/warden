@@ -24,6 +24,7 @@ Run `pnpm format && pnpm lint && pnpm typecheck && pnpm test` before every commi
 | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `packages/core`       | Pure logic, no I/O: `SchemaModel` types, `resolveSchema` (model + config → `EffectiveSchema`), filter AST + `validateFilter`, sort, record ids, cursors |
 | `packages/config`     | zod schema for the config file and `loadConfig` (errors carry file/line/col)                                                                            |
+| `packages/actions`    | Published types and error classes for custom action modules (`defineAction`); no runtime dependencies                                                   |
 | `packages/pg-adapter` | Postgres: `introspect`, `createDatabase`, `compileFilter`, `listRows`/`getRow`, `migrate` (`warden` schema), sessions                                   |
 | `packages/testing`    | `startPostgres()` / `readExampleSql()` test helpers (private)                                                                                           |
 | `packages/mock-oidc`  | Dev/E2E-only OIDC provider (`startMockOidc()`, `MOCK_USERS`); runs in compose. Never ship it                                                            |

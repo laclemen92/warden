@@ -2,10 +2,12 @@ import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { STATUS_CODES } from 'node:http';
 import fastifyStatic from '@fastify/static';
-import type { EffectiveSchema, Policy } from '@wardenhq/core';
+import type { AnyActionDefinition } from '@wardenhq/actions';
+import type { ActionPolicy, EffectiveSchema, Policy } from '@wardenhq/core';
 import type { Database } from '@wardenhq/pg-adapter';
 import Fastify, { type FastifyServerOptions } from 'fastify';
 import { redactingLogger } from './logging.js';
+import { registerActionRoutes } from './routes/actions.js';
 import { registerAuditRoutes } from './routes/audit.js';
 import { registerAuth, type AuthOptions } from './routes/auth.js';
 import { registerCapabilityRoutes } from './routes/capabilities.js';
@@ -24,6 +26,13 @@ export interface AppOptions {
   db?: Database;
   /** Who may do what; enforced on every entity route. Required whenever data routes are served. */
   policy?: Policy;
+  /** Custom actions from `WARDEN_ACTIONS`; their routes are registered with the data routes. */
+  actions?: {
+    actionPolicy: ActionPolicy;
+    definitions: ReadonlyMap<string, AnyActionDefinition>;
+    /** The first configured schema, which unqualified table keys in actions refer to. */
+    defaultSchema: string;
+  };
   /** Login routes and the session check on /api. Required whenever data routes are served. */
   auth?: AuthOptions;
   /** Introspected model and config for the schema drift page; registered when `db` is given. */
@@ -41,6 +50,7 @@ export async function buildApp({
   schema,
   db,
   policy,
+  actions,
   auth,
   drift,
   roles,
@@ -82,10 +92,20 @@ export async function buildApp({
   if (schema && db && policy && views) {
     registerPolicy(app, policy, views);
     registerEntityRoutes(app, schema, db, policy, views);
-    registerCapabilityRoutes(app, policy, views);
+    registerCapabilityRoutes(app, policy, views, actions?.actionPolicy);
     registerAuditRoutes(app, { db, policy, views, roles: auth?.roles ?? {} });
     registerExportRoutes(app, { db, policy, views });
     registerSavedViewRoutes(app, { db, policy, views, roles: auth?.roles ?? {} });
+    if (actions && auth) {
+      registerActionRoutes(app, {
+        ...actions,
+        db,
+        schema,
+        policy,
+        views,
+        sessionSecret: auth.sessionSecret,
+      });
+    }
   }
   if (drift && db) registerSchemaDriftRoutes(app, { ...drift, db });
   if (roles && db) registerRoleRoutes(app, { ...roles, db });
