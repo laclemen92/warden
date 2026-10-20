@@ -70,6 +70,38 @@ describe('projectAuditEntry', () => {
     expect(created.after).toEqual({ id: '1' });
   });
 
+  describe('reason', () => {
+    // HR raised a salary; a trigger bumped updated_at.
+    const raise: AuditEntry = {
+      ...entry,
+      reason: 'raise after retention threat',
+      before: { id: '1', salary: 1, updated_at: 't1' },
+      after: { id: '1', salary: 2, updated_at: 't2' },
+      diff: { salary: { from: 1, to: 2 }, updated_at: { from: 't1', to: 't2' } },
+    };
+    const reason = (e: AuditEntry, fields: string[], written: string[] | null) =>
+      projectAuditEntry(e, fields, written).reason;
+
+    it("is dropped when the update set only fields the reader can't see", () => {
+      expect(reason(raise, ['id', 'updated_at'], ['salary'])).toBeNull();
+      expect(reason(raise, ['id', 'salary', 'updated_at'], ['salary'])).toBe(raise.reason);
+    });
+
+    it('ignores fields set but left unchanged', () => {
+      expect(reason(raise, ['id', 'email', 'updated_at'], ['salary', 'email'])).toBeNull();
+    });
+
+    it('needs every changed field readable when the written fields are unknown', () => {
+      expect(reason(raise, ['id', 'updated_at'], null)).toBeNull();
+      expect(reason(raise, ['id', 'salary', 'updated_at'], null)).toBe(raise.reason);
+    });
+
+    it('is kept on creates and deletes, which every reader sees happen', () => {
+      expect(reason({ ...raise, action: 'create' }, ['id'], ['salary'])).toBe(raise.reason);
+      expect(reason({ ...raise, action: 'delete' }, ['id'], null)).toBe(raise.reason);
+    });
+  });
+
   it('ignores inherited property names', () => {
     const projected = projectAuditEntry(entry, ['constructor', '__proto__', 'toString']);
     expect(projected.before).toEqual({});

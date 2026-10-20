@@ -49,24 +49,25 @@ Every create, update, and delete made through Warden inserts its entry in the sa
 
 An [export](config.md#csv-export) inserts its entry, with `record_id` null and what was exported in `details`, before any row is sent; if that insert fails, the export fails with a 500 and sends nothing.
 
-| Column          | Type          | Description                                                                                                                                               |
-| --------------- | ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `id`            | `bigint`      | Increasing entry id.                                                                                                                                      |
-| `occurred_at`   | `timestamptz` | When the write's transaction started.                                                                                                                     |
-| `request_id`    | `text`        | The request's id (a UUID), logged as `reqId` by the server.                                                                                               |
-| `actor_subject` | `text`        | OIDC subject of the user who made the change.                                                                                                             |
-| `actor_email`   | `text`        | Their email at the time.                                                                                                                                  |
-| `actor_roles`   | `text[]`      | The Warden roles they held.                                                                                                                               |
-| `action`        | `text`        | `create`, `update`, `delete`, `export`, or a custom action's name.                                                                                        |
-| `entity`        | `text`        | Entity key, as in `/api/entities/:entity`.                                                                                                                |
-| `record_id`     | `text`        | The API's record id (after an update that changes the key, the new one; null without a primary key).                                                      |
-| `primary_key`   | `jsonb`       | The row's primary key columns and values.                                                                                                                 |
-| `before`        | `jsonb`       | The row before the change (null for `create`).                                                                                                            |
-| `after`         | `jsonb`       | The row after the change (null for `delete`).                                                                                                             |
-| `diff`          | `jsonb`       | `{ field: { from, to } }` for each changed field; every field for `create` and `delete`.                                                                  |
-| `reason`        | `text`        | The reason sent with the write (`reason` in the request body), if any.                                                                                    |
-| `parent_id`     | `bigint`      | For rows changed by a custom action, the action's parent entry.                                                                                           |
-| `details`       | `jsonb`       | For actions that change no row: an `export`'s `rowCount`, `columns`, and `filter`, `q`, and `sort`; the number of `sessions` a `revoke_sessions` deleted. |
+| Column          | Type          | Description                                                                                                                                                                                     |
+| --------------- | ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`            | `bigint`      | Increasing entry id.                                                                                                                                                                            |
+| `occurred_at`   | `timestamptz` | When the write's transaction started.                                                                                                                                                           |
+| `request_id`    | `text`        | The request's id (a UUID), logged as `reqId` by the server.                                                                                                                                     |
+| `actor_subject` | `text`        | OIDC subject of the user who made the change.                                                                                                                                                   |
+| `actor_email`   | `text`        | Their email at the time.                                                                                                                                                                        |
+| `actor_roles`   | `text[]`      | The Warden roles they held.                                                                                                                                                                     |
+| `action`        | `text`        | `create`, `update`, `delete`, `export`, or a custom action's name.                                                                                                                              |
+| `entity`        | `text`        | Entity key, as in `/api/entities/:entity`.                                                                                                                                                      |
+| `record_id`     | `text`        | The API's record id (after an update that changes the key, the new one; null without a primary key).                                                                                            |
+| `primary_key`   | `jsonb`       | The row's primary key columns and values.                                                                                                                                                       |
+| `before`        | `jsonb`       | The row before the change (null for `create`).                                                                                                                                                  |
+| `after`         | `jsonb`       | The row after the change (null for `delete`).                                                                                                                                                   |
+| `diff`          | `jsonb`       | `{ field: { from, to } }` for each changed field; every field for `create` and `delete`.                                                                                                        |
+| `reason`        | `text`        | The reason sent with the write (`reason` in the request body), if any.                                                                                                                          |
+| `parent_id`     | `bigint`      | For rows changed by a custom action, the action's parent entry.                                                                                                                                 |
+| `details`       | `jsonb`       | For actions that change no row: an `export`'s `rowCount`, `columns`, and `filter`, `q` (with the `searchFields` it ran over), and `sort`; the number of `sessions` a `revoke_sessions` deleted. |
+| `written`       | `text[]`      | For `create` and `update`, the fields the request set. Other changed fields in `diff` were set by the database (defaults, triggers, generated columns).                                         |
 
 ## Schema snapshots
 

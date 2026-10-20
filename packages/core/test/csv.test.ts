@@ -85,6 +85,7 @@ describe('export audit details', () => {
         and: [{ field: 'email', op: 'isNotNull' }, { not: { field: 'salary', op: 'isNull' } }],
       },
       q: 'ada',
+      searchFields: ['email'],
       sort: '-email',
     },
   };
@@ -95,9 +96,9 @@ describe('export audit details', () => {
 
   it("drops columns, and any filter or sort, naming fields the reader can't see", () => {
     expect(projectAuditEntry(entry, ['id', 'email']).details).toEqual({
-      rowCount: 3,
       columns: ['id', 'email'],
       q: 'ada',
+      searchFields: ['email'],
       sort: '-email',
       redacted: true,
     });
@@ -107,6 +108,33 @@ describe('export audit details', () => {
         'email',
       ]).details,
     ).not.toHaveProperty('sort');
+  });
+
+  it("drops the search, and the row count, when it ran over a field the reader can't see", () => {
+    const searched = { ...entry, details: { rowCount: 3, columns: ['id'], q: 'ceo@x.com' } };
+    const over = (searchFields: string[]) =>
+      projectAuditEntry({ ...searched, details: { ...searched.details, searchFields } }, [
+        'id',
+        'full_name',
+      ]).details;
+    expect(over(['email', 'full_name'])).toEqual({ columns: ['id'], redacted: true });
+    expect(over(['full_name'])).toEqual({ ...searched.details, searchFields: ['full_name'] });
+    // A search that matched against nothing reveals nothing.
+    expect(over([])).toEqual({ ...searched.details, searchFields: [] });
+    // Recorded before its fields were, so they're unknown.
+    expect(projectAuditEntry(searched, ['id', 'email']).details).toEqual({
+      columns: ['id'],
+      redacted: true,
+    });
+  });
+
+  it('keeps the row count when only the sort is left out', () => {
+    const sorted = { ...entry, details: { rowCount: 3, columns: ['id'], sort: 'salary' } };
+    expect(projectAuditEntry(sorted, ['id']).details).toEqual({
+      rowCount: 3,
+      columns: ['id'],
+      redacted: true,
+    });
   });
 
   it('leaves entries without details alone', () => {

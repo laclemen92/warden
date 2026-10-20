@@ -52,14 +52,17 @@ export interface AuditEntry {
 
 /** What an export included, recorded as the entry's details. */
 export interface ExportDetails {
-  rowCount: number;
+  /** Left out when the filter or search is, since it says how many rows matched them. */
+  rowCount?: number;
   columns: string[];
   filter?: Filter;
   q?: string;
+  /** The fields `q` was matched against. */
+  searchFields?: string[];
   sort?: string;
   /**
-   * Set when the filter or sort named a field the caller can't read now, so it was left out.
-   * The entry still shows that the export happened.
+   * Set when the filter, search, or sort named a field the caller can't read now, so it was left
+   * out. The entry still shows that the export happened.
    */
   redacted?: true;
 }
@@ -71,11 +74,22 @@ const pick = <T>(values: Record<string, T>, fields: ReadonlySet<string>): Record
  * An entry cut down to `fields`, the ones the caller can read on its entity now. Entries record
  * every field exposed at the time, so fields since hidden, or restricted by role, are dropped
  * exactly as reads drop them.
+ *
+ * `written` is the fields an update set, as recorded with it; the rest of its diff is what the
+ * database changed itself (defaults, triggers, generated columns). The reason is kept only when
+ * the caller can read a field the update was asked to change. Entries from before `written` was
+ * recorded (null) can't tell the two apart, so their reason is kept only when the caller can read
+ * every changed field.
  */
-export function projectAuditEntry(entry: AuditEntry, fields: readonly string[]): AuditEntry {
+export function projectAuditEntry(
+  entry: AuditEntry,
+  fields: readonly string[],
+  written: readonly string[] | null = null,
+): AuditEntry {
   const visible = new Set(fields);
   return {
     ...entry,
+    reason: entry.reason !== null && reasonVisible(entry, visible, written) ? entry.reason : null,
     before: entry.before && pick(entry.before, visible),
     after: entry.after && pick(entry.after, visible),
     diff: pick(entry.diff, visible),
@@ -83,25 +97,42 @@ export function projectAuditEntry(entry: AuditEntry, fields: readonly string[]):
   };
 }
 
+// Creates and deletes change whether the row exists, which every reader of the entity can see.
+function reasonVisible(
+  { action, diff }: AuditEntry,
+  visible: ReadonlySet<string>,
+  written: readonly string[] | null,
+): boolean {
+  if (action !== 'update') return true;
+  const changed = Object.keys(diff);
+  if (written === null) return changed.every((f) => visible.has(f));
+  return changed.some((f) => written.includes(f) && visible.has(f));
+}
+
 /**
- * Export details cut down to `visible` fields. A filter or sort can't be cut down without
- * changing its meaning, so one that names any other field is left out entirely.
+ * Export details cut down to `visible` fields. A filter, search, or sort can't be cut down without
+ * changing its meaning, so one that names any other field is left out entirely, and with a
+ * filter or search the row count, which says how many rows matched it. A search recorded without
+ * its fields is treated as naming some other field.
  */
 function projectDetails(details: ExportDetails, visible: ReadonlySet<string>): ExportDetails {
-  const { filter, sort, columns, ...rest } = details;
+  const { rowCount, filter, q, searchFields, sort, columns, ...rest } = details;
   const filterOk = filter === undefined || filterFields(filter).every((f) => visible.has(f));
+  const searchOk = q === undefined || (searchFields?.every((f) => visible.has(f)) ?? false);
   const sortOk = sort === undefined || parseSortFields(sort).every((f) => visible.has(f));
   return {
     ...rest,
+    ...(rowCount !== undefined && filterOk && searchOk ? { rowCount } : {}),
     columns: columns.filter((c) => visible.has(c)),
     ...(filter !== undefined && filterOk ? { filter } : {}),
+    ...(q !== undefined && searchOk ? { q, ...(searchFields ? { searchFields } : {}) } : {}),
     ...(sort !== undefined && sortOk ? { sort } : {}),
-    ...(!filterOk || !sortOk ? { redacted: true as const } : {}),
+    ...(!filterOk || !searchOk || !sortOk ? { redacted: true as const } : {}),
   };
 }
 
 /** Every field a filter names. */
-function filterFields(filter: Filter): string[] {
+export function filterFields(filter: Filter): string[] {
   if ('and' in filter) return filter.and.flatMap(filterFields);
   if ('or' in filter) return filter.or.flatMap(filterFields);
   if ('not' in filter) return filterFields(filter.not);
