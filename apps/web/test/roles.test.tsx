@@ -191,6 +191,30 @@ describe('roles page', () => {
     );
   });
 
+  it("shows why the last assignment of a roles admin can't be removed", async () => {
+    const message =
+      'eve@example.org is the last person assigned a role that can manage roles; ' +
+      'assign one to someone else first, or grant one through an access rule in config';
+    stubFetch({
+      ...base(['roles']),
+      'GET /api/admin/roles': { status: 200, body: report },
+      'DELETE /api/admin/roles/assignments': { status: 409, body: { message } },
+    });
+    renderAt('/admin/roles');
+
+    await userEvent.click(
+      await screen.findByRole('button', { name: 'Remove ops from eve@example.org' }),
+    );
+    expect(await screen.findByRole('alert')).toHaveTextContent(message);
+    expect(screen.getByText('eve@example.org')).toBeInTheDocument();
+  });
+
+  it('explains that assignments follow the email address', async () => {
+    stubFetch({ ...base(['roles']), 'GET /api/admin/roles': { status: 200, body: report } });
+    renderAt('/admin/roles');
+    expect(await screen.findByText(/belongs to the address, not the person/)).toBeInTheDocument();
+  });
+
   it('removes an assignment', async () => {
     const responses: Responses = {
       ...base(['roles']),

@@ -7,6 +7,7 @@ import {
   createDatabase,
   listAuditEntries,
   listRoleAssignments,
+  LastHolderError,
   migrate,
   unassignRole,
   type DatabaseHandle,
@@ -131,5 +132,58 @@ describe('role assignments', () => {
       sql`insert into warden.role_assignments (email, role, assigned_by)
           values ('U@Example.com', 'ops', 'admin')`.execute(handle.db),
     ).rejects.toThrow(/check constraint/);
+  });
+});
+
+describe('protected roles', () => {
+  const protect = ['owner', 'root'];
+  const assign = (email: string, role: string) => assignRole(handle.db, { email, role, actor });
+  const unassign = (email: string, role: string) =>
+    unassignRole(handle.db, { email, role, actor, protect });
+  const unassignCount = async () =>
+    (await auditEntries()).filter((e) => e.action === 'unassign').length;
+
+  it('refuses to remove the last assignment of any protected role, changing nothing', async () => {
+    await assign('a@example.com', 'owner');
+    await assign('b@example.com', 'root');
+    // Another protected role still has an assignment.
+    expect(await unassign('a@example.com', 'owner')).toMatchObject({ role: 'owner' });
+
+    const before = await unassignCount();
+    await expect(unassign('b@example.com', 'root')).rejects.toThrow(LastHolderError);
+    expect(await assignedRoles(handle.db, 'b@example.com')).toEqual(['root']);
+    expect(await unassignCount()).toBe(before);
+
+    // Other roles, and missing assignments, are unaffected.
+    await assign('b@example.com', 'ops');
+    expect(await unassign('b@example.com', 'ops')).toMatchObject({ role: 'ops' });
+    expect(await unassign('nobody@example.com', 'root')).toBeUndefined();
+  });
+
+  it('lets only one of two concurrent removals of the last two through', async () => {
+    await assign('c@example.com', 'root');
+    expect(await listRoleAssignments(handle.db)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ email: 'b@example.com', role: 'root' }),
+        expect.objectContaining({ email: 'c@example.com', role: 'root' }),
+      ]),
+    );
+    const results = await Promise.allSettled([
+      unassign('b@example.com', 'root'),
+      unassign('c@example.com', 'root'),
+    ]);
+    expect(results.map((r) => r.status).sort()).toEqual(['fulfilled', 'rejected']);
+    expect(results.find((r) => r.status === 'rejected')).toMatchObject({
+      reason: expect.any(LastHolderError),
+    });
+    const left = (await listRoleAssignments(handle.db)).filter((a) => protect.includes(a.role));
+    expect(left).toHaveLength(1);
+  });
+
+  it('removes anything without `protect`', async () => {
+    const [last] = (await listRoleAssignments(handle.db)).filter((a) => a.role === 'root');
+    expect(
+      await unassignRole(handle.db, { email: last!.email, role: 'root', actor }),
+    ).toBeDefined();
   });
 });

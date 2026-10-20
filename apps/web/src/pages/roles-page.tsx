@@ -88,7 +88,7 @@ function AssignmentsSection({ report }: { report: RolesReport }) {
   return (
     <Section
       title="Assignments"
-      description="Roles given to people by email, on top of the ones config gives them. Someone with an assignment can sign in even if no access rule matches them. Their email must be verified by the identity provider."
+      description="Roles given to people by email, on top of the ones config gives them. Someone with an assignment can sign in even if no access rule matches them. Their email must be verified by the identity provider. An assignment belongs to the address, not the person: whoever holds that address at the identity provider gets the role, including after a mailbox is reassigned, and a mistyped address gives it to whoever owns that one. Remove assignments when people leave. The last assignment of a role that can manage roles can't be removed while no access rule grants one."
     >
       <AssignForm roles={report.roles.map((r) => r.name)} />
       {report.assignments.length === 0 ? (
@@ -151,8 +151,10 @@ function AssignmentRow({ email, role, assignedBy, assignedAt, defined }: RoleAss
             Remove
           </Button>
           {error && !(error instanceof ApiError && error.status === 404) && (
-            <p role="alert" className="text-sm text-destructive">
-              Couldn't remove.
+            <p role="alert" className="max-w-xs text-sm text-destructive">
+              {error instanceof ApiError && error.status === 409
+                ? error.message
+                : "Couldn't remove."}
             </p>
           )}
         </div>

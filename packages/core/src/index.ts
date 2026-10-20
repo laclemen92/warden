@@ -25,7 +25,7 @@ export { fieldSchema, recordSchema, toFieldErrors, validateRecord } from './vali
 export { assignmentEmail, parseEmail, resolveRoles, sessionEmail } from './roles.js';
 export { relationFilter } from './relation.js';
 export type * from './admin.js';
-export { adminAreas } from './admin.js';
+export { adminAreas, lastHolderRoles } from './admin.js';
 export type * from './schema-drift.js';
 export { diffSchema } from './schema-drift.js';
 export type * from './audit.js';

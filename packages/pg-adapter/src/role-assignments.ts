@@ -79,20 +79,48 @@ export async function assignRole(
   });
 }
 
+/** Thrown by {@link unassignRole} instead of removing the last assignment of a protected role. */
+export class LastHolderError extends Error {
+  constructor(readonly role: string) {
+    super(`removing it would leave no one with role "${role}"`);
+    this.name = 'LastHolderError';
+  }
+}
+
 /**
  * Remove `role` from `email` and audit it, in one transaction. Returns the removed assignment,
- * or `undefined` when there was none.
+ * or `undefined` when there was none. Throws {@link LastHolderError}, changing nothing, when
+ * `role` is in `protect` and no assignment of a protected role would be left.
  */
 export async function unassignRole(
   db: Database,
-  { email, role, actor }: { email: string; role: string; actor: AssignmentActor },
+  {
+    email,
+    role,
+    actor,
+    protect = [],
+  }: { email: string; role: string; actor: AssignmentActor; protect?: readonly string[] },
 ): Promise<RoleAssignment | undefined> {
   return db.transaction().execute(async (trx) => {
+    const guarded = protect.includes(role);
+    if (guarded) {
+      // Locks every protected assignment, so two removals can't each see the other's row left.
+      await sql`select 1 from ${ASSIGNMENTS} where role = any(${[...protect]}) for update`.execute(
+        trx,
+      );
+    }
     const { rows } = await sql<RoleAssignment>`
       delete from ${ASSIGNMENTS} where email = ${email} and role = ${role}
       returning ${COLUMNS}`.execute(trx);
     const assignment = rows[0];
-    if (assignment) await audit(trx, 'unassign', actor, assignment, null);
+    if (!assignment) return undefined;
+    if (guarded) {
+      const { rows: left } = await sql`
+        select 1 from ${ASSIGNMENTS} where role = any(${[...protect]}) limit 1`.execute(trx);
+      // Thrown, so the transaction rolls the delete back.
+      if (left.length === 0) throw new LastHolderError(role);
+    }
+    await audit(trx, 'unassign', actor, assignment, null);
     return assignment;
   });
 }
