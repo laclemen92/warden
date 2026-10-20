@@ -57,7 +57,9 @@ Invalid Warden config /config/warden.config.yaml:
 
 The Postgres schemas Warden introspects. Tables in other schemas don't exist as far as Warden is concerned.
 
-The first schema is the **default schema**. Tables in it are referred to by bare name (`users`) in config, URLs, and the API. Tables in other schemas use `schema.table` (`billing.invoices`). In config, `users` and `public.users` (when `public` is the default schema) mean the same table. Configuring a table under both spellings is a warning, and only the first entry is used.
+The first schema is the **default schema**. Tables in it are referred to by bare name (`users`) in config, URLs, and the API. Tables in other schemas use `schema.table` (`billing.invoices`). In config, `users` and `public.users` (when `public` is the default schema) mean the same table. Listing a table under both spellings, in `tables` or in one role's `grants`, fails startup with an error at both keys: rules split across two entries would otherwise be applied inconsistently.
+
+A table whose name contains a dot gets a key that can collide with a table in another listed schema: `"a.b"` in the default schema and `b` in schema `a` would both be `a.b`. If both are exposed, Warden refuses to start and names the two tables. Rename one, or set `defaults.expose: none` and list only the tables to expose.
 
 A `schema.table` key whose schema isn't listed in `schemas` fails startup.
 

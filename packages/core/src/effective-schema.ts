@@ -76,7 +76,8 @@ const TEXT_TYPES = new Set(['text', 'varchar', 'bpchar', 'citext']);
 
 /**
  * Apply config to an introspected schema. Never throws on config that doesn't match the database:
- * unknown references become warnings so a schema change can't take the backoffice down.
+ * unknown references become warnings so a schema change can't take the backoffice down. Throws
+ * only when two exposed tables would get the same entity key.
  */
 export function resolveSchema(model: SchemaModel, config: WardenConfig): ResolvedSchema {
   const warnings: SchemaWarning[] = [];
@@ -85,15 +86,14 @@ export function resolveSchema(model: SchemaModel, config: WardenConfig): Resolve
   const keyOf = (t: { schema: string; name: string }) =>
     t.schema === defaultSchema ? t.name : `${t.schema}.${t.name}`;
 
-  // Match config keys to tables; "users" and "public.users" are the same table.
+  // Match config keys to tables; "users" and "public.users" are the same table, and config
+  // validation rejects listing both.
   const tableConfigs = new Map<string, { path: string; config: TableConfig }>();
   for (const [key, tableConfig] of Object.entries(config.tables)) {
     const qualified = key.includes('.') ? key : `${defaultSchema}.${key}`;
     const path = `tables.${key}`;
     if (!model.tables.some((t) => `${t.schema}.${t.name}` === qualified)) {
       warn(path, `table "${qualified}" does not exist`);
-    } else if (tableConfigs.has(qualified)) {
-      warn(path, `duplicate config for "${qualified}"; using ${tableConfigs.get(qualified)?.path}`);
     } else {
       tableConfigs.set(qualified, { path, config: tableConfig });
     }
@@ -149,6 +149,22 @@ export function resolveSchema(model: SchemaModel, config: WardenConfig): Resolve
 
     exposedTables.push(table);
     entities.push(entity);
+  }
+
+  // A table named "a.b" in the default schema and table "b" in schema "a" would share key "a.b",
+  // and grants, denies, and routes for one would reach the other. Neither can be configured
+  // apart from the other, so refuse to start rather than guess.
+  const byKey = new Map<string, Entity>();
+  for (const entity of entities) {
+    const other = byKey.get(entity.key);
+    if (other) {
+      throw new Error(
+        `tables "${other.schema}"."${other.name}" and "${entity.schema}"."${entity.name}" ` +
+          `both have the key "${entity.key}"; rename one, or set \`defaults.expose: none\` and ` +
+          'list the tables to expose',
+      );
+    }
+    byKey.set(entity.key, entity);
   }
 
   // Relations only link exposed entities through visible columns.

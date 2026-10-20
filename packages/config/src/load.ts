@@ -128,11 +128,11 @@ function toConfigIssue(issue: z.core.$ZodIssue, doc: Document, lineCounter: Line
   if (issue.code === 'unrecognized_keys' && issue.keys[0] !== undefined) {
     const key = issue.keys[0];
     path = [...path, key];
-    const parent = doc.getIn(issue.path, true);
-    if (isMap(parent)) {
-      const pair = parent.items.find((p) => isScalar(p.key) && String(p.key.value) === key);
-      if (isScalar(pair?.key)) node = pair.key;
-    }
+    node = keyNode(doc, issue.path, key) ?? node;
+  }
+  // Issues about the key rather than its value (e.g. a table listed twice) ask for the same.
+  if (issue.code === 'custom' && issue.params?.at === 'key' && issue.path.length > 0) {
+    node = keyNode(doc, issue.path.slice(0, -1), String(issue.path.at(-1))) ?? node;
   }
 
   // Record key failures wrap the real reason (e.g. our table key regex message).
@@ -144,6 +144,14 @@ function toConfigIssue(issue: z.core.$ZodIssue, doc: Document, lineCounter: Line
     message,
     ...(node?.range ? position(lineCounter, node.range[0]) : {}),
   };
+}
+
+/** The key node of `key` in the map at `parentPath`. */
+function keyNode(doc: Document, parentPath: readonly PropertyKey[], key: string) {
+  const parent = doc.getIn(parentPath, true);
+  if (!isMap(parent)) return undefined;
+  const pair = parent.items.find((p) => isScalar(p.key) && String(p.key.value) === key);
+  return isScalar(pair?.key) ? pair.key : undefined;
 }
 
 /** Nearest existing node for a path (missing required keys point at their parent). */
