@@ -67,6 +67,24 @@ function isRealDateTime(value: string): boolean {
   return true;
 }
 
+/**
+ * Deepest nesting accepted in a JSON value. Validation and serialization recurse, so a deeper
+ * document would overflow the stack instead of being rejected.
+ */
+export const MAX_JSON_DEPTH = 100;
+
+/** Whether `value` nests deeper than `max`, checked without recursion. */
+function nestsDeeperThan(value: unknown, max: number): boolean {
+  const stack: [unknown, number][] = [[value, 0]];
+  while (stack.length > 0) {
+    const [v, depth] = stack.pop()!;
+    if (typeof v !== 'object' || v === null) continue;
+    if (depth >= max) return true;
+    for (const child of Object.values(v)) stack.push([child, depth + 1]);
+  }
+  return false;
+}
+
 /** zod error option: distinguishes missing and null from a wrong type. */
 const expected = (message: string) => (issue: { input?: unknown }) =>
   issue.input === undefined ? 'is required' : issue.input === null ? 'cannot be null' : message;
@@ -153,7 +171,13 @@ function valueSchema(f: Field): z.ZodType {
     }
     case 'json':
       // SQL NULL is represented by null; a JSON `null` document can't be written.
-      return z.json({ error: expected('expected a JSON value') });
+      return z
+        .unknown()
+        .refine((v) => !nestsDeeperThan(v, MAX_JSON_DEPTH), {
+          message: `must be nested at most ${MAX_JSON_DEPTH} levels deep`,
+          abort: true,
+        })
+        .pipe(z.json({ error: expected('expected a JSON value') }));
     default:
       // Types without a JSON mapping (bytea, inet, interval, ...) are sent in Postgres' text form.
       return z.string({ error: expected('expected a string') });

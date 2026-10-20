@@ -28,6 +28,18 @@ export function parseMigrateFlag(value: string | undefined): boolean {
   throw new Error('WARDEN_MIGRATE must be true or false');
 }
 
+const SIZE_UNITS: Record<string, number> = { b: 1, kb: 1024, mb: 1024 ** 2 };
+
+/** `WARDEN_BODY_LIMIT`: largest request body in bytes, `kb`, or `mb`; 1mb by default. */
+export function parseBodyLimit(value: string | undefined): number {
+  const match = /^(\d+)\s*(b|kb|mb)?$/.exec(value?.trim().toLowerCase() || '1mb');
+  const bytes = match ? Number(match[1]) * SIZE_UNITS[match[2] ?? 'b']! : 0;
+  if (!Number.isSafeInteger(bytes) || bytes <= 0) {
+    throw new Error('WARDEN_BODY_LIMIT must be a size like 512kb or 2mb');
+  }
+  return bytes;
+}
+
 /**
  * Load config, migrate Warden's own schema (or check it is current), introspect the database, and build the app. Config that doesn't match the
  * database is logged as warnings; invalid config, or config without `access`, throws a ConfigError.
@@ -42,6 +54,7 @@ export async function createWarden({
   if (!connectionString) throw new Error('DATABASE_URL is required');
   const authSettings = parseAuthSettings(env);
   const runMigrations = parseMigrateFlag(env.WARDEN_MIGRATE);
+  const bodyLimit = parseBodyLimit(env.WARDEN_BODY_LIMIT);
 
   const loaded = await loadConfig({ cwd, env });
   requireAccess(loaded);
@@ -94,6 +107,7 @@ export async function createWarden({
           absoluteSeconds: authSettings.absoluteTimeoutSeconds,
         },
       },
+      bodyLimit,
       logger,
       ...(webDir ? { webDir } : {}),
     });

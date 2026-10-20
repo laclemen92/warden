@@ -77,6 +77,8 @@ Warden signs users in with OIDC (authorization code + PKCE) and keeps server-sid
 
 Both URLs must use https, except on `localhost`. When `WARDEN_PUBLIC_URL` is https, the session cookie is `__Host-warden_session` with `Secure`; it is always `HttpOnly` and `SameSite=Lax`. Only a hash of the session token is stored. Logging out (`POST /auth/logout`) deletes the session, and so does signing in again from the same browser, so a copy of the old cookie stops working. Admins can sign a user out of every session from the [roles page](docs/config.md#role-assignments). Request logs leave out the query string of `/auth/*` URLs and redact `code` and `state` parameters elsewhere, so authorization codes don't reach your log pipeline.
 
+Request bodies are limited to 1 MiB; larger ones get a `413`. Set `WARDEN_BODY_LIMIT` (bytes, or a size like `512kb` or `2mb`) to change it. JSON values written to `json`/`jsonb` columns may nest at most 100 levels deep.
+
 ## Development
 
 Requires Node 22 and pnpm (`corepack enable`).

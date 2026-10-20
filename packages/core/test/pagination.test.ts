@@ -37,6 +37,7 @@ const entity = (primaryKey: string[], extra: Partial<Entity> = {}): Entity => ({
     field('active', 'bool'),
     field('issued_at', 'timestamptz', { nullable: true }),
     field('meta', 'jsonb'),
+    field('code', 'text'),
   ],
   ...extra,
 });
@@ -122,6 +123,28 @@ describe('record ids', () => {
 
   it.each(['abc', '1.5.5', ''])('rejects malformed single ids: %j', (id) => {
     expect(decodeRecordId(entity(['number']), id).ok).toBe(false);
+  });
+
+  // Each would otherwise reach Postgres and fail there (22P02, 22003, 22008, 22021).
+  it.each<[string, string]>([
+    ['number', '1.5'],
+    ['number', '1e3'],
+    ['number', '2147483648'],
+    ['company_id', '9223372036854775808'],
+    ['issued_at', '2026-02-30'],
+    ['issued_at', '2026-01-01 25:00'],
+    ['code', 'a\u0000b'],
+  ])('rejects %s ids the column cannot hold: %j', (key, id) => {
+    expect(decodeRecordId(entity([key]), id)).toEqual({
+      ok: false,
+      message: 'malformed record id',
+    });
+  });
+
+  it('rejects composite ids whose values the columns cannot hold', () => {
+    const e = entity(['company_id', 'number']);
+    expect(decodeRecordId(e, btoa(JSON.stringify(['7', 1.5]))).ok).toBe(false);
+    expect(decodeRecordId(e, btoa(JSON.stringify(['7', 2 ** 31]))).ok).toBe(false);
   });
 
   it('rejects malformed composite ids', () => {

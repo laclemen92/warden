@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { MAX_JSON_DEPTH } from '../src/validation.js';
 import { fieldSchema, validateRecord, type Entity, type Field } from '../src/index.js';
 
 const field = (name: string, overrides: Partial<Field> = {}): Field => ({
@@ -128,6 +129,25 @@ describe('fieldSchema', () => {
     [{ isArray: true, dataType: 'role', enumValues: ['a'] }, ['b'], false],
   ])('%j accepts %j: %s', (overrides, value, expected) => {
     expect(accepts(field('f', overrides), value)).toBe(expected);
+  });
+
+  it('limits how deeply JSON values nest, without overflowing the stack', () => {
+    const nested = (depth: number, leaf: unknown = 1) => {
+      let value = leaf;
+      for (let i = 0; i < depth; i++) value = i % 2 ? { a: value } : [value];
+      return value;
+    };
+    const json = field('f', { dataType: 'jsonb' });
+    expect(accepts(json, nested(MAX_JSON_DEPTH))).toBe(true);
+    expect(accepts(json, nested(MAX_JSON_DEPTH + 1))).toBe(false);
+    // Deep enough that a recursive check would throw a RangeError.
+    expect(accepts(json, nested(200_000))).toBe(false);
+    expect(errors({ email: 'a@b.co', metadata: nested(200_000) })).toEqual([
+      { field: 'metadata', message: `must be nested at most ${MAX_JSON_DEPTH} levels deep` },
+    ]);
+    const array = field('f', { dataType: 'jsonb', isArray: true });
+    expect(accepts(array, [nested(MAX_JSON_DEPTH), null])).toBe(true);
+    expect(accepts(array, [nested(MAX_JSON_DEPTH + 1)])).toBe(false);
   });
 
   it('accepts null only for nullable fields', () => {

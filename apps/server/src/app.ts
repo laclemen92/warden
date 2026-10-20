@@ -32,6 +32,8 @@ export interface AppOptions {
   roles?: Omit<RoleRoutesOptions, 'db'>;
   /** Directory containing the built web UI. Served with SPA fallback when present. */
   webDir?: string;
+  /** Largest request body in bytes; larger ones get a 413. Fastify's default (1 MiB) if unset. */
+  bodyLimit?: number;
   logger?: FastifyServerOptions['logger'];
 }
 
@@ -43,13 +45,18 @@ export async function buildApp({
   drift,
   roles,
   webDir,
+  bodyLimit,
   logger = false,
 }: AppOptions = {}) {
   if ((schema || drift || roles) && !auth) throw new Error('auth is required to serve /api routes');
   if (schema && db && !policy) throw new Error('policy is required to serve entity routes');
   // Request ids are logged and stored with audit entries, so they must be unique across restarts
   // and replicas.
-  const app = Fastify({ logger: redactingLogger(logger), genReqId: () => randomUUID() });
+  const app = Fastify({
+    logger: redactingLogger(logger),
+    genReqId: () => randomUUID(),
+    ...(bodyLimit !== undefined ? { bodyLimit } : {}),
+  });
 
   // Don't leak database errors (SQL, constraint names, values) to clients; they are logged.
   app.setErrorHandler((err: Error & { statusCode?: number; validation?: unknown }, req, reply) => {

@@ -295,9 +295,10 @@ export function registerEntityRoutes(
       const found = lookup(req, req.params.entity);
       if (!found) return notFound(reply);
       const { entity, view } = found;
-      if (missingReason(entity, 'update', req.body)) return badRequest(reply, REASON_REQUIRED);
+      // A malformed id 404s like a missing row, whether or not a reason was given.
       const decoded = decodeRecordId(view, req.params.id);
       if (!decoded.ok) return notFound(reply);
+      if (missingReason(entity, 'update', req.body)) return badRequest(reply, REASON_REQUIRED);
       const record = validateRecord(view, req.body.values, 'update');
       if (!record.ok) return badRequest(reply, 'invalid record', record.errors);
       if (Object.keys(record.values).length === 0) return badRequest(reply, 'no fields to update');
@@ -323,9 +324,10 @@ export function registerEntityRoutes(
       const found = lookup(req, req.params.entity);
       if (!found) return notFound(reply);
       const { entity, view } = found;
-      if (missingReason(entity, 'delete', req.body)) return badRequest(reply, REASON_REQUIRED);
+      // A malformed id 404s like a missing row, whether or not a reason was given.
       const decoded = decodeRecordId(view, req.params.id);
       if (!decoded.ok) return notFound(reply);
+      if (missingReason(entity, 'delete', req.body)) return badRequest(reply, REASON_REQUIRED);
       const version = req.body?.version;
       let result;
       try {
