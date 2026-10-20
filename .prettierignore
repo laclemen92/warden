@@ -3,3 +3,5 @@ node_modules
 .turbo
 pnpm-lock.yaml
 LICENSE
+playwright-report
+test-results
