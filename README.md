@@ -97,6 +97,7 @@ pnpm typecheck
 | `packages/pg-adapter` | Postgres introspection and query execution                  |
 | `packages/mock-oidc`  | Development-only OIDC provider with test users              |
 | `examples/basic`      | Example schema, seed data, and config used by compose/tests |
+| `e2e`                 | Playwright end-to-end tests against the compose stack       |
 | `docker`              | Production Dockerfile                                       |
 | `docs`                | Configuration reference and database setup                  |
 
