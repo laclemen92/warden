@@ -1,20 +1,40 @@
+import { lazy, type ComponentType } from 'react';
 import type { RouteObject } from 'react-router';
-import { AppLayout } from '@/components/app-layout';
-import { EntityPage } from '@/pages/entity-page';
-import { HomePage } from '@/pages/home-page';
-import { LoginPage } from '@/pages/login-page';
-import { NotFoundPage } from '@/pages/not-found-page';
-import { RecordPage } from '@/pages/record-page';
+
+// Every page is its own chunk, so /login never downloads the shell, sidebar or grid. Pages under
+// the layout use React.lazy so their loading state renders inside the layout's <Suspense>; the
+// layout and /login use route `lazy`, covered by the root's fallback on first load.
+function page(load: () => Promise<ComponentType>) {
+  const Page = lazy(async () => ({ default: await load() }));
+  return <Page />;
+}
 
 export const routes: RouteObject[] = [
-  { path: '/login', element: <LoginPage /> },
   {
-    element: <AppLayout />,
+    hydrateFallbackElement: <div className="min-h-svh" aria-busy="true" />,
     children: [
-      { index: true, element: <HomePage /> },
-      { path: 'entities/:entity', element: <EntityPage /> },
-      { path: 'entities/:entity/:id', element: <RecordPage /> },
-      { path: '*', element: <NotFoundPage /> },
+      {
+        path: '/login',
+        lazy: async () => ({ Component: (await import('@/pages/login-page')).LoginPage }),
+      },
+      {
+        lazy: async () => ({ Component: (await import('@/components/app-layout')).AppLayout }),
+        children: [
+          { index: true, element: page(async () => (await import('@/pages/home-page')).HomePage) },
+          {
+            path: 'entities/:entity',
+            element: page(async () => (await import('@/pages/entity-page')).EntityPage),
+          },
+          {
+            path: 'entities/:entity/:id',
+            element: page(async () => (await import('@/pages/record-page')).RecordPage),
+          },
+          {
+            path: '*',
+            element: page(async () => (await import('@/pages/not-found-page')).NotFoundPage),
+          },
+        ],
+      },
     ],
   },
 ];

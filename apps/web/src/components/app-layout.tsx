@@ -1,7 +1,9 @@
+import { Suspense } from 'react';
 import { Outlet } from 'react-router';
 import { AppSidebar } from '@/components/app-sidebar';
 import { Separator } from '@/components/ui/separator';
 import { SidebarInset, SidebarProvider, SidebarTrigger } from '@/components/ui/sidebar';
+import { Skeleton } from '@/components/ui/skeleton';
 
 export function AppLayout() {
   return (
@@ -14,7 +16,9 @@ export function AppLayout() {
           <span className="text-sm text-muted-foreground">Warden</span>
         </header>
         <div className="flex-1 p-6">
-          <Outlet />
+          <Suspense fallback={<Skeleton className="h-8 w-48" aria-label="Loading" />}>
+            <Outlet />
+          </Suspense>
         </div>
       </SidebarInset>
     </SidebarProvider>
