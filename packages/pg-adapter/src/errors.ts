@@ -1,5 +1,6 @@
 import type { Entity, FieldError } from '@wardenhq/core';
 import { sql } from 'kysely';
+import { AuditWriteError } from './audit.js';
 import type { Database } from './database.js';
 
 export interface WriteErrorResult {
@@ -30,6 +31,18 @@ const DATA_ERRORS: Record<string, string> = {
   '22P02': 'a value has an invalid format',
   '22P05': 'a value contains invalid characters',
 };
+// Every other class 22 error: bad input for a type Warden passes through as text (bit, ranges,
+// xml, ...).
+const DATA_ERROR = 'a value is invalid for its field';
+
+/**
+ * Whether `err` is a Postgres data error (SQLSTATE class 22): a value the database can't accept,
+ * so the request was bad. Looks through `AuditWriteError` to the error it wraps.
+ */
+export function isDataError(err: unknown): boolean {
+  const cause = err instanceof AuditWriteError ? err.cause : err;
+  return isPgError(cause) && cause.code.startsWith('22');
+}
 
 // Columns of a constraint on the table, or of a unique index (which may have no constraint).
 // Null when an index key is an expression, since then no set of columns explains the violation.
@@ -93,8 +106,9 @@ export async function mapWriteError(
   const others = (columns: string[], column: string) =>
     columns.filter((c) => c !== column).join(', ');
 
-  const dataError = DATA_ERRORS[err.code];
-  if (dataError) return { status: 400, errors: [{ message: dataError }] };
+  if (isDataError(err)) {
+    return { status: 400, errors: [{ message: DATA_ERRORS[err.code] ?? DATA_ERROR }] };
+  }
 
   switch (err.code) {
     case '23502': {

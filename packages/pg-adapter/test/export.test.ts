@@ -135,6 +135,87 @@ describe('openExport', () => {
     }
     expect(handle.pool.idleCount).toBe(handle.pool.totalCount);
   });
+
+  it('stops counting past maxRows', async () => {
+    const capped = await openExport(handle.db, accounts, { sort: sortOf(accounts), maxRows: 3 });
+    await capped.close();
+    expect(capped.total).toBe(4);
+    const exact = await openExport(handle.db, accounts, { sort: sortOf(accounts), maxRows: 7 });
+    expect(exact.total).toBe(7);
+    expect((await readAll(exact.batches())).flat()).toHaveLength(7);
+  });
+
+  const transactionsOpen = async () => {
+    const { rows } = await sql<{ n: string }>`
+      select count(*) as n from pg_stat_activity
+      where datname = current_database() and state like 'idle in transaction%'`.execute(handle.db);
+    return Number(rows[0]!.n);
+  };
+
+  it('ends an export whose reader stops pulling, and gives its connection back', async () => {
+    const timeouts: string[] = [];
+    const result = await openExport(handle.db, accounts, {
+      sort: sortOf(accounts),
+      batchSize: 1,
+      idleTimeoutMs: 200,
+      onTimeout: (reason) => timeouts.push(reason),
+    });
+    const batches = result.batches();
+    expect((await batches.next()).value).toHaveLength(1);
+    expect(await transactionsOpen()).toBe(1);
+    // A reader pulling within the timeout keeps it going.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect((await batches.next()).value).toHaveLength(1);
+    await expect.poll(() => timeouts, { timeout: 2000 }).toEqual(['idle']);
+    await expect.poll(transactionsOpen).toBe(0);
+    expect(handle.pool.idleCount).toBe(handle.pool.totalCount);
+    // A reader that comes back finds the export over, not a broken cursor.
+    expect(await batches.next()).toEqual({ done: true, value: undefined });
+  });
+
+  it('times out an export that is opened but never read', async () => {
+    const timeouts: string[] = [];
+    await openExport(handle.db, accounts, {
+      sort: sortOf(accounts),
+      idleTimeoutMs: 100,
+      onTimeout: (reason) => timeouts.push(reason),
+    });
+    await expect.poll(() => timeouts).toEqual(['idle']);
+    await expect.poll(transactionsOpen).toBe(0);
+  });
+
+  it('ends an export at its deadline even while it is being read', async () => {
+    const timeouts: string[] = [];
+    const result = await openExport(handle.db, accounts, {
+      sort: sortOf(accounts),
+      batchSize: 1,
+      deadlineMs: 300,
+      idleTimeoutMs: 10_000,
+      onTimeout: (reason) => timeouts.push(reason),
+    });
+    let read = 0;
+    for await (const batch of result.batches()) {
+      read += batch.length;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    expect(timeouts).toEqual(['deadline']);
+    expect(read).toBeGreaterThan(0);
+    expect(read).toBeLessThan(7);
+    await expect.poll(transactionsOpen).toBe(0);
+  });
+
+  it('does not time out an export that was read to the end', async () => {
+    const timeouts: string[] = [];
+    const result = await openExport(handle.db, accounts, {
+      sort: sortOf(accounts),
+      deadlineMs: 100,
+      idleTimeoutMs: 100,
+      onTimeout: (reason) => timeouts.push(reason),
+    });
+    expect((await readAll(result.batches())).flat()).toHaveLength(7);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(timeouts).toEqual([]);
+  });
 });
 
 describe('recordExport', () => {

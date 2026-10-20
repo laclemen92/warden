@@ -1,9 +1,11 @@
+import type { ReactNode } from 'react';
 import {
   isActionDetails,
   parseSortFields,
   type ActionDetails,
   type Entity,
   type ExportDetails,
+  type RevokeSessionsDetails,
 } from '@wardenhq/core';
 import { Link } from 'react-router';
 import { FieldValue } from '@/components/field-value';
@@ -18,6 +20,15 @@ const ACTION_VARIANTS: Record<string, 'default' | 'secondary' | 'destructive' | 
   update: 'secondary',
   delete: 'destructive',
   export: 'outline',
+  assign: 'default',
+  unassign: 'destructive',
+  revoke_sessions: 'destructive',
+};
+
+/** Names for the entities access entries are filed under, which aren't in the schema. */
+const ACCESS_ENTITIES: Record<string, string> = {
+  'warden.role_assignments': 'Role assignments',
+  'warden.sessions': 'Sessions',
 };
 
 const numberFormat = new Intl.NumberFormat();
@@ -46,7 +57,9 @@ function ExportSummary({
     })
     .join(', ');
   const rows: [string, string][] = [
-    ['Rows', numberFormat.format(details.rowCount)],
+    ...(details.rowCount !== undefined
+      ? [['Rows', numberFormat.format(details.rowCount)] as [string, string]]
+      : []),
     ['Columns', details.columns.map(label).join(', ') || '—'],
     ...(filter ? [['Filter', filter] as [string, string]] : []),
     ...(details.q ? [['Search', details.q] as [string, string]] : []),
@@ -64,11 +77,45 @@ function ExportSummary({
       </dl>
       {details.redacted && (
         <p className="text-muted-foreground">
-          The filter or sort used columns you can't see, so it isn't shown.
+          The filter, search, or sort used columns you can't see, so it isn't shown, nor is the
+          number of rows when the filter or search is hidden.
         </p>
       )}
     </div>
   );
+}
+
+const text = (value: unknown) => (typeof value === 'string' && value ? value : undefined);
+
+/** What a role assignment, unassignment, or session revocation did, and to whom. */
+function AccessSummary({ entry }: { entry: AuditEntry }) {
+  let summary: ReactNode;
+  if (entry.action === 'revoke_sessions') {
+    const details = entry.details as RevokeSessionsDetails | null;
+    const who = text(details?.email) ?? text(details?.subject) ?? 'a user';
+    const count = details?.sessions ?? 0;
+    summary = (
+      <>
+        Signed <strong title={details?.subject}>{who}</strong> out everywhere (
+        {numberFormat.format(count)} {count === 1 ? 'session' : 'sessions'})
+      </>
+    );
+  } else {
+    const assignment = entry.after ?? entry.before;
+    const email = text(assignment?.email) ?? 'a user';
+    const role = <strong>{text(assignment?.role) ?? 'a role'}</strong>;
+    summary =
+      entry.action === 'assign' ? (
+        <>
+          Gave {role} to <strong>{email}</strong>
+        </>
+      ) : (
+        <>
+          Removed {role} from <strong>{email}</strong>
+        </>
+      );
+  }
+  return <p className="text-sm">{summary}</p>;
 }
 
 /** A custom action's entry: what it was asked to do, and a link to the rows it changed. */
@@ -138,9 +185,12 @@ export function AuditEntryItem({
     ...(entity?.fields.map((f) => f.name).filter((name) => changed.includes(name)) ?? []),
     ...changed.filter((name) => !entity?.fields.some((f) => f.name === name)),
   ];
+  const accessEntity = Object.hasOwn(ACCESS_ENTITIES, entry.entity)
+    ? ACCESS_ENTITIES[entry.entity]
+    : undefined;
   const fieldOf = (name: string) =>
     entity?.fields.find((f) => f.name === name) ?? { name, label: name, dataType: 'text' };
-  const actionDetails = entry.details && isActionDetails(entry.details) ? entry.details : null;
+  const actionDetails = isActionDetails(entry.details) ? entry.details : null;
   const parentLabel = useActionLabel(entry.parent?.action);
   const ownLabel = useActionLabel(actionDetails ? entry.action : undefined);
   const recordLink =
@@ -156,7 +206,7 @@ export function AuditEntryItem({
         </Badge>
         {showRecord && (
           <span className="font-medium">
-            {entity?.label ?? entry.entity}
+            {entity?.label ?? accessEntity ?? entry.entity}
             {entry.recordId !== null && (
               <>
                 {' '}
@@ -187,9 +237,11 @@ export function AuditEntryItem({
           {entry.reason}
         </p>
       )}
-      {actionDetails ? (
+      {accessEntity ? (
+        <AccessSummary entry={entry} />
+      ) : actionDetails ? (
         <ActionSummary entry={entry} details={actionDetails} />
-      ) : entry.details && !isActionDetails(entry.details) ? (
+      ) : entry.details && 'columns' in entry.details ? (
         <ExportSummary details={entry.details} entity={entity} />
       ) : ordered.length > 0 ? (
         <div className="overflow-x-auto rounded-md border">

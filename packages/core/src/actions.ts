@@ -441,8 +441,8 @@ export interface ActionChange {
   after: Record<string, unknown> | null;
   diff: AuditDiff;
   /**
-   * For creates, the values `run` gave; the rest of the row comes from defaults and sequences,
-   * which differ between a preview and the run.
+   * For creates, the fields `run` set, as written; the rest of the row comes from defaults and
+   * sequences, which differ between a preview and the run.
    */
   values?: Record<string, unknown>;
 }

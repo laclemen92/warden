@@ -1,6 +1,13 @@
 import { z } from 'zod';
 import type { Entity, Field } from './effective-schema.js';
-import { UUID, checkNumber, checkTemporal, checkText, expectedTemporal } from './values.js';
+import {
+  UUID,
+  checkNumber,
+  checkTemporal,
+  checkText,
+  expectedTemporal,
+  nestsDeeperThan,
+} from './values.js';
 
 /**
  * Filter AST sent by clients. Validate with {@link validateFilter} before compiling: validation
@@ -140,6 +147,8 @@ export interface FilterError {
   message: string;
 }
 
+const TOO_DEEP = `filters can nest at most ${FILTER_LIMITS.maxDepth} levels`;
+
 export type FilterValidation = { ok: true; filter: Filter } | { ok: false; errors: FilterError[] };
 
 /**
@@ -148,6 +157,11 @@ export type FilterValidation = { ok: true; filter: Filter } | { ok: false; error
  * the field's type, and values must parse as that type.
  */
 export function validateFilter(entity: Entity, input: unknown): FilterValidation {
+  // zod parses recursively, so a deep enough filter would overflow the stack. A filter within the
+  // depth limit nests at most two JSON levels per level (an object and its `and`/`or` array).
+  if (nestsDeeperThan(input, 2 * FILTER_LIMITS.maxDepth)) {
+    return { ok: false, errors: [{ path: '', message: TOO_DEEP }] };
+  }
   const parsed = filterSchema.safeParse(input);
   if (!parsed.success) {
     return {
@@ -163,10 +177,7 @@ export function validateFilter(entity: Entity, input: unknown): FilterValidation
   const visit = (node: Filter, path: string[], depth: number) => {
     const at = (...rest: (string | number)[]) => [...path, ...rest].join('.');
     if (depth > FILTER_LIMITS.maxDepth) {
-      errors.push({
-        path: at(),
-        message: `filters can nest at most ${FILTER_LIMITS.maxDepth} levels`,
-      });
+      errors.push({ path: at(), message: TOO_DEEP });
       return;
     }
     if ('and' in node || 'or' in node) {

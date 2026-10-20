@@ -9,10 +9,14 @@ import { MAX_EXPORT_ROWS } from '../src/routes/export.js';
 import { createWarden } from '../src/warden.js';
 import { authEnv, login, startTestIdp } from './helpers/auth.js';
 
-// `viewer` may read but not export. `ops` may export but can't see when users last logged in;
-// `admin` sees everything. Both may search the audit log.
+// `viewer` may read but not export. `ops` may export but can't see when users last logged in or
+// companies' domains; `admin` sees everything. Both may search the audit log.
 const CONFIG = `
 tables:
+  companies:
+    searchable: [name, domain]
+    columns:
+      domain: { readableBy: [admin] }
   users:
     columns:
       password_hash: { hidden: true }
@@ -233,6 +237,7 @@ describe('CSV export', () => {
         rowCount,
         columns: ['id', 'email', 'last_login_at'],
         q: 'User 4',
+        searchFields: ['email', 'full_name'],
         sort: '-last_login_at',
       },
       request_id: expect.any(String),
@@ -257,16 +262,61 @@ describe('CSV export', () => {
       rowCount,
       columns: ['id', 'email'],
       q: 'User 4',
+      searchFields: ['email', 'full_name'],
       redacted: true,
     });
     expect(JSON.stringify(redacted)).not.toContain('last_login_at');
+  });
+
+  it("hides the search, and how many rows it matched, from auditors who can't see a field it ran over", async () => {
+    const auditedExport = async (user: User) => {
+      const audit = await app.inject({
+        method: 'GET',
+        url: '/api/audit?action=export&entity=companies&limit=1',
+        headers: { cookie: cookies[user] },
+      });
+      expect(audit.statusCode, audit.body).toBe(200);
+      return audit.json().items[0];
+    };
+    // The admin's search also ran over domain, which ops can't read.
+    let res = await exportCsv('admin', 'companies', { q: 'company7.example', columns: 'id,name' });
+    expect(res.statusCode).toBe(200);
+    const rowCount = parseCsv(res.body.slice(1)).length - 1;
+    expect((await auditedExport('admin')).details).toEqual({
+      rowCount,
+      columns: ['id', 'name'],
+      q: 'company7.example',
+      searchFields: ['name', 'domain'],
+    });
+    const redacted = await auditedExport('editor');
+    expect(redacted.details).toEqual({ columns: ['id', 'name'], redacted: true });
+    expect(JSON.stringify(redacted)).not.toMatch(/company7|domain/);
+
+    // Ops' own search only ran over what ops can read, so other auditors see all of it.
+    res = await exportCsv('editor', 'companies', { q: 'Company 7' });
+    expect(res.statusCode).toBe(200);
+    expect((await auditedExport('editor')).details).toMatchObject({
+      rowCount: parseCsv(res.body.slice(1)).length - 1,
+      q: 'Company 7',
+      searchFields: ['name'],
+    });
+
+    // A redacted filter takes the row count with it, too.
+    res = await exportCsv('admin', 'companies', {
+      filter: JSON.stringify({ field: 'domain', op: 'isNotNull' }),
+    });
+    expect(res.statusCode).toBe(200);
+    expect((await auditedExport('editor')).details).toEqual({
+      columns: ['id', 'name', 'plan', 'created_at'],
+      redacted: true,
+    });
   });
 
   it('refuses exports over the row limit, without auditing them', async () => {
     const before = await exportCount();
     const res = await exportCsv('admin', 'events');
     expect(res.statusCode).toBe(400);
-    expect(res.json().message).toMatch(/limited to 100,000 rows; this one has 100,001/);
+    expect(res.json().message).toMatch(/limited to 100,000 rows; this one has more/);
     expect(await exportCount()).toBe(before);
     // Narrowed, it goes through.
     const narrowed = await exportCsv('admin', 'events', {

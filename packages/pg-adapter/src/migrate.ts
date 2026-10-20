@@ -137,6 +137,15 @@ export const MIGRATIONS: readonly Migration[] = [
       alter table warden.sessions add column id_token text;
     `,
   },
+  {
+    version: '0008_audit_written',
+    sql: `
+      -- The fields a create or update set. The rest of its diff is what the database changed
+      -- itself (defaults, triggers), which doesn't make the write visible to readers of those
+      -- fields. Null for other actions and for entries written before this column existed.
+      alter table warden.audit_log add column written text[];
+    `,
+  },
 ];
 
 // Arbitrary constant shared by every Warden instance, so replicas don't migrate concurrently.

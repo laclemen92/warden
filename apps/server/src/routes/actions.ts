@@ -405,7 +405,9 @@ export function registerActionRoutes(app: FastifyInstance, options: ActionRouteO
               before: change.before,
               after: change.after,
               diff: auditDiff(change.before, change.after),
-              ...(change.values ? { values: change.values } : {}),
+              ...(change.action === 'create' && change.written
+                ? { values: Object.fromEntries(change.written.map((f) => [f, row[f] ?? null])) }
+                : {}),
             });
           },
         });

@@ -266,7 +266,7 @@ describe('audit log page', () => {
                 q: 'ada',
                 sort: '-email',
               }),
-              exported('4', { rowCount: 2, columns: ['email'], redacted: true }),
+              exported('4', { columns: ['email'], redacted: true }),
             ])
           : undefined,
       ['audit'],
@@ -289,11 +289,53 @@ describe('audit log page', () => {
     expect(within(full).queryByText('No field changes.')).not.toBeInTheDocument();
 
     const redacted = screen.getByRole('article', { name: 'export 4' });
-    expect(terms(redacted)).toEqual([
-      ['Rows', '2'],
-      ['Columns', 'Email'],
-    ]);
+    expect(terms(redacted)).toEqual([['Columns', 'Email']]);
     expect(within(redacted).getByText(/used columns you can't see/)).toBeInTheDocument();
+  });
+
+  it('says who was given or lost access, and whose sessions were revoked', async () => {
+    const access = (id: string, extra: Partial<AuditEntry>) =>
+      entry(id, { recordId: null, diff: {}, ...extra });
+    const assignment = { email: 'bob@example.com', role: 'ops', assignedBy: 'sub-ada' };
+    stubFetch(
+      (url) =>
+        url.pathname === '/api/audit'
+          ? page([
+              access('9', {
+                action: 'revoke_sessions',
+                entity: 'warden.sessions',
+                before: null,
+                after: null,
+                details: { subject: 'sub-bob', email: 'bob@example.com', sessions: 2 },
+              }),
+              access('8', {
+                action: 'unassign',
+                entity: 'warden.role_assignments',
+                before: assignment,
+                after: null,
+              }),
+              access('7', {
+                action: 'assign',
+                entity: 'warden.role_assignments',
+                before: null,
+                after: assignment,
+              }),
+            ])
+          : undefined,
+      ['audit'],
+    );
+    renderAt('/admin/audit');
+
+    const revoked = await screen.findByRole('article', { name: 'revoke_sessions 9' });
+    expect(revoked).toHaveTextContent('Sessions');
+    expect(revoked).toHaveTextContent('Signed bob@example.com out everywhere (2 sessions)');
+    const unassigned = screen.getByRole('article', { name: 'unassign 8' });
+    expect(unassigned).toHaveTextContent('Role assignments');
+    expect(unassigned).toHaveTextContent('Removed ops from bob@example.com');
+    const assigned = screen.getByRole('article', { name: 'assign 7' });
+    expect(assigned).toHaveTextContent('Gave ops to bob@example.com');
+    expect(within(assigned).queryByRole('table')).not.toBeInTheDocument();
+    expect(within(assigned).queryByText('No field changes.')).not.toBeInTheDocument();
   });
 
   it('applies filters from the form to the request and the URL', async () => {

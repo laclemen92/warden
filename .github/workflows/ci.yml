@@ -4,9 +4,13 @@ on:
   push:
     branches: [main]
   pull_request:
+  # The release workflow runs these same checks as its gate before publishing anything.
+  workflow_call:
 
 concurrency:
-  group: ci-${{ github.ref }}
+  # In a workflow_call, github.workflow is the caller's name, so a release run never cancels (or
+  # is cancelled by) CI on the same ref.
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:

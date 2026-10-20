@@ -49,6 +49,8 @@ docker compose up --build
 
 This starts Postgres seeded with the example schema in [`examples/basic`](examples/basic), a mock OIDC provider at http://localhost:9400, and Warden at http://localhost:3000. Override host ports with `POSTGRES_PORT`, `OIDC_PORT` and `WARDEN_PORT` if 5432, 9400 or 3000 are taken.
 
+To run a released image instead of building from source, see [releasing](docs/releasing.md#pulling-the-image).
+
 The mock provider replaces a real IdP for local use: its sign-in page lists test users and needs no password. It is for development and E2E only.
 
 | User       | Email                  | `groups` claim   |
@@ -83,6 +85,8 @@ Custom actions (multi-step, transactional, audited operations written in code) a
 
 Request bodies are limited to 1 MiB; larger ones get a `413`. Set `WARDEN_BODY_LIMIT` (bytes, or a size like `512kb` or `2mb`) to change it. JSON values written to `json`/`jsonb` columns may nest at most 100 levels deep.
 
+Database timeouts and CSV export limits (how many may run at once, and when a stalled download is ended) are set with the `WARDEN_DB_*` and `WARDEN_EXPORT_*` variables in [timeouts and exports](docs/database.md#timeouts-and-exports).
+
 ## Development
 
 Requires Node 22 and pnpm (`corepack enable`).
@@ -111,7 +115,7 @@ pnpm typecheck
 | `examples/basic`      | Example schema, seed, config, and actions used by compose/tests |
 | `e2e`                 | Playwright end-to-end tests against the compose stack           |
 | `docker`              | Production Dockerfile                                           |
-| `docs`                | Configuration reference and database setup                      |
+| `docs`                | Configuration reference, database setup, and releasing          |
 
 ## License
 

@@ -1,0 +1,192 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*.*.*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to release, without the leading v (e.g. 0.2.0 or 0.3.0-rc.1). Tags the dispatched commit.
+        required: true
+        type: string
+
+concurrency:
+  group: release-${{ inputs.version || github.ref_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: version
+        env:
+          EVENT: ${{ github.event_name }}
+          INPUT: ${{ inputs.version }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          if [ "$EVENT" = workflow_dispatch ]; then version="${INPUT#v}"; else version="${REF_NAME#v}"; fi
+          if ! [[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::'$version' is not a version like 1.2.3 or 1.2.3-rc.1"
+            exit 1
+          fi
+          if [ "$EVENT" = workflow_dispatch ] && git ls-remote --exit-code --tags origin "refs/tags/v$version" > /dev/null; then
+            echo "::error::Tag v$version already exists"
+            exit 1
+          fi
+          prerelease=false
+          if [[ "$version" == *-* ]]; then prerelease=true; fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
+
+  # Same jobs as PR CI. Nothing below runs unless every one of them passes.
+  checks:
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
+  image:
+    needs: [prepare, checks]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          # Prereleases get only the {{version}} tag; latest is added explicitly for stable ones.
+          flavor: latest=false
+          tags: |
+            type=semver,pattern={{version}},value=${{ needs.prepare.outputs.version }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.prepare.outputs.version }}
+            type=raw,value=latest,enable=${{ needs.prepare.outputs.prerelease == 'false' }}
+          labels: |
+            org.opencontainers.image.licenses=Apache-2.0
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          annotations: ${{ steps.meta.outputs.annotations }}
+          build-args: WARDEN_VERSION=${{ needs.prepare.outputs.version }}
+          provenance: mode=max
+          sbom: true
+          cache-from: |
+            type=gha
+            type=gha,scope=release
+          cache-to: type=gha,mode=max,scope=release
+
+  smoke-test:
+    needs: [prepare, image]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    strategy:
+      matrix:
+        platform: [linux/amd64, linux/arm64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Start Postgres and the pushed image
+        env:
+          REF: ${{ env.IMAGE }}@${{ needs.image.outputs.digest }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          docker network create smoke
+          docker run -d --name postgres --network smoke \
+            -e POSTGRES_USER=warden -e POSTGRES_PASSWORD=warden -e POSTGRES_DB=example \
+            -v "$PWD/examples/basic/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro" \
+            -v "$PWD/examples/basic/seed.sql:/docker-entrypoint-initdb.d/02-seed.sql:ro" \
+            --health-cmd 'pg_isready -U warden -d example' --health-interval 2s \
+            postgres:18-alpine
+          for _ in $(seq 60); do
+            [ "$(docker inspect -f '{{.State.Health.Status}}' postgres)" = healthy ] && break
+            sleep 2
+          done
+          docker pull --platform "$PLATFORM" "$REF"
+          # OIDC discovery is lazy, so no IdP is needed to start and answer /healthz.
+          docker run -d --name warden --network smoke --platform "$PLATFORM" -p 3000:3000 \
+            -e DATABASE_URL=postgres://warden:warden@postgres:5432/example \
+            -e WARDEN_CONFIG=/config/warden.config.yaml \
+            -e WARDEN_PUBLIC_URL=http://localhost:3000 \
+            -e OIDC_ISSUER=http://localhost:9400 \
+            -e OIDC_CLIENT_ID=warden \
+            -e OIDC_CLIENT_SECRET=smoke-test \
+            -e WARDEN_SESSION_SECRET="$(openssl rand -base64 32)" \
+            -v "$PWD/examples/basic/warden.config.yaml:/config/warden.config.yaml:ro" \
+            "$REF"
+      - name: Check /healthz reports the version
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          # Emulated arm64 starts slowly.
+          for _ in $(seq 90); do
+            body="$(curl -fsS http://localhost:3000/healthz)" && break
+            sleep 2
+          done
+          echo "/healthz: $body"
+          jq -e --arg v "$VERSION" '.status == "ok" and .version == $v' <<< "$body"
+      - if: always()
+        run: docker logs warden || true; docker logs postgres || true
+
+  release:
+    needs: [prepare, image, smoke-test]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT: ${{ github.event_name }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
+          DIGEST: ${{ needs.image.outputs.digest }}
+        run: |
+          args=(--repo "$GITHUB_REPOSITORY" --title "v$VERSION" --generate-notes)
+          if [ "$PRERELEASE" = true ]; then args+=(--prerelease); fi
+          # A pushed tag must already exist; a manual run creates it on the dispatched commit.
+          if [ "$EVENT" = workflow_dispatch ]; then args+=(--target "$GITHUB_SHA"); else args+=(--verify-tag); fi
+          notes="$(cat <<NOTES
+          ## Docker image
+
+          \`\`\`sh
+          docker pull $IMAGE:$VERSION
+          # or, pinned by digest
+          docker pull $IMAGE@$DIGEST
+          \`\`\`
+
+          Platforms: \`linux/amd64\`, \`linux/arm64\`. Digest: \`$DIGEST\`. See [docs/releasing.md](https://github.com/$GITHUB_REPOSITORY/blob/v$VERSION/docs/releasing.md#pulling-the-image) to log in to GHCR.
+          NOTES
+          )"
+          gh release create "v$VERSION" "${args[@]}" --notes "$notes"

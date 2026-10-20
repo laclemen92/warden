@@ -13,7 +13,8 @@ import { ActionsError, loadActions } from './actions.js';
 import { buildApp, type AppOptions } from './app.js';
 import { createOidcClient } from './auth/oidc.js';
 import { createSessions } from './auth/session.js';
-import { parseAuthSettings } from './auth/settings.js';
+import { parseAuthSettings, parseDuration } from './auth/settings.js';
+import type { ExportLimits } from './routes/export.js';
 
 export interface WardenOptions {
   env?: Record<string, string | undefined>;
@@ -42,6 +43,48 @@ export function parseBodyLimit(value: string | undefined): number {
   return bytes;
 }
 
+export interface DatabaseSettings {
+  idleInTransactionTimeoutMs: number;
+  exports: ExportLimits;
+}
+
+/**
+ * Database timeouts and export limits from the environment. Throws one error listing every
+ * problem.
+ */
+export function parseDatabaseSettings(env: Record<string, string | undefined>): DatabaseSettings {
+  const problems: string[] = [];
+  const duration = (name: string, fallback: string) => {
+    const seconds = parseDuration(env[name] ?? fallback);
+    if (seconds === undefined) problems.push(`${name} must be a duration like 30s, 5m, or 1h`);
+    return (seconds ?? 0) * 1000;
+  };
+  const count = (name: string, fallback: number) => {
+    const value = env[name]?.trim();
+    if (!value) return fallback;
+    const n = /^\d+$/.test(value) ? Number(value) : 0;
+    if (n < 1 || n > 100) problems.push(`${name} must be a whole number from 1 to 100`);
+    return n;
+  };
+  const idleInTransactionTimeoutMs = duration('WARDEN_DB_IDLE_IN_TRANSACTION_TIMEOUT', '60s');
+  const exports: ExportLimits = {
+    maxConcurrent: count('WARDEN_EXPORT_MAX_CONCURRENT', 4),
+    maxPerUser: count('WARDEN_EXPORT_MAX_PER_USER', 2),
+    idleTimeoutMs: duration('WARDEN_EXPORT_IDLE_TIMEOUT', '30s'),
+    deadlineMs: duration('WARDEN_EXPORT_DEADLINE', '15m'),
+  };
+  // Otherwise Postgres kills a stalled export's connection before Warden ends it cleanly.
+  if (exports.idleTimeoutMs >= idleInTransactionTimeoutMs) {
+    problems.push(
+      'WARDEN_EXPORT_IDLE_TIMEOUT must be shorter than WARDEN_DB_IDLE_IN_TRANSACTION_TIMEOUT',
+    );
+  }
+  if (problems.length > 0) {
+    throw new Error(`Invalid database settings:\n${problems.map((p) => `  - ${p}`).join('\n')}`);
+  }
+  return { idleInTransactionTimeoutMs, exports };
+}
+
 /**
  * Load config, migrate Warden's own schema (or check it is current), introspect the database, and build the app. Config that doesn't match the
  * database is logged as warnings; invalid config, or config without `access`, throws a ConfigError.
@@ -57,16 +100,34 @@ export async function createWarden({
   const authSettings = parseAuthSettings(env);
   const runMigrations = parseMigrateFlag(env.WARDEN_MIGRATE);
   const bodyLimit = parseBodyLimit(env.WARDEN_BODY_LIMIT);
+  const dbSettings = parseDatabaseSettings(env);
+  const version = env.WARDEN_VERSION?.trim() || 'dev';
 
   const loaded = await loadConfig({ cwd, env });
   requireAccess(loaded);
   const { config, path: configPath } = loaded;
   // Route idle-connection errors to the app logger once it exists.
   let logIdleError = (err: Error) => console.error('idle database connection error', err);
-  const { pool, db, close } = createDatabase({
+  const {
+    pool,
+    db,
+    close: closeMain,
+  } = createDatabase({
     connectionString,
+    idleInTransactionTimeoutMs: dbSettings.idleInTransactionTimeoutMs,
     onIdleError: (err) => logIdleError(err),
   });
+  // Exports get their own pool, sized to how many may run at once, so however many are open (or
+  // stalled) the main pool stays free for sessions and every other request.
+  const exportDb = createDatabase({
+    connectionString,
+    idleInTransactionTimeoutMs: dbSettings.idleInTransactionTimeoutMs,
+    maxConnections: dbSettings.exports.maxConcurrent,
+    onIdleError: (err) => logIdleError(err),
+  });
+  const close = async () => {
+    await Promise.all([closeMain(), exportDb.close()]);
+  };
 
   try {
     let migrations: string[] = [];
@@ -130,13 +191,16 @@ export async function createWarden({
           absoluteSeconds: authSettings.absoluteTimeoutSeconds,
         },
       },
+      exports: { exportDb: exportDb.db, limits: dbSettings.exports },
       bodyLimit,
+      version,
       logger,
       ...(webDir ? { webDir } : {}),
     });
     app.addHook('onClose', close);
     logIdleError = (err) => app.log.error({ err }, 'idle database connection error');
 
+    app.log.info({ version }, 'starting warden');
     if (migrations.length > 0) app.log.info({ migrations }, 'applied migrations');
     app.log.info(
       {

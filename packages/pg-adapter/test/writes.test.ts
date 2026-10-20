@@ -140,7 +140,7 @@ describe('createRow', () => {
       },
     });
     expect(changes).toEqual([
-      { action: 'create', entity: things, before: null, after: row, values: { name: 'hooked' } },
+      { action: 'create', entity: things, before: null, after: row, written: ['name'] },
     ]);
 
     const { rows: before } = await sql`select count(*) from things`.execute(handle.db);
@@ -257,19 +257,19 @@ describe('updateRow', () => {
   });
 
   it('refuses to change primary key columns', async () => {
-    const created = await createRow(handle.db, things, valid(things, { id: 4242 }, 'create'));
+    const created = await createRow(handle.db, things, valid(things, {}, 'create'));
     await expect(
       updateRow(
         handle.db,
         things,
-        byId(things, '4242'),
+        byId(things, String(created.id)),
         { id: 4243 },
         {
           version: rowVersion(things, created),
         },
       ),
     ).rejects.toThrow(/not writable/);
-    expect(await rawThing(4242)).toBeDefined();
+    expect(await rawThing(created.id)).toBeDefined();
   });
 
   it('passes before and after to the hook and rolls back when it throws', async () => {
@@ -293,7 +293,13 @@ describe('updateRow', () => {
       },
     );
     expect(changes).toEqual([
-      { action: 'update', entity: things, before: created, after: result.ok && result.row },
+      {
+        action: 'update',
+        entity: things,
+        before: created,
+        after: result.ok && result.row,
+        written: ['name'],
+      },
     ]);
   });
 });

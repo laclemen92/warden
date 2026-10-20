@@ -38,7 +38,10 @@ export interface Field {
   isArray: boolean;
   nullable: boolean;
   hasDefault: boolean;
-  /** Never writable: configured read-only, identity `always`, or generated. */
+  /**
+   * Never writable: configured read-only, identity `always`, generated, or a primary key with a
+   * default (unless the table sets `insertablePrimaryKey`).
+   */
   readOnly: boolean;
   /**
    * Writable on create but not on update: primary key columns, unless the table sets
@@ -238,8 +241,11 @@ function resolveFields(
     if (hidden) continue;
 
     const field = toField(column, columnConfig, newColumns, enumValues);
-    if (isPrimaryKey && !field.readOnly && !tableConfig?.updatablePrimaryKey) {
-      field.createOnly = true;
+    if (isPrimaryKey && !field.readOnly) {
+      // A key with a default (sequence, identity, uuid default) is generated. An explicit one
+      // doesn't advance the sequence, so later inserts, Warden's or the application's, collide.
+      if (field.hasDefault && !tableConfig?.insertablePrimaryKey) field.readOnly = true;
+      else if (!tableConfig?.updatablePrimaryKey) field.createOnly = true;
     }
     fields.push(field);
   }

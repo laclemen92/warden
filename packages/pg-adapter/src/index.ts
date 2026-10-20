@@ -11,6 +11,7 @@ export {
   listRows,
   openExport,
   type ExportOptions,
+  type ExportTimeout,
   type ListOptions,
   type ListResult,
   type Row,
@@ -43,7 +44,7 @@ export {
   type AuditPage,
   type AuditQuery,
 } from './audit.js';
-export { mapWriteError, type WriteErrorResult } from './errors.js';
+export { isDataError, mapWriteError, type WriteErrorResult } from './errors.js';
 export {
   canDisableAuditTriggers,
   migrate,

@@ -13,10 +13,12 @@ tables:
     displayField: name
     defaultSort: { column: name }
     searchable: [name, domain]
-    # Primary keys are read-only on update unless this is true (it can't apply here anyway: the id
-    # is GENERATED ALWAYS). Note that deleting a company also deletes its orders (`on delete
-    # cascade`) without checking orders permissions or auditing those rows.
+    # Primary keys are read-only on update unless updatablePrimaryKey is true, and keys with a
+    # default are read-only on create too unless insertablePrimaryKey is true (neither can apply
+    # here anyway: the id is GENERATED ALWAYS). Note that deleting a company also deletes its
+    # orders (`on delete cascade`) without checking orders permissions or auditing those rows.
     updatablePrimaryKey: false
+    insertablePrimaryKey: false
 
   users:
     label: Users

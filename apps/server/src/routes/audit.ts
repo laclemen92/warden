@@ -1,8 +1,9 @@
 import type { WardenConfig } from '@wardenhq/config';
-import { adminAreas, decodeRecordId, isAllowed, type Policy } from '@wardenhq/core';
+import { adminAreas, checkTimestamp, decodeRecordId, isAllowed, type Policy } from '@wardenhq/core';
 import { listAuditEntries, type AuditQuery, type Database } from '@wardenhq/pg-adapter';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { Views } from '../views.js';
+import { NO_NUL } from './schemas.js';
 
 export const DEFAULT_AUDIT_LIMIT = 50;
 export const MAX_AUDIT_LIMIT = 200;
@@ -40,9 +41,9 @@ const searchQuerySchema = {
   type: 'object',
   properties: {
     ...pageProperties,
-    entity: { type: 'string', minLength: 1, maxLength: 200 },
-    actor: { type: 'string', minLength: 1, maxLength: 200 },
-    action: { type: 'string', minLength: 1, maxLength: 100 },
+    entity: { type: 'string', minLength: 1, maxLength: 200, pattern: NO_NUL },
+    actor: { type: 'string', minLength: 1, maxLength: 200, pattern: NO_NUL },
+    action: { type: 'string', minLength: 1, maxLength: 100, pattern: NO_NUL },
     /** Inclusive. */
     from: { type: 'string', format: 'date-time' },
     /** Exclusive. */
@@ -57,8 +58,9 @@ const notFound = (reply: FastifyReply) =>
 
 /**
  * Reading the audit log: a record's history for anyone who may read the record, and a search
- * across every entity for roles with `admin: [audit]`. Either way an entry only shows what the
- * caller could read today, on entities they may read.
+ * across every entity for roles with `admin: [audit]`. Either way an entity's entry only shows
+ * what the caller could read today, on entities they may read. The search also lists role
+ * assignments and session revocations.
  */
 export function registerAuditRoutes(
   app: FastifyInstance,
@@ -120,8 +122,23 @@ export function registerAuditRoutes(
           .code(400)
           .send({ statusCode: 400, error: 'Bad Request', message: 'unknown entity' });
       }
+      // The schema's date-time format allows dates Postgres doesn't, such as year 0.
+      for (const [name, value] of [
+        ['from', from],
+        ['to', to],
+      ] as const) {
+        if (value !== undefined && checkTimestamp(value)) {
+          return reply.code(400).send({
+            statusCode: 400,
+            error: 'Bad Request',
+            message: `querystring/${name} is not a valid date-time`,
+          });
+        }
+      }
       return page({
         visible,
+        // The route is only open to the audit area, which also covers who was given access.
+        includeAccessEntries: true,
         limit,
         ...(entity !== undefined ? { entity } : {}),
         ...(actor !== undefined ? { actor } : {}),

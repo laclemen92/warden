@@ -46,8 +46,8 @@ export interface AuditEntry {
   before: Record<string, unknown> | null;
   after: Record<string, unknown> | null;
   diff: AuditDiff;
-  /** For entries that don't change a row (exports, custom actions), what they did. */
-  details: ExportDetails | ActionDetails | null;
+  /** For entries that don't change a row (exports, custom actions, ...), what they did. */
+  details: ExportDetails | RevokeSessionsDetails | ActionDetails | null;
   /** The custom action this change was part of. */
   parent: { id: string; action: string } | null;
 }
@@ -63,19 +63,41 @@ export interface ActionDetails {
   records: string[];
 }
 
-export const isActionDetails = (details: ExportDetails | ActionDetails): details is ActionDetails =>
-  'input' in details;
+export const isActionDetails = (details: AuditEntry['details']): details is ActionDetails =>
+  details !== null && 'input' in details;
+
+/**
+ * Entries about access rather than a table's rows, by the entity they're filed under: role
+ * assignments (whose before and after are the assignment) and session revocations. Only the
+ * audit log search shows them, to users with `admin: [audit]`.
+ */
+export const ACCESS_AUDIT_ACTIONS = {
+  'warden.role_assignments': ['assign', 'unassign'],
+  'warden.sessions': ['revoke_sessions'],
+} as const satisfies Record<string, readonly string[]>;
+
+/** What a `revoke_sessions` entry did: whose sessions it deleted, and how many. */
+export interface RevokeSessionsDetails {
+  /** OIDC subject of the user signed out. */
+  subject: string;
+  /** Their email, from the deleted sessions; absent on entries written before it was kept. */
+  email?: string;
+  sessions: number;
+}
 
 /** What an export included, recorded as the entry's details. */
 export interface ExportDetails {
-  rowCount: number;
+  /** Left out when the filter or search is, since it says how many rows matched them. */
+  rowCount?: number;
   columns: string[];
   filter?: Filter;
   q?: string;
+  /** The fields `q` was matched against. */
+  searchFields?: string[];
   sort?: string;
   /**
-   * Set when the filter or sort named a field the caller can't read now, so it was left out.
-   * The entry still shows that the export happened.
+   * Set when the filter, search, or sort named a field the caller can't read now, so it was left
+   * out. The entry still shows that the export happened.
    */
   redacted?: true;
 }
@@ -87,40 +109,71 @@ const pick = <T>(values: Record<string, T>, fields: ReadonlySet<string>): Record
  * An entry cut down to `fields`, the ones the caller can read on its entity now. Entries record
  * every field exposed at the time, so fields since hidden, or restricted by role, are dropped
  * exactly as reads drop them.
+ *
+ * `written` is the fields an update set, as recorded with it; the rest of its diff is what the
+ * database changed itself (defaults, triggers, generated columns). The reason is kept only when
+ * the caller can read a field the update was asked to change. Entries from before `written` was
+ * recorded (null) can't tell the two apart, so their reason is kept only when the caller can read
+ * every changed field.
  */
-export function projectAuditEntry(entry: AuditEntry, fields: readonly string[]): AuditEntry {
+export function projectAuditEntry(
+  entry: AuditEntry,
+  fields: readonly string[],
+  written: readonly string[] | null = null,
+): AuditEntry {
   const visible = new Set(fields);
   return {
     ...entry,
+    reason: entry.reason !== null && reasonVisible(entry, visible, written) ? entry.reason : null,
     before: entry.before && pick(entry.before, visible),
     after: entry.after && pick(entry.after, visible),
     diff: pick(entry.diff, visible),
-    // An action's input isn't made of the entity's fields, so there is nothing to cut down.
-    details:
-      entry.details &&
-      (isActionDetails(entry.details) ? entry.details : projectDetails(entry.details, visible)),
+    // Entities' entries have export or custom action details. An action's input isn't made of
+    // the entity's fields, so there is nothing to cut down.
+    details: isActionDetails(entry.details)
+      ? entry.details
+      : entry.details && 'columns' in entry.details
+        ? projectDetails(entry.details, visible)
+        : null,
   };
 }
 
+// Creates and deletes change whether the row exists, which every reader of the entity can see.
+function reasonVisible(
+  { action, diff }: AuditEntry,
+  visible: ReadonlySet<string>,
+  written: readonly string[] | null,
+): boolean {
+  if (action !== 'update') return true;
+  const changed = Object.keys(diff);
+  if (written === null) return changed.every((f) => visible.has(f));
+  return changed.some((f) => written.includes(f) && visible.has(f));
+}
+
 /**
- * Export details cut down to `visible` fields. A filter or sort can't be cut down without
- * changing its meaning, so one that names any other field is left out entirely.
+ * Export details cut down to `visible` fields. A filter, search, or sort can't be cut down without
+ * changing its meaning, so one that names any other field is left out entirely, and with a
+ * filter or search the row count, which says how many rows matched it. A search recorded without
+ * its fields is treated as naming some other field.
  */
 function projectDetails(details: ExportDetails, visible: ReadonlySet<string>): ExportDetails {
-  const { filter, sort, columns, ...rest } = details;
+  const { rowCount, filter, q, searchFields, sort, columns, ...rest } = details;
   const filterOk = filter === undefined || filterFields(filter).every((f) => visible.has(f));
+  const searchOk = q === undefined || (searchFields?.every((f) => visible.has(f)) ?? false);
   const sortOk = sort === undefined || parseSortFields(sort).every((f) => visible.has(f));
   return {
     ...rest,
+    ...(rowCount !== undefined && filterOk && searchOk ? { rowCount } : {}),
     columns: columns.filter((c) => visible.has(c)),
     ...(filter !== undefined && filterOk ? { filter } : {}),
+    ...(q !== undefined && searchOk ? { q, ...(searchFields ? { searchFields } : {}) } : {}),
     ...(sort !== undefined && sortOk ? { sort } : {}),
-    ...(!filterOk || !sortOk ? { redacted: true as const } : {}),
+    ...(!filterOk || !searchOk || !sortOk ? { redacted: true as const } : {}),
   };
 }
 
 /** Every field a filter names. */
-function filterFields(filter: Filter): string[] {
+export function filterFields(filter: Filter): string[] {
   if ('and' in filter) return filter.and.flatMap(filterFields);
   if ('or' in filter) return filter.or.flatMap(filterFields);
   if ('not' in filter) return filterFields(filter.not);

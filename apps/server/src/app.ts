@@ -4,7 +4,7 @@ import { STATUS_CODES } from 'node:http';
 import fastifyStatic from '@fastify/static';
 import type { AnyActionDefinition } from '@wardenhq/actions';
 import type { ActionPolicy, EffectiveSchema, Policy } from '@wardenhq/core';
-import type { Database } from '@wardenhq/pg-adapter';
+import { isDataError, type Database } from '@wardenhq/pg-adapter';
 import Fastify, { type FastifyServerOptions } from 'fastify';
 import { redactingLogger } from './logging.js';
 import { registerActionRoutes } from './routes/actions.js';
@@ -12,7 +12,7 @@ import { registerAuditRoutes } from './routes/audit.js';
 import { registerAuth, type AuthOptions } from './routes/auth.js';
 import { registerCapabilityRoutes } from './routes/capabilities.js';
 import { registerEntityRoutes } from './routes/entities.js';
-import { registerExportRoutes } from './routes/export.js';
+import { registerExportRoutes, type ExportRouteOptions } from './routes/export.js';
 import { registerPolicy } from './routes/policy.js';
 import { registerRoleRoutes, type RoleRoutesOptions } from './routes/roles.js';
 import { registerSavedViewRoutes } from './routes/saved-views.js';
@@ -39,10 +39,14 @@ export interface AppOptions {
   drift?: Omit<SchemaDriftOptions, 'db'>;
   /** Config for the roles page; registered when `db` is given. */
   roles?: Omit<RoleRoutesOptions, 'db'>;
+  /** Export pool and limits; exports use `db` and the default limits when absent. */
+  exports?: Pick<ExportRouteOptions, 'exportDb' | 'limits'>;
   /** Directory containing the built web UI. Served with SPA fallback when present. */
   webDir?: string;
   /** Largest request body in bytes; larger ones get a 413. Fastify's default (1 MiB) if unset. */
   bodyLimit?: number;
+  /** Release version (`WARDEN_VERSION`, baked into the image); reported by /healthz. */
+  version?: string;
   logger?: FastifyServerOptions['logger'];
 }
 
@@ -54,8 +58,10 @@ export async function buildApp({
   auth,
   drift,
   roles,
+  exports,
   webDir,
   bodyLimit,
+  version,
   logger = false,
 }: AppOptions = {}) {
   if ((schema || drift || roles) && !auth) throw new Error('auth is required to serve /api routes');
@@ -70,6 +76,14 @@ export async function buildApp({
 
   // Don't leak database errors (SQL, constraint names, values) to clients; they are logged.
   app.setErrorHandler((err: Error & { statusCode?: number; validation?: unknown }, req, reply) => {
+    // Input is checked before it reaches the database, but a value Postgres still can't accept
+    // was the client's, so it's a 400. The message stays generic, since it could echo the value.
+    if (isDataError(err)) {
+      req.log.warn({ err }, 'request failed with a data error');
+      return reply
+        .code(400)
+        .send({ statusCode: 400, error: 'Bad Request', message: 'a value is invalid' });
+    }
     const statusCode = err.statusCode ?? 500;
     if (statusCode < 500) {
       return reply
@@ -82,7 +96,7 @@ export async function buildApp({
       .send({ statusCode: 500, error: 'Internal Server Error', message: 'Internal Server Error' });
   });
 
-  app.get('/healthz', async () => ({ status: 'ok' }));
+  app.get('/healthz', async () => ({ status: 'ok', ...(version ? { version } : {}) }));
 
   if (auth) await registerAuth(app, auth);
   // Each user gets the schema as their roles see it: entities they may do nothing with, and
@@ -94,7 +108,7 @@ export async function buildApp({
     registerEntityRoutes(app, schema, db, policy, views);
     registerCapabilityRoutes(app, policy, views, actions?.actionPolicy);
     registerAuditRoutes(app, { db, policy, views, roles: auth?.roles ?? {} });
-    registerExportRoutes(app, { db, policy, views });
+    registerExportRoutes(app, { db, policy, views, ...exports });
     registerSavedViewRoutes(app, { db, policy, views, roles: auth?.roles ?? {} });
     if (actions && auth) {
       registerActionRoutes(app, {

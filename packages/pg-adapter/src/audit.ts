@@ -1,4 +1,5 @@
 import {
+  ACCESS_AUDIT_ACTIONS,
   type ActionDetails,
   auditDiff,
   encodeRecordId,
@@ -6,6 +7,7 @@ import {
   type AuditEntry,
   type Entity,
   type ExportDetails,
+  type RevokeSessionsDetails,
 } from '@wardenhq/core';
 import { sql, type Expression, type SqlBool } from 'kysely';
 import type { Database } from './database.js';
@@ -52,7 +54,7 @@ const json = (value: unknown) =>
  * column values never reach the log.
  */
 export function auditHook({ actor, requestId, reason, parentId }: AuditContext): WriteHook {
-  return async (trx, { action, entity, before, after }) => {
+  return async (trx, { action, entity, before, after, written }) => {
     // The row as it now is; on delete, as it was. An update that changes the key is filed under
     // the new id.
     const row = (after ?? before)!;
@@ -64,14 +66,13 @@ export function auditHook({ actor, requestId, reason, parentId }: AuditContext):
       await sql`
         insert into ${sql.id(WARDEN_SCHEMA, 'audit_log')}
           (request_id, actor_subject, actor_email, actor_roles, action, entity, record_id,
-           primary_key, before, after, diff, reason, parent_id)
+           primary_key, before, after, diff, reason, written, parent_id)
         values (
           ${requestId ?? null}, ${actor.subject}, ${actor.email ?? null}, ${[...actor.roles]},
           ${action}, ${entity.key}, ${encodeRecordId(entity, row)},
           ${json(primaryKey)}::jsonb, ${json(before)}::jsonb, ${json(after)}::jsonb,
-          ${json(auditDiff(before, after))}::jsonb, ${reason ?? null}, ${parentId ?? null}::bigint)`.execute(
-        trx,
-      );
+          ${json(auditDiff(before, after))}::jsonb, ${reason ?? null},
+          ${written ? [...written] : null}::text[], ${parentId ?? null}::bigint)`.execute(trx);
     } catch (err) {
       throw new AuditWriteError(err);
     }
@@ -152,10 +153,16 @@ export async function recordExport(
 export interface AuditQuery {
   /**
    * Per entity key, the fields the caller can read. Only these entities' entries are returned,
-   * cut down to these fields, and an entry whose changes are all to other fields is left out, so
-   * fields the caller can't see leave no trace.
+   * cut down to these fields, and an update that wasn't asked to change any of these fields is
+   * left out, so fields the caller can't see leave no trace. Fields the database changed itself
+   * (such as an `updated_at` trigger) don't count.
    */
   visible: Record<string, readonly string[]>;
+  /**
+   * Also return role assignment and session revocation entries (`ACCESS_AUDIT_ACTIONS`), in
+   * full. Only for callers with `admin: [audit]`.
+   */
+  includeAccessEntries?: boolean;
   entity?: string;
   recordId?: string;
   /** Case-insensitive substring of the actor's email or subject. */
@@ -191,22 +198,42 @@ interface AuditRow {
   before: Record<string, unknown> | null;
   after: Record<string, unknown> | null;
   diff: AuditEntry['diff'] | null;
-  details: ExportDetails | ActionDetails | null;
+  details: ExportDetails | ActionDetails | { sessions: number; email?: string } | null;
+  primary_key: Record<string, unknown> | null;
+  written: string[] | null;
   parent_id: string | null;
   parent_action: string | null;
 }
 
+const accessEntry = sql<SqlBool>`(a.entity, a.action) in (${sql.join(
+  Object.entries(ACCESS_AUDIT_ACTIONS).flatMap(([entity, actions]) =>
+    actions.map((action) => sql`(${entity}, ${action})`),
+  ),
+)})`;
+
+/** A `revoke_sessions` entry keeps the user's subject as its primary key. */
+const revokeDetails = (row: AuditRow): RevokeSessionsDetails => ({
+  subject: String(row.primary_key?.subject ?? ''),
+  ...(row.details as { sessions: number; email?: string }),
+});
+
 /** Audit entries matching `query`, newest first. */
 export async function listAuditEntries(db: Database, query: AuditQuery): Promise<AuditPage> {
-  const { visible, entity, recordId, actor, action, from, to, parentId, before, limit } = query;
+  const { visible, includeAccessEntries, entity, recordId, actor, action } = query;
+  const { from, to, parentId, before, limit } = query;
   const fields = sql`${JSON.stringify(visible)}::jsonb`;
-  const conditions: Expression<SqlBool>[] = [
-    sql<SqlBool>`${fields} ? a.entity`,
-    // The case keeps jsonb_object_keys away from diffs that aren't objects.
-    sql<SqlBool>`case
+  const entityEntry = sql<SqlBool>`(${fields} ? a.entity and
+    -- The case keeps jsonb_object_keys away from diffs that aren't objects. An update counts only
+    -- the fields it set; entries from before those were recorded count every changed field.
+    case
       when a.diff is null or jsonb_typeof(a.diff) <> 'object' or a.diff = '{}'::jsonb then true
-      else exists (select from jsonb_object_keys(a.diff) as k (field) where (${fields} -> a.entity) ? k.field)
-    end`,
+      else exists (
+        select from jsonb_object_keys(a.diff) as k (field)
+        where (${fields} -> a.entity) ? k.field
+          and (a.action <> 'update' or a.written is null or k.field = any (a.written)))
+    end)`;
+  const conditions: Expression<SqlBool>[] = [
+    includeAccessEntries ? sql<SqlBool>`(${entityEntry} or ${accessEntry})` : entityEntry,
   ];
   if (entity !== undefined) conditions.push(sql<SqlBool>`a.entity = ${entity}`);
   if (recordId !== undefined) conditions.push(sql<SqlBool>`a.record_id = ${recordId}`);
@@ -225,8 +252,8 @@ export async function listAuditEntries(db: Database, query: AuditQuery): Promise
   const { rows } = await sql<AuditRow>`
     select a.id::text as id, to_json(a.occurred_at) #>> '{}' as occurred_at, a.request_id,
            a.actor_subject, a.actor_email, a.actor_roles, a.action, a.entity, a.record_id,
-           a.reason, a.before, a.after, a.diff, a.details, a.parent_id::text as parent_id,
-           p.action as parent_action
+           a.reason, a.before, a.after, a.diff, a.details, a.primary_key, a.written,
+           a.parent_id::text as parent_id, p.action as parent_action
     from ${sql.id(WARDEN_SCHEMA, 'audit_log')} as a
     left join ${sql.id(WARDEN_SCHEMA, 'audit_log')} as p on p.id = a.parent_id
     where ${sql.join(conditions, sql` and `)}
@@ -234,27 +261,29 @@ export async function listAuditEntries(db: Database, query: AuditQuery): Promise
     limit ${limit + 1}`.execute(db);
 
   return {
-    entries: rows.slice(0, limit).map((row) =>
-      projectAuditEntry(
-        {
-          id: row.id,
-          occurredAt: row.occurred_at,
-          requestId: row.request_id,
-          actor: { subject: row.actor_subject, email: row.actor_email, roles: row.actor_roles },
-          action: row.action,
-          entity: row.entity,
-          recordId: row.record_id,
-          reason: row.reason,
-          before: row.before,
-          after: row.after,
-          diff: row.diff ?? {},
-          details: row.details,
-          parent:
-            row.parent_id !== null ? { id: row.parent_id, action: row.parent_action ?? '' } : null,
-        },
-        visible[row.entity] ?? [],
-      ),
-    ),
+    entries: rows.slice(0, limit).map((row) => {
+      const entry: AuditEntry = {
+        id: row.id,
+        occurredAt: row.occurred_at,
+        requestId: row.request_id,
+        actor: { subject: row.actor_subject, email: row.actor_email, roles: row.actor_roles },
+        action: row.action,
+        entity: row.entity,
+        recordId: row.record_id,
+        reason: row.reason,
+        before: row.before,
+        after: row.after,
+        diff: row.diff ?? {},
+        details: row.details as ExportDetails | ActionDetails | null,
+        parent:
+          row.parent_id !== null ? { id: row.parent_id, action: row.parent_action ?? '' } : null,
+      };
+      // An entity's entry, or (only when asked for) an access entry, which is shown in full.
+      if (Object.hasOwn(visible, row.entity)) {
+        return projectAuditEntry(entry, visible[row.entity]!, row.written);
+      }
+      return row.action === 'revoke_sessions' ? { ...entry, details: revokeDetails(row) } : entry;
+    }),
     hasMore: rows.length > limit,
   };
 }

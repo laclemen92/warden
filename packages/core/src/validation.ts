@@ -8,6 +8,7 @@ import {
   checkText,
   expectedTemporal,
   integerDigits,
+  nestsDeeperThan,
 } from './values.js';
 
 /**
@@ -31,18 +32,6 @@ export type RecordValidation =
  * document would overflow the stack instead of being rejected.
  */
 export const MAX_JSON_DEPTH = 100;
-
-/** Whether `value` nests deeper than `max`, checked without recursion. */
-function nestsDeeperThan(value: unknown, max: number): boolean {
-  const stack: [unknown, number][] = [[value, 0]];
-  while (stack.length > 0) {
-    const [v, depth] = stack.pop()!;
-    if (typeof v !== 'object' || v === null) continue;
-    if (depth >= max) return true;
-    for (const child of Object.values(v)) stack.push([child, depth + 1]);
-  }
-  return false;
-}
 
 /** zod error option: distinguishes missing and null from a wrong type. */
 const expected = (message: string) => (issue: { input?: unknown }) =>

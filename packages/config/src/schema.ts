@@ -110,6 +110,12 @@ const tableConfigSchema = z
      * rows in other tables outside Warden's policy and audit.
      */
     updatablePrimaryKey: z.boolean().optional(),
+    /**
+     * Let creates set primary key columns that have a default (sequence, identity, or default
+     * expression). Off by default: an explicit key doesn't advance the sequence, so later inserts,
+     * Warden's or the application's, fail with unique violations when it reaches that key.
+     */
+    insertablePrimaryKey: z.boolean().optional(),
   })
   .superRefine((table, ctx) => {
     for (const [column, config] of Object.entries(table.columns)) {
