@@ -235,7 +235,7 @@ describe('PATCH /api/entities/:entity/:id', () => {
     const check = await update('orders', order, { total: '-1' });
     expect(check.status).toBe(400);
     expect(check.body.details).toEqual([
-      { field: 'total', message: 'violates check constraint "orders_total_check"' },
+      { field: 'total', message: 'violates a check constraint' },
     ]);
   });
 

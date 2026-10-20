@@ -217,7 +217,7 @@ describe('mapWriteError', () => {
   it('maps a check violation to the field', async () => {
     expect(await failingWrite('members', sql`update members set slot = 0 where id = 1`)).toEqual({
       status: 400,
-      errors: [{ field: 'slot', message: 'violates check constraint "members_slot_check"' }],
+      errors: [{ field: 'slot', message: 'violates a check constraint' }],
     });
   });
 

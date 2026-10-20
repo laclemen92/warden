@@ -410,6 +410,82 @@ describe('sessions', () => {
   });
 });
 
+describe('cross-site request forgery', () => {
+  const savedViews = async () =>
+    Number((await sqlPool.query('select count(*) from warden.saved_views')).rows[0].count);
+  const VIEW = JSON.stringify({ entity: 'users', name: 'Forged', state: {} });
+
+  it.each([
+    ['text/plain', VIEW],
+    ['text/plain; charset=utf-8', VIEW],
+    ['application/x-www-form-urlencoded', 'entity=users&name=Forged'],
+    ['multipart/form-data; boundary=x', '--x--'],
+    [undefined, ''],
+  ])('rejects an /api POST sent as %s', async (contentType, payload) => {
+    const cookie = await login(app, 'viewer');
+    const before = await savedViews();
+    for (const url of ['/api/views', '/%61pi/views']) {
+      const res = await app.inject({
+        method: 'POST',
+        url,
+        headers: { cookie, ...(contentType ? { 'content-type': contentType } : {}) },
+        payload,
+      });
+      expect(res.statusCode).toBe(415);
+      expect(res.json()).toEqual({
+        statusCode: 415,
+        error: 'Unsupported Media Type',
+        message: 'expected an application/json body',
+      });
+    }
+    expect(await savedViews()).toBe(before);
+  });
+
+  it.each(['cross-site', 'same-site', 'none'])(
+    'rejects unsafe requests whose Sec-Fetch-Site is %s',
+    async (site) => {
+      const cookie = await login(app, 'viewer');
+      const headers = { cookie, 'sec-fetch-site': site };
+      const before = await savedViews();
+      const requests = [
+        { method: 'POST', url: '/api/views', payload: { entity: 'users', name: 'F', state: {} } },
+        { method: 'PATCH', url: '/api/views/1', payload: { name: 'F' } },
+        { method: 'DELETE', url: '/api/views/1' },
+        { method: 'POST', url: '/auth/logout' },
+      ] as const;
+      for (const request of requests) {
+        const res = await app.inject({ ...request, headers });
+        expect(res.statusCode).toBe(403);
+        expect(res.json()).toEqual({
+          statusCode: 403,
+          error: 'Forbidden',
+          message: 'cross-site requests are not allowed',
+        });
+      }
+      expect(await savedViews()).toBe(before);
+      // The forged logout didn't end the session.
+      expect((await get('/api/me', cookie)).statusCode).toBe(200);
+    },
+  );
+
+  it('accepts same-origin JSON requests and reads from anywhere', async () => {
+    const cookie = await login(app, 'viewer');
+    const post = await app.inject({
+      method: 'POST',
+      url: '/api/views',
+      headers: { cookie, 'sec-fetch-site': 'same-origin' },
+      payload: { entity: 'users', name: 'Mine', state: {} },
+    });
+    expect([403, 415]).not.toContain(post.statusCode);
+    const read = await app.inject({
+      method: 'GET',
+      url: '/api/me',
+      headers: { cookie, 'sec-fetch-site': 'cross-site' },
+    });
+    expect(read.statusCode).toBe(200);
+  });
+});
+
 describe('IdP logout', () => {
   const logout = (cookie?: string) =>
     app.inject({ method: 'POST', url: '/auth/logout', ...(cookie ? { headers: { cookie } } : {}) });

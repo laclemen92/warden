@@ -247,7 +247,12 @@ describe('roles page API', () => {
 
   it('is indistinguishable from a missing route for users without admin: [roles]', async () => {
     const missing = async (method: 'GET' | 'POST' | 'DELETE') => {
-      const res = await app.inject({ method, url: '/api/admin/nope', headers: { cookie: viewer } });
+      const res = await app.inject({
+        method,
+        url: '/api/admin/nope',
+        headers: { cookie: viewer },
+        ...(method === 'GET' ? {} : { payload: {} }),
+      });
       expect(res.statusCode).toBe(404);
       return normalize(res.body);
     };

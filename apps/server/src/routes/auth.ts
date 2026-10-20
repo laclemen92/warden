@@ -72,6 +72,28 @@ function parseLoginState(value: string): LoginState | undefined {
 const isApi = (req: FastifyRequest) =>
   req.url.startsWith('/api/') || (req.routeOptions.url ?? '').startsWith('/api/');
 
+const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+
+/**
+ * Why a state-changing request must be refused as a possible cross-site request forgery, if it
+ * must. Warden sends no CORS headers, so a cross-origin page can only make "simple" requests: a
+ * POST with a form or text/plain body. Requiring JSON on every /api POST forces a preflight that
+ * fails, even from a sibling subdomain that SameSite=Lax cookies don't stop. Browsers that send
+ * Sec-Fetch-Site get the same answer up front, for every unsafe method and path.
+ */
+function csrfRejection(req: FastifyRequest): { status: number; message: string } | undefined {
+  if (SAFE_METHODS.has(req.method)) return undefined;
+  const site = req.headers['sec-fetch-site'];
+  if (site !== undefined && site !== 'same-origin') {
+    return { status: 403, message: 'cross-site requests are not allowed' };
+  }
+  const mime = req.headers['content-type']?.split(';')[0]?.trim().toLowerCase();
+  if (req.method === 'POST' && isApi(req) && mime !== 'application/json') {
+    return { status: 415, message: 'expected an application/json body' };
+  }
+  return undefined;
+}
+
 export async function registerAuth(
   app: FastifyInstance,
   { sessionSecret, sessions, oidc, access, roles: roleConfig = {}, assignedRoles }: AuthOptions,
@@ -91,18 +113,27 @@ export async function registerAuth(
   app.decorateRequest('session', null);
   app.decorateRequest('roles', null);
   app.addHook('onRequest', async (req, reply) => {
-    if (!isApi(req)) return;
-    const session = await sessions.load(req);
-    // Roles are re-resolved from the stored claims and current assignments, so a restart with
-    // stricter rules or a removed assignment applies to existing sessions too.
-    const roles = session ? await rolesFor(session.claims) : undefined;
-    if (!session || !roles) {
-      return reply
-        .code(401)
-        .send({ statusCode: 401, error: 'Unauthorized', message: 'Unauthorized' });
+    if (isApi(req)) {
+      const session = await sessions.load(req);
+      // Roles are re-resolved from the stored claims and current assignments, so a restart with
+      // stricter rules or a removed assignment applies to existing sessions too.
+      const roles = session ? await rolesFor(session.claims) : undefined;
+      if (!session || !roles) {
+        return reply
+          .code(401)
+          .send({ statusCode: 401, error: 'Unauthorized', message: 'Unauthorized' });
+      }
+      req.session = session;
+      req.roles = roles;
     }
-    req.session = session;
-    req.roles = roles;
+    const rejection = csrfRejection(req);
+    if (rejection) {
+      return reply.code(rejection.status).send({
+        statusCode: rejection.status,
+        error: rejection.status === 403 ? 'Forbidden' : 'Unsupported Media Type',
+        message: rejection.message,
+      });
+    }
   });
 
   app.get<{ Querystring: { returnTo?: string } }>('/auth/login', async (req, reply) => {

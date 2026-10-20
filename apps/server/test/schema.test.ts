@@ -114,6 +114,10 @@ describe('GET /api/schema', () => {
     expect(lines.map((l) => [l.configPath, l.msg])).toEqual([
       [
         undefined,
+        expect.stringMatching(/^the database role Warden runs as owns warden\.audit_log/),
+      ],
+      [
+        undefined,
         'access.allowAll is on: everyone the identity provider authenticates can sign in and read per defaults.read',
       ],
       ['tables.invoices', 'config: table "public.invoices" does not exist'],

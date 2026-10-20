@@ -139,12 +139,12 @@ export async function mapWriteError(
       };
     }
     case '23514': {
-      // check_violation
+      // check_violation. The constraint's name is a database internal, so it isn't sent.
       const columns = await constraintColumns();
       return {
         status: 400,
         errors: columns
-          ? perField(columns, () => `violates check constraint "${err.constraint}"`)
+          ? perField(columns, () => 'violates a check constraint')
           : [{ message: 'violates a check constraint' }],
       };
     }

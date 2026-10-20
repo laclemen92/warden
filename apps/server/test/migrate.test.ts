@@ -1,16 +1,17 @@
+import { Writable } from 'node:stream';
 import type { MockOidc } from '@wardenhq/mock-oidc';
 import { createDatabase, migrate, MIGRATIONS } from '@wardenhq/pg-adapter';
 import { readExampleSql, startPostgres, type TestDatabase } from '@wardenhq/testing';
 import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { createWarden, parseMigrateFlag } from '../src/warden.js';
+import { createWarden, parseMigrateFlag, type WardenOptions } from '../src/warden.js';
 import { ALLOW_ALL_CONFIG, authEnv, startTestIdp, writeConfig } from './helpers/auth.js';
 
 let db: TestDatabase;
 let sqlPool: pg.Pool;
 let idp: MockOidc;
 
-const start = (env: Record<string, string> = {}) =>
+const start = (env: Record<string, string> = {}, logger: WardenOptions['logger'] = false) =>
   createWarden({
     env: {
       DATABASE_URL: db.connectionString,
@@ -18,7 +19,24 @@ const start = (env: Record<string, string> = {}) =>
       ...authEnv(idp),
       ...env,
     },
+    logger,
   });
+
+/** Start Warden and return the messages it logged at warn or above. */
+async function startupWarnings(env: Record<string, string> = {}) {
+  const messages: string[] = [];
+  const stream = new Writable({
+    write(chunk, _encoding, done) {
+      messages.push((JSON.parse(String(chunk)) as { msg: string }).msg);
+      done();
+    },
+  });
+  const app = await start(env, { level: 'warn', stream });
+  await app.close();
+  return messages;
+}
+
+const OWNS_AUDIT_LOG = /owns warden\.audit_log/;
 
 const wardenSchemaExists = async () => {
   const { rows } = await sqlPool.query(
@@ -88,5 +106,22 @@ describe('WARDEN_MIGRATE', () => {
     } finally {
       await app.close();
     }
+  });
+
+  it('warns when the runtime role can disable the audit triggers', async () => {
+    expect(await startupWarnings()).toContainEqual(expect.stringMatching(OWNS_AUDIT_LOG));
+  });
+
+  it('does not warn when Warden runs as a separate role', async () => {
+    await sqlPool.query(`
+      create role warden_runtime login password 'runtime';
+      grant usage on schema warden, public to warden_runtime;
+      grant select, insert, update, delete on all tables in schema warden to warden_runtime;
+      grant select on all tables in schema public to warden_runtime;`);
+    const url = new URL(db.connectionString);
+    url.username = 'warden_runtime';
+    url.password = 'runtime';
+    const warnings = await startupWarnings({ DATABASE_URL: url.href, WARDEN_MIGRATE: 'false' });
+    expect(warnings).not.toContainEqual(expect.stringMatching(OWNS_AUDIT_LOG));
   });
 });

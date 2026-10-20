@@ -194,3 +194,18 @@ export async function pendingMigrations(
     .filter((v) => !applied.has(v))
     .sort();
 }
+
+/**
+ * Whether the connected role could switch off the audit log's append-only triggers: it owns
+ * `warden.audit_log` (directly or through a role it belongs to) or is a superuser. False when the
+ * table doesn't exist.
+ */
+export async function canDisableAuditTriggers(db: Database): Promise<boolean> {
+  const { rows } = await sql<{ can: boolean }>`
+    select r.rolsuper or pg_has_role(current_user, c.relowner, 'MEMBER') as can
+    from pg_class c, pg_roles r
+    where c.oid = to_regclass(${`${WARDEN_SCHEMA}.audit_log`}) and r.rolname = current_user`.execute(
+    db,
+  );
+  return rows[0]?.can ?? false;
+}
