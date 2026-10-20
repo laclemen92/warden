@@ -1,6 +1,10 @@
 import '@testing-library/jest-dom/vitest';
-import { cleanup } from '@testing-library/react';
+import { cleanup, configure } from '@testing-library/react';
 import { afterEach, vi } from 'vitest';
+
+// Pages are lazy routes, so the first render in a file waits on a cold import that can take
+// longer than the default 1s on CI runners.
+configure({ asyncUtilTimeout: 5000 });
 
 afterEach(() => {
   cleanup();
