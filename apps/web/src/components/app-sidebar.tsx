@@ -1,5 +1,5 @@
 import type { Entity } from '@wardenhq/core';
-import { GitCompare, History, Shield, Table2 } from 'lucide-react';
+import { GitCompare, History, Shield, Table2, UserCog } from 'lucide-react';
 import { useState } from 'react';
 import { Link, NavLink, useMatch } from 'react-router';
 import {
@@ -19,6 +19,7 @@ import {
 import { UserMenu } from '@/components/user-menu';
 import { AUDIT_LOG_PATH, useCanViewAuditLog } from '@/lib/audit';
 import { entityPath, useSchema } from '@/lib/schema';
+import { ROLES_PATH, useCanManageRoles } from '@/lib/roles';
 import { SCHEMA_DRIFT_PATH, useCanViewSchemaDrift } from '@/lib/schema-drift';
 
 function EntityNavItem({ entity }: { entity: Entity }) {
@@ -43,6 +44,8 @@ export function AppSidebar() {
   const schemaDriftActive = useMatch(SCHEMA_DRIFT_PATH) !== null;
   const canViewAuditLog = useCanViewAuditLog();
   const auditLogActive = useMatch(AUDIT_LOG_PATH) !== null;
+  const canManageRoles = useCanManageRoles();
+  const rolesActive = useMatch(ROLES_PATH) !== null;
 
   const needle = query.trim().toLowerCase();
   const entities = (schema?.entities ?? [])
@@ -96,7 +99,7 @@ export function AppSidebar() {
             </nav>
           </SidebarGroupContent>
         </SidebarGroup>
-        {(canViewSchemaDrift || canViewAuditLog) && (
+        {(canViewSchemaDrift || canViewAuditLog || canManageRoles) && (
           <SidebarGroup>
             <SidebarGroupLabel>Admin</SidebarGroupLabel>
             <SidebarGroupContent>
@@ -108,6 +111,16 @@ export function AppSidebar() {
                         <NavLink to={AUDIT_LOG_PATH}>
                           <History />
                           <span>Audit log</span>
+                        </NavLink>
+                      </SidebarMenuButton>
+                    </SidebarMenuItem>
+                  )}
+                  {canManageRoles && (
+                    <SidebarMenuItem>
+                      <SidebarMenuButton isActive={rolesActive} tooltip="Roles" asChild>
+                        <NavLink to={ROLES_PATH}>
+                          <UserCog />
+                          <span>Roles</span>
                         </NavLink>
                       </SidebarMenuButton>
                     </SidebarMenuItem>

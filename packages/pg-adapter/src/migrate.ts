@@ -85,6 +85,22 @@ export const MIGRATIONS: readonly Migration[] = [
       );
     `,
   },
+  {
+    version: '0004_role_assignments',
+    sql: `
+      -- Roles given to users in the app, on top of the ones config's access rules give them.
+      -- Role names aren't checked here: config defines roles, and ones it no longer defines are
+      -- ignored rather than deleted, so they come back if the role does.
+      create table warden.role_assignments (
+        -- Matched against the verified email claim at sign-in and on every request.
+        email       text not null check (email = lower(email)),
+        role        text not null,
+        assigned_by text not null,
+        assigned_at timestamptz not null default now(),
+        primary key (email, role)
+      );
+    `,
+  },
 ];
 
 // Arbitrary constant shared by every Warden instance, so replicas don't migrate concurrently.

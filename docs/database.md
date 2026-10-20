@@ -1,6 +1,6 @@
 # Database setup
 
-Warden keeps its own metadata (sessions, the audit log, schema snapshots) in a `warden` schema inside the database it manages. It never introspects or exposes that schema.
+Warden keeps its own metadata (sessions, the audit log, schema snapshots, role assignments) in a `warden` schema inside the database it manages. It never introspects or exposes that schema.
 
 ## Migrations
 
@@ -22,7 +22,7 @@ docker run --rm -e DATABASE_URL=postgres://warden_owner:...@db/app <warden-image
 
 ## Restricting the runtime role
 
-The role Warden runs as only needs to append to and read the audit log and the schema snapshots. Postgres doesn't apply grants to a table's owner, so the runtime role must **not** be the role that ran the migrations.
+The role Warden runs as only needs to append to and read the audit log and the schema snapshots, and to manage sessions and role assignments. Postgres doesn't apply grants to a table's owner, so the runtime role must **not** be the role that ran the migrations.
 
 Run this as the owner of the `warden` schema, replacing `warden_app` with your runtime role. It is safe to re-run after every upgrade:
 
@@ -35,6 +35,7 @@ grant select on warden.schema_migrations to warden_app;
 grant select, insert, update, delete on warden.sessions to warden_app;
 grant select, insert on warden.audit_log to warden_app;
 grant select, insert on warden.schema_snapshots to warden_app;
+grant select, insert, delete on warden.role_assignments to warden_app;
 ```
 
 The runtime role also needs whatever access your configuration grants on your application tables (at least `select`, plus `insert`/`update`/`delete` where roles may write).
@@ -66,3 +67,7 @@ Every create, update, and delete made through Warden inserts its entry in the sa
 ## Schema snapshots
 
 `warden.schema_snapshots` holds copies of the introspected schema. The newest row is the baseline the [schema drift page](config.md#schema-drift) compares against. Warden records the first one when it starts against a database that has none, and adds one each time an admin acknowledges drift. Older rows are kept as history.
+
+## Role assignments
+
+`warden.role_assignments` holds the roles admins give users on the [roles page](config.md#role-assignments), one row per email and role: `email` (lowercased), `role`, `assigned_by` (the admin's OIDC subject), and `assigned_at`. Each assignment and removal also writes an audit log entry, with `action` `assign` or `unassign`, `entity` `warden.role_assignments`, and the email and role in `primary_key`.

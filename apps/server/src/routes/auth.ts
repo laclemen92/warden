@@ -1,6 +1,6 @@
 import fastifyCookie from '@fastify/cookie';
 import type { AccessConfig, WardenConfig } from '@wardenhq/config';
-import { adminAreas, resolveRoles } from '@wardenhq/core';
+import { adminAreas, assignmentEmail, resolveRoles } from '@wardenhq/core';
 import type { Session } from '@wardenhq/pg-adapter';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { LoginChecks, OidcClient } from '../auth/oidc.js';
@@ -10,7 +10,7 @@ declare module 'fastify' {
   interface FastifyRequest {
     /** Set on every /api request; requests without a live session never reach a handler. */
     session: Session | null;
-    /** The session user's roles from config `access` rules; set alongside `session`. */
+    /** The session user's roles from config `access` rules and in-app assignments. */
     roles: readonly string[] | null;
   }
 }
@@ -21,8 +21,10 @@ export interface AuthOptions {
   oidc: OidcClient;
   /** Config `access` rules; without them every IdP user signs in with no roles. */
   access?: AccessConfig;
-  /** Config `roles`, for telling the UI which admin areas the user may open. */
+  /** Config `roles`: which admin areas each grants, and which assigned roles still exist. */
   roles?: WardenConfig['roles'];
+  /** Roles assigned in the app to a (lowercased) email; without it, only config gives roles. */
+  assignedRoles?: (email: string) => Promise<string[]>;
 }
 
 const LOGIN_TTL_SECONDS = 600;
@@ -72,9 +74,18 @@ const isApi = (req: FastifyRequest) =>
 
 export async function registerAuth(
   app: FastifyInstance,
-  { sessionSecret, sessions, oidc, access, roles: roleConfig = {} }: AuthOptions,
+  { sessionSecret, sessions, oidc, access, roles: roleConfig = {}, assignedRoles }: AuthOptions,
 ) {
   await app.register(fastifyCookie, { secret: sessionSecret });
+
+  const rolesFor = async (claims: Record<string, unknown>) => {
+    const email = assignedRoles ? assignmentEmail(access, claims) : undefined;
+    // Config defines roles; assignments of roles it no longer defines are ignored.
+    const assigned = email
+      ? (await assignedRoles!(email)).filter((role) => Object.hasOwn(roleConfig, role))
+      : [];
+    return resolveRoles(access, claims, assigned);
+  };
   const login = sessions.cookie('warden_login', LOGIN_TTL_SECONDS);
 
   app.decorateRequest('session', null);
@@ -82,9 +93,9 @@ export async function registerAuth(
   app.addHook('onRequest', async (req, reply) => {
     if (!isApi(req)) return;
     const session = await sessions.load(req);
-    // Roles are re-resolved from the stored claims, so a restart with stricter rules applies to
-    // existing sessions too.
-    const roles = session ? resolveRoles(access, session.claims) : undefined;
+    // Roles are re-resolved from the stored claims and current assignments, so a restart with
+    // stricter rules or a removed assignment applies to existing sessions too.
+    const roles = session ? await rolesFor(session.claims) : undefined;
     if (!session || !roles) {
       return reply
         .code(401)
@@ -129,7 +140,7 @@ export async function registerAuth(
       return reply.redirect(LOGIN_FAILED);
     }
 
-    if (!resolveRoles(access, claims)) {
+    if (!(await rolesFor(claims))) {
       req.log.warn({ sub: claims.sub }, 'login denied: no access rule matches');
       return reply.redirect(ACCESS_DENIED);
     }

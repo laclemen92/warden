@@ -129,7 +129,7 @@ roles:
       users: [read, update]
       companies: [read, create, update]
   nobody: {}
-  schema-admin: { admin: [schema] }
+  schema-admin: { admin: [schema, roles] }
 tables:
   orders: { deny: [create, delete] }
 `,
@@ -142,7 +142,7 @@ tables:
         admin: [],
       },
       nobody: { grants: {}, admin: [] },
-      'schema-admin': { grants: {}, admin: ['schema'] },
+      'schema-admin': { grants: {}, admin: ['schema', 'roles'] },
     });
     expect(config.tables.orders?.deny).toEqual(['create', 'delete']);
   });
@@ -156,7 +156,7 @@ roles:
     grants:
       users: [read, write]
     grant: {}
-    admin: [roles]
+    admin: [users]
 `).map((i) => [i.path, i.line]),
     ).toEqual([
       ['tables.orders.deny.0', 2],

@@ -10,6 +10,7 @@ import { registerAuth, type AuthOptions } from './routes/auth.js';
 import { registerCapabilityRoutes } from './routes/capabilities.js';
 import { registerEntityRoutes } from './routes/entities.js';
 import { registerPolicy } from './routes/policy.js';
+import { registerRoleRoutes, type RoleRoutesOptions } from './routes/roles.js';
 import { registerSchemaDriftRoutes, type SchemaDriftOptions } from './routes/schema-drift.js';
 import { createViews } from './views.js';
 
@@ -24,6 +25,8 @@ export interface AppOptions {
   auth?: AuthOptions;
   /** Introspected model and config for the schema drift page; registered when `db` is given. */
   drift?: Omit<SchemaDriftOptions, 'db'>;
+  /** Config for the roles page; registered when `db` is given. */
+  roles?: Omit<RoleRoutesOptions, 'db'>;
   /** Directory containing the built web UI. Served with SPA fallback when present. */
   webDir?: string;
   logger?: FastifyServerOptions['logger'];
@@ -35,10 +38,11 @@ export async function buildApp({
   policy,
   auth,
   drift,
+  roles,
   webDir,
   logger = false,
 }: AppOptions = {}) {
-  if ((schema || drift) && !auth) throw new Error('auth is required to serve /api routes');
+  if ((schema || drift || roles) && !auth) throw new Error('auth is required to serve /api routes');
   if (schema && db && !policy) throw new Error('policy is required to serve entity routes');
   // Request ids are logged and stored with audit entries, so they must be unique across restarts
   // and replicas.
@@ -71,6 +75,7 @@ export async function buildApp({
     registerAuditRoutes(app, { db, policy, views, roles: auth?.roles ?? {} });
   }
   if (drift && db) registerSchemaDriftRoutes(app, { ...drift, db });
+  if (roles && db) registerRoleRoutes(app, { ...roles, db });
 
   if (webDir && existsSync(webDir)) {
     await app.register(fastifyStatic, { root: webDir });

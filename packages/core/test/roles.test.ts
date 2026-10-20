@@ -1,6 +1,6 @@
 import { wardenConfigSchema } from '@wardenhq/config';
 import { describe, expect, it } from 'vitest';
-import { resolveRoles } from '../src/index.js';
+import { assignmentEmail, parseEmail, resolveRoles } from '../src/index.js';
 
 const access = (rules: unknown) =>
   wardenConfigSchema.parse({
@@ -94,6 +94,76 @@ describe('resolveRoles', () => {
   it('does not match inherited object keys as groups', () => {
     for (const group of ['constructor', '__proto__', 'toString', 'hasOwnProperty']) {
       expect(resolveRoles(rules, { sub: 'u', groups: [group] }), group).toBeUndefined();
+    }
+  });
+});
+
+describe('resolveRoles with in-app assignments', () => {
+  it('merges assigned roles with config-resolved ones', () => {
+    expect(resolveRoles(rules, user({}), ['ops', 'viewer'])).toEqual(['ops', 'viewer']);
+    expect(resolveRoles(rules, user({ groups: ['warden-admins'] }), ['ops'])).toEqual([
+      'admin',
+      'ops',
+      'viewer',
+    ]);
+  });
+
+  it('lets in a user that no access rule matches when they have an assignment', () => {
+    const outsider = user({ email: 'u@example.org' });
+    expect(resolveRoles(rules, outsider)).toBeUndefined();
+    expect(resolveRoles(rules, outsider, [])).toBeUndefined();
+    expect(resolveRoles(rules, outsider, ['ops'])).toEqual(['ops']);
+  });
+
+  it('gives assigned roles when access is not configured', () => {
+    expect(resolveRoles(undefined, user({}), ['ops', 'admin', 'ops'])).toEqual(['admin', 'ops']);
+  });
+});
+
+describe('assignmentEmail', () => {
+  it('is the verified email, lowercased', () => {
+    expect(assignmentEmail(rules, user({ email: 'U1@Example.COM' }))).toBe('u1@example.com');
+    expect(assignmentEmail(undefined, user({}))).toBe('u1@example.com');
+  });
+
+  it('requires a verified email unless configured not to', () => {
+    for (const email_verified of [false, 'false', undefined, 1, null]) {
+      expect(assignmentEmail(rules, user({ email_verified })), String(email_verified)).toBe(
+        undefined,
+      );
+      expect(assignmentEmail(undefined, user({ email_verified }))).toBeUndefined();
+    }
+    const trusting = access({ requireVerifiedEmail: false });
+    expect(assignmentEmail(trusting, user({ email_verified: false }))).toBe('u1@example.com');
+  });
+
+  it('ignores missing and malformed emails', () => {
+    for (const email of [undefined, 42, ['u@example.com'], 'not-an-email', ' u@example.com']) {
+      expect(assignmentEmail(rules, user({ email })), String(email)).toBeUndefined();
+    }
+  });
+});
+
+describe('parseEmail', () => {
+  it('trims and lowercases', () => {
+    expect(parseEmail('  Ada@Example.COM ')).toBe('ada@example.com');
+  });
+
+  it('rejects anything that could never be an email', () => {
+    for (const value of [
+      '',
+      'ada',
+      'ada@example',
+      '@example.com',
+      'ada@',
+      'a da@example.com',
+      'a@b@example.com',
+      `${'a'.repeat(250)}@example.com`,
+      42,
+      null,
+      ['ada@example.com'],
+    ]) {
+      expect(parseEmail(value), String(value)).toBeUndefined();
     }
   });
 });
