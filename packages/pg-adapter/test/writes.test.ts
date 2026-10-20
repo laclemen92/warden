@@ -254,6 +254,22 @@ describe('updateRow', () => {
     expect(result).toEqual({ ok: true, row: { a: 1, b: 'x', note: 'n' } });
   });
 
+  it('refuses to change primary key columns', async () => {
+    const created = await createRow(handle.db, things, valid(things, { id: 4242 }, 'create'));
+    await expect(
+      updateRow(
+        handle.db,
+        things,
+        byId(things, '4242'),
+        { id: 4243 },
+        {
+          version: rowVersion(things, created),
+        },
+      ),
+    ).rejects.toThrow(/not writable/);
+    expect(await rawThing(4242)).toBeDefined();
+  });
+
   it('passes before and after to the hook and rolls back when it throws', async () => {
     const created = await createRow(handle.db, things, valid(things, { name: 'v1' }, 'create'));
     const filter = byId(things, String(created.id));

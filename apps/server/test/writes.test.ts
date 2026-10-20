@@ -239,16 +239,13 @@ describe('PATCH /api/entities/:entity/:id', () => {
     ]);
   });
 
-  it('updates rows with composite keys', async () => {
+  it('updates rows with composite keys, but not their key columns', async () => {
     const list = (await send('GET', '/api/entities/order_tags')).body as { items: Item[] };
     const tag = list.items[0]!;
     const res = await update('order_tags', tag, { tag: 'rush' });
-    expect(res.status, res.raw).toBe(200);
-    // Changing a key column changes the id.
-    expect((res.body as Item).id).not.toBe(tag.id);
-    expect((await send('GET', `/api/entities/order_tags/${(res.body as Item).id}`)).status).toBe(
-      200,
-    );
+    expect(res.status, res.raw).toBe(400);
+    expect(res.body.details).toEqual([{ field: 'tag', message: 'is read-only' }]);
+    expect((await send('GET', `/api/entities/order_tags/${tag.id}`)).status).toBe(200);
   });
 
   it('404s for missing rows and malformed ids', async () => {

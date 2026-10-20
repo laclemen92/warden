@@ -86,6 +86,12 @@ const tableConfigSchema = z
     deny: actions.optional(),
     /** Writes that must say why; the reason is stored in the audit log. */
     requireReason: z.array(z.enum(WRITE_ACTIONS)).optional(),
+    /**
+     * Let updates change primary key columns. Off by default: a new key gives the row a new
+     * record id and splits its audit history, and `on update cascade` foreign keys would change
+     * rows in other tables outside Warden's policy and audit.
+     */
+    updatablePrimaryKey: z.boolean().optional(),
   })
   .superRefine((table, ctx) => {
     for (const [column, config] of Object.entries(table.columns)) {

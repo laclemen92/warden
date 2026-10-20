@@ -119,6 +119,7 @@ Each key is a table, as `table` (in the default schema) or `schema.table`. Warde
 | `tables.<table>.searchable`            | list of column names                                       | Visible text columns                           |
 | `tables.<table>.deny`                  | list of `read`, `create`, `update`, `delete`, `export`     | None                                           |
 | `tables.<table>.requireReason`         | list of `create`, `update`, `delete`                       | None                                           |
+| `tables.<table>.updatablePrimaryKey`   | boolean                                                    | `false`                                        |
 | `tables.<table>.columns`               | map of column name to [column config](#tablestablecolumns) | None                                           |
 
 **`hidden`** removes the table completely. It doesn't appear in the UI, the schema API, or any relation, and requesting it returns the same 404 as a table that doesn't exist. No grant can make a hidden table accessible.
@@ -135,6 +136,8 @@ Each key is a table, as `table` (in the default schema) or `schema.table`. Warde
 
 **`requireReason`** lists writes that must say why. Every write may send a `reason`, which is stored in the [audit log](#audit-log); for these actions the API rejects a write without one (or with only whitespace) with a 400, and the UI asks for it before saving or deleting. It doesn't grant or deny anything: the caller still needs a role that may perform the action.
 
+**`updatablePrimaryKey`** lets updates change the table's primary key columns. By default they can be set when creating a row (and must be, when they have no default) but are read-only afterwards: an update that sends one is rejected with `is read-only`, and the edit form shows them read-only. Changing a key gives the row a new record id, so its links stop working and its [audit history](#audit-log) splits between the old id and the new one, and an `on update cascade` foreign key changes rows in other tables (see [cascades](#cascades)). Set it only for tables with natural keys that really do change. Columns that are read-only anyway (`readOnly`, identity `GENERATED ALWAYS`, or generated) stay read-only.
+
 A column hidden in the same table can't be the `displayField`, the `defaultSort` column, or `searchable`. That fails startup. A column that doesn't exist, or is hidden by `defaults.newColumns: hidden`, is dropped from these settings with a warning.
 
 ```yaml
@@ -146,6 +149,8 @@ tables:
     searchable: [number, notes]
     deny: [create, delete]
     requireReason: [update]
+  currencies:
+    updatablePrimaryKey: true # the code is the key, and corrections are allowed
   internal_jobs:
     hidden: true
 ```
@@ -329,6 +334,15 @@ Every create, update, and delete made through Warden is recorded in the [audit l
 - **Audit log** in the sidebar searches every entry by actor (email or subject), entity, action, and date range. Only users with a role that has `admin: [audit]` can open it.
 
 Both show an entry only for entities the user may read now, and only the fields they may read now: columns since hidden by config or restricted by a [field-level rule](#field-level-rules) are left out, and an update that changed only such fields isn't listed. Schema drift acknowledgements are recorded in the log but not shown. [Exports](#csv-export) are listed with what they included.
+
+### Cascades
+
+Foreign keys with `on delete cascade`, `on delete set null`/`set default`, or `on update cascade` (and triggers) change rows in other tables inside the database, as part of the statement Warden runs. Warden doesn't see those changes, so they bypass its policy and its audit log:
+
+- They happen whatever roles the user holds on the other table, including when it is [hidden](#tables), carries a `deny`, or has [field-level rules](#field-level-rules). A user allowed to delete a company also deletes its orders under `on delete cascade`, even with no `delete` grant on orders.
+- Only the row Warden was asked to change gets an audit entry. The rows changed by the cascade don't.
+
+Primary keys are read-only on update by default (see [`updatablePrimaryKey`](#tables)), so `on update cascade` only comes into play on tables that opt in. For deletes, prefer `on delete restrict` (or `no action`) on foreign keys into tables Warden writes, so that removing dependent rows is a separate, checked, and audited delete; or deny `delete` on the parent table. Where a cascade is intended, make sure everyone allowed to delete the parent may remove its children too.
 
 ## Saved views
 

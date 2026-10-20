@@ -1,0 +1,135 @@
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import type { EffectiveSchema } from '@wardenhq/core';
+import type { MockOidc } from '@wardenhq/mock-oidc';
+import { startPostgres, type TestDatabase } from '@wardenhq/testing';
+import pg from 'pg';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { createWarden } from '../src/warden.js';
+import { authEnv, login, startTestIdp } from './helpers/auth.js';
+
+const SCHEMA = `
+  create table tickets (id serial primary key, title text);
+  create table codes (code text primary key, note text);
+  create table currencies (code text primary key, name text);
+  insert into tickets (title) values ('first');
+  insert into codes values ('a', null);
+  insert into currencies values ('usd', 'Dollar');
+`;
+
+const CONFIG = `
+tables:
+  currencies:
+    updatablePrimaryKey: true
+roles:
+  admin: { grants: { '*': [read, create, update, delete] } }
+access:
+  groups:
+    warden-admins: [admin]
+`;
+
+interface Item {
+  id: string;
+  version: string;
+  values: Record<string, unknown>;
+}
+
+let db: TestDatabase;
+let sqlPool: pg.Pool;
+let idp: MockOidc;
+let app: Awaited<ReturnType<typeof createWarden>>;
+let admin: string;
+
+beforeAll(async () => {
+  db = await startPostgres({ sql: [SCHEMA] });
+  sqlPool = new pg.Pool({ connectionString: db.connectionString });
+  idp = await startTestIdp();
+  const dir = mkdtempSync(join(tmpdir(), 'warden-pk-'));
+  const config = join(dir, 'warden.config.yaml');
+  writeFileSync(config, CONFIG);
+  app = await createWarden({
+    env: { DATABASE_URL: db.connectionString, WARDEN_CONFIG: config, ...authEnv(idp) },
+  });
+  admin = await login(app, 'admin');
+}, 120_000);
+
+afterAll(async () => {
+  await app?.close();
+  await idp?.close();
+  await sqlPool?.end();
+  await db?.stop();
+});
+
+const send = async (method: string, url: string, payload?: object) => {
+  const res = await app.inject({
+    method: method as 'GET',
+    url,
+    headers: { cookie: admin },
+    ...(payload ? { payload } : {}),
+  });
+  return { status: res.statusCode, body: res.body ? res.json() : undefined, raw: res.body };
+};
+const first = async (entity: string) =>
+  ((await send('GET', `/api/entities/${entity}`)).body as { items: Item[] }).items[0]!;
+const update = (entity: string, item: Item, values: object) =>
+  send('PATCH', `/api/entities/${entity}/${item.id}`, { version: item.version, values });
+const auditCount = async () =>
+  Number((await sqlPool.query('select count(*) from warden.audit_log')).rows[0].count);
+
+describe('primary keys', () => {
+  it('marks writable key columns create-only in the schema', async () => {
+    const { entities } = (await send('GET', '/api/schema')).body as EffectiveSchema;
+    const key = (entity: string, field: string) =>
+      entities.find((e) => e.key === entity)?.fields.find((f) => f.name === field);
+    expect(key('tickets', 'id')).toMatchObject({ readOnly: false, createOnly: true });
+    expect(key('codes', 'code')).toMatchObject({ readOnly: false, createOnly: true });
+    expect(key('currencies', 'code')).not.toHaveProperty('createOnly');
+  });
+
+  it('rejects changing a key on update, and changes nothing', async () => {
+    const before = await auditCount();
+    for (const [entity, values] of [
+      ['tickets', { id: 999 }],
+      ['tickets', { id: '999', title: 'moved' }],
+      ['codes', { code: 'b' }],
+    ] as const) {
+      const item = await first(entity);
+      const res = await update(entity, item, values);
+      expect(res.status, res.raw).toBe(400);
+      expect(res.body.details).toContainEqual({
+        field: Object.keys(values)[0],
+        message: 'is read-only',
+      });
+    }
+    expect((await sqlPool.query('select id, title from tickets')).rows).toEqual([
+      { id: 1, title: 'first' },
+    ]);
+    expect((await sqlPool.query('select code from codes')).rows).toEqual([{ code: 'a' }]);
+    expect(await auditCount()).toBe(before);
+  });
+
+  it('still updates the other columns', async () => {
+    const res = await update('codes', await first('codes'), { note: 'kept' });
+    expect(res.status, res.raw).toBe(200);
+    expect((res.body as Item).id).toBe((await first('codes')).id);
+  });
+
+  it('accepts keys on create', async () => {
+    const natural = await send('POST', '/api/entities/codes', { values: { code: 'new' } });
+    expect(natural.status, natural.raw).toBe(201);
+    // A key with a default can be left out, or set explicitly.
+    const generated = await send('POST', '/api/entities/tickets', { values: { title: 'x' } });
+    expect(generated.status, generated.raw).toBe(201);
+    const explicit = await send('POST', '/api/entities/tickets', { values: { id: 50 } });
+    expect(explicit.status, explicit.raw).toBe(201);
+  });
+
+  it('lets tables that opt in change their key', async () => {
+    const item = await first('currencies');
+    const res = await update('currencies', item, { code: 'usx' });
+    expect(res.status, res.raw).toBe(200);
+    expect((res.body as Item).id).not.toBe(item.id);
+    expect((await sqlPool.query('select code from currencies')).rows).toEqual([{ code: 'usx' }]);
+  });
+});

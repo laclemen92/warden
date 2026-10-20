@@ -40,6 +40,11 @@ export interface Field {
   hasDefault: boolean;
   /** Never writable: configured read-only, identity `always`, or generated. */
   readOnly: boolean;
+  /**
+   * Writable on create but not on update: primary key columns, unless the table sets
+   * `updatablePrimaryKey`. Present only when true. See `entityFor`.
+   */
+  createOnly?: true;
   /** Column constraints that write validation enforces; see `Column`. */
   maxLength?: number;
   precision?: number;
@@ -232,9 +237,25 @@ function resolveFields(
     }
     if (hidden) continue;
 
-    fields.push(toField(column, columnConfig, newColumns, enumValues));
+    const field = toField(column, columnConfig, newColumns, enumValues);
+    if (isPrimaryKey && !field.readOnly && !tableConfig?.updatablePrimaryKey) {
+      field.createOnly = true;
+    }
+    fields.push(field);
   }
   return fields;
+}
+
+/**
+ * The entity as a write in `mode` sees it: on update, create-only fields are read-only. Write
+ * validation and the UI's forms both go through this, so they agree.
+ */
+export function entityFor(entity: Entity, mode: 'create' | 'update'): Entity {
+  if (mode === 'create' || !entity.fields.some((f) => f.createOnly)) return entity;
+  return {
+    ...entity,
+    fields: entity.fields.map((f) => (f.createOnly ? { ...f, readOnly: true } : f)),
+  };
 }
 
 function toField(

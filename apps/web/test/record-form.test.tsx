@@ -1,5 +1,5 @@
 import type { EffectiveSchema, Entity, Field, Relation } from '@wardenhq/core';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { createMemoryRouter } from 'react-router';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -44,7 +44,7 @@ const entity = (key: string, label: string, fields: Field[], extra: Partial<Enti
 const schema: EffectiveSchema = {
   entities: [
     entity('companies', 'Companies', [
-      field('id', 'ID', 'int8', { nullable: false }),
+      field('id', 'ID', 'int8', { nullable: false, createOnly: true }),
       field('name', 'Name', 'text'),
     ]),
     entity(
@@ -477,6 +477,27 @@ describe('editing a record', () => {
     await userEvent.type(await screen.findByRole('textbox', { name: 'Bio' }), 'x');
     await userEvent.click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(router.state.location.pathname).toBe('/entities/users/99'));
+  });
+
+  it('sets a create-only key when creating and shows it read-only when editing', async () => {
+    const writable = ['read', 'create', 'update'];
+    stubFetch((url) =>
+      url.pathname === '/api/capabilities'
+        ? capabilities(writable, writable)
+        : url.pathname === '/api/entities/companies/7'
+          ? { status: 200, body: { ...companies[0], version: 'v1' } }
+          : undefined,
+    );
+    renderAt('/entities/companies/-/new');
+    await form();
+    expect(screen.getByRole('textbox', { name: 'ID' })).toHaveAttribute('aria-required', 'true');
+    cleanup();
+
+    renderAt('/entities/companies/7/edit');
+    await form();
+    expect(screen.queryByRole('textbox', { name: 'ID' })).not.toBeInTheDocument();
+    expect(screen.getByLabelText('ID')).toHaveTextContent('7');
+    expect(screen.getByRole('textbox', { name: 'Name' })).toHaveValue('Acme');
   });
 
   it('never sends fields the record has but the schema doesn’t', async () => {

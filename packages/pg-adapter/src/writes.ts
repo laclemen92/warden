@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { Entity, Field, Filter } from '@wardenhq/core';
+import { entityFor, type Entity, type Field, type Filter } from '@wardenhq/core';
 import { sql } from 'kysely';
 import type { Database } from './database.js';
 import { compileFilter } from './filter.js';
@@ -117,7 +117,7 @@ export async function updateRow(
   values: Record<string, unknown>,
   { version, versionEntity = entity, onWrite }: WriteOptions & VersionCheck,
 ): Promise<WriteResult> {
-  const set = assignments(entity, values);
+  const set = assignments(entityFor(entity, 'update'), values);
   if (set.length === 0) throw new Error('nothing to update');
   return db.transaction().execute(async (trx): Promise<WriteResult> => {
     const before = await lockRow(trx, entity, filter);

@@ -6,7 +6,7 @@ import {
   type FormEvent,
   type ReactNode,
 } from 'react';
-import type { Entity, Field, Relation, WriteMode } from '@wardenhq/core';
+import { entityFor, type Entity, type Field, type Relation, type WriteMode } from '@wardenhq/core';
 import { Link } from 'react-router';
 import { FieldValue } from '@/components/field-value';
 import { RecordPicker } from '@/components/record-picker';
@@ -53,7 +53,7 @@ export interface RecordSubmission {
  * write schema before they're sent, and errors the server returns are shown on their fields.
  */
 export function RecordForm({
-  entity,
+  entity: given,
   entities,
   mode,
   record,
@@ -72,6 +72,8 @@ export function RecordForm({
   onReload?: () => void;
   cancelTo: string;
 }) {
+  // When editing, create-only fields (the primary key, by default) are shown read-only.
+  const entity = useMemo(() => entityFor(given, mode), [given, mode]);
   const fields = useMemo(() => formFields(entity, mode, record), [entity, mode, record]);
   const initial = useMemo(() => initialDrafts(fields, record), [fields, record]);
   const pickers = useMemo(() => pickerRelations(entity), [entity]);
