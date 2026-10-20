@@ -1,5 +1,17 @@
-import { relationFilter, type Entity, type Relation } from '@wardenhq/core';
-import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import {
+  checkFieldValue,
+  relationFilter,
+  type Entity,
+  type Filter,
+  type Relation,
+} from '@wardenhq/core';
+import {
+  keepPreviousData,
+  useInfiniteQuery,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from '@tanstack/react-query';
 import { apiFetch } from './api';
 import { entityPath } from './schema';
 
@@ -24,12 +36,70 @@ export function recordPath(entity: Pick<Entity, 'key'>, id: string): string {
   return `${entityPath(entity)}/${encodeURIComponent(id)}`;
 }
 
+export function createRecordPath(entity: Pick<Entity, 'key'>): string {
+  // The `-` segment keeps this apart from record ids: a record keyed "new" is `/entities/x/new`.
+  return `${entityPath(entity)}/-/new`;
+}
+
+export function editRecordPath(entity: Pick<Entity, 'key'>, id: string): string {
+  return `${recordPath(entity, id)}/edit`;
+}
+
 const recordsUrl = (entityKey: string) => `/api/entities/${encodeURIComponent(entityKey)}`;
 
 export function useRecord(entity: Entity, id: string) {
   return useQuery({
     queryKey: ['record', entity.key, id],
     queryFn: () => apiFetch<RecordItem>(`${recordsUrl(entity.key)}/${encodeURIComponent(id)}`),
+  });
+}
+
+/** Every cached query a write can change: lists, related records, and records. */
+const isRecordQuery = (queryKey: readonly unknown[]) =>
+  ['rows', 'children', 'parent', 'record', 'search'].includes(String(queryKey[0]));
+
+/** What a write returns: the record, or only its id to callers who can't read the entity. */
+export type WrittenRecord = Partial<RecordItem> & { id: string | null };
+
+export interface CreateInput {
+  values: Row;
+  reason?: string;
+}
+
+export function useCreateRecord(entity: Entity) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: CreateInput) =>
+      apiFetch<WrittenRecord>(recordsUrl(entity.key), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(input),
+      }),
+    onSuccess: () =>
+      queryClient.invalidateQueries({ predicate: ({ queryKey }) => isRecordQuery(queryKey) }),
+  });
+}
+
+export interface UpdateInput {
+  id: string;
+  /** The version the edit started from; a stale one fails with 409. */
+  version: string;
+  values: Row;
+  reason?: string;
+}
+
+/** Update the changed fields of a record. Changing its key changes its id. */
+export function useUpdateRecord(entity: Entity) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, ...body }: UpdateInput) =>
+      apiFetch<WrittenRecord>(`${recordsUrl(entity.key)}/${encodeURIComponent(id)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      }),
+    onSuccess: () =>
+      queryClient.invalidateQueries({ predicate: ({ queryKey }) => isRecordQuery(queryKey) }),
   });
 }
 
@@ -52,8 +122,7 @@ export function useDeleteRecord(entity: Entity) {
       const deleted = JSON.stringify(['record', entity.key, record.id]);
       void queryClient.invalidateQueries({
         predicate: ({ queryKey }) =>
-          ['rows', 'children', 'parent', 'record'].includes(String(queryKey[0])) &&
-          JSON.stringify(queryKey) !== deleted,
+          isRecordQuery(queryKey) && JSON.stringify(queryKey) !== deleted,
       });
     },
     // A conflict means the record changed (or another write raced); show its current state.
@@ -96,4 +165,44 @@ export function useChildRecords(relation: Relation, row: Row) {
     },
     getNextPageParam: (last) => last.nextCursor,
   });
+}
+
+export const SEARCH_PAGE_SIZE = 20;
+
+/**
+ * Records of `entity` matching what someone typed into a record picker: a search of its
+ * searchable fields, or, when it has none, an exact match on its key. An empty term lists the
+ * first page.
+ */
+export function useRecordSearch(
+  entity: Entity,
+  keyColumns: string[],
+  term: string,
+  enabled = true,
+) {
+  const q = term.trim();
+  return useQuery({
+    queryKey: ['search', entity.key, q],
+    enabled,
+    placeholderData: keepPreviousData,
+    queryFn: () => {
+      const params = new URLSearchParams({ limit: String(SEARCH_PAGE_SIZE) });
+      if (q && entity.searchable.length > 0) {
+        params.set('q', q);
+      } else if (q) {
+        const filter = keyFilter(entity, keyColumns, q);
+        // Nothing can match a term that isn't a valid key.
+        if (!filter) return { items: [], nextCursor: null, hasMore: false } satisfies RecordList;
+        params.set('filter', JSON.stringify(filter));
+      }
+      return apiFetch<RecordList>(`${recordsUrl(entity.key)}?${params}`);
+    },
+  });
+}
+
+function keyFilter(entity: Entity, keyColumns: string[], term: string): Filter | null {
+  const [column] = keyColumns;
+  const field = entity.fields.find((f) => f.name === column);
+  if (keyColumns.length !== 1 || !field || checkFieldValue(field, term)) return null;
+  return { field: field.name, op: 'eq', value: term };
 }
