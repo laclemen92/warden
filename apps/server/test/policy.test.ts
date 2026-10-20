@@ -112,7 +112,7 @@ function requests(entity: string, action: Action): [string, string, object | und
         ['PUT', `${base}/1`, undefined, 200],
       ];
     case 'delete':
-      return [['DELETE', `${base}/1?version=stale`, undefined, 409]];
+      return [['DELETE', `${base}/1`, { version: 'stale' }, 409]];
   }
 }
 

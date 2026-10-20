@@ -16,6 +16,7 @@ import {
   type Policy,
 } from '@wardenhq/core';
 import {
+  auditHook,
   createRow,
   deleteRow,
   getRow,
@@ -26,6 +27,7 @@ import {
   type Database,
   type Row,
   type WriteAction,
+  type WriteOptions,
 } from '@wardenhq/pg-adapter';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 
@@ -59,32 +61,42 @@ const listQuerySchema = {
 } as const;
 
 const MAX_VERSION_LENGTH = 100;
+export const MAX_REASON_LENGTH = 2000;
 
-interface CreateBody {
+/** Every write may say why; the reason is stored in the audit log. */
+interface WriteBody {
+  reason?: string;
+}
+interface CreateBody extends WriteBody {
   values: Record<string, unknown>;
 }
-interface UpdateBody {
+interface UpdateBody extends WriteBody {
   version: string;
   values: Record<string, unknown>;
 }
-interface DeleteQuery {
+interface DeleteBody extends WriteBody {
   version?: string;
 }
 
 // Field values are validated against the entity by `validateRecord`; these only check the shape.
 const valuesSchema = { type: 'object' } as const;
 const versionSchema = { type: 'string', minLength: 1, maxLength: MAX_VERSION_LENGTH } as const;
+const reasonSchema = { type: 'string', maxLength: MAX_REASON_LENGTH } as const;
 const createBodySchema = {
   type: 'object',
   required: ['values'],
-  properties: { values: valuesSchema },
+  properties: { values: valuesSchema, reason: reasonSchema },
 } as const;
 const updateBodySchema = {
   type: 'object',
   required: ['version', 'values'],
-  properties: { version: versionSchema, values: valuesSchema },
+  properties: { version: versionSchema, values: valuesSchema, reason: reasonSchema },
 } as const;
-const deleteQuerySchema = { type: 'object', properties: { version: versionSchema } } as const;
+// The body is optional: a bare DELETE neither checks the version nor gives a reason.
+const deleteBodySchema = {
+  type: ['object', 'null'],
+  properties: { version: versionSchema, reason: reasonSchema },
+} as const;
 
 const badRequest = (reply: FastifyReply, message: string, details?: FilterError[] | FieldError[]) =>
   reply
@@ -121,6 +133,23 @@ export function registerEntityRoutes(
     isAllowed(policy, req.roles ?? [], entity.key, 'read')
       ? toItem(entity, row)
       : { id: encodeRecordId(entity, row) };
+
+  /** Records the write in the audit log, inside the write's transaction. */
+  const audited = (req: FastifyRequest, body: WriteBody | null | undefined): WriteOptions => {
+    const session = req.session!;
+    const reason = body?.reason?.trim();
+    return {
+      onWrite: auditHook({
+        actor: {
+          subject: session.subject,
+          ...(session.email ? { email: session.email } : {}),
+          roles: req.roles ?? [],
+        },
+        requestId: req.id,
+        ...(reason ? { reason } : {}),
+      }),
+    };
+  };
 
   /** Constraint and data errors become 400/409 with field details; anything else is a 500. */
   const writeFailed = async (
@@ -225,7 +254,7 @@ export function registerEntityRoutes(
       if (!record.ok) return badRequest(reply, 'invalid record', record.errors);
       let row;
       try {
-        row = await createRow(db, entity, record.values);
+        row = await createRow(db, entity, record.values, audited(req, req.body));
       } catch (err) {
         return writeFailed(reply, entity, 'create', err);
       }
@@ -248,6 +277,7 @@ export function registerEntityRoutes(
       try {
         result = await updateRow(db, entity, decoded.filter, record.values, {
           version: req.body.version,
+          ...audited(req, req.body),
         });
       } catch (err) {
         return writeFailed(reply, entity, 'update', err);
@@ -257,19 +287,20 @@ export function registerEntityRoutes(
     },
   );
 
-  app.delete<{ Params: { entity: string; id: string }; Querystring: DeleteQuery }>(
+  app.delete<{ Params: { entity: string; id: string }; Body: DeleteBody | null | undefined }>(
     '/api/entities/:entity/:id',
-    { schema: { querystring: deleteQuerySchema } },
+    { schema: { body: deleteBodySchema } },
     async (req, reply) => {
       const entity = entities.get(req.params.entity);
       if (!entity) return notFound(reply);
       const decoded = decodeRecordId(entity, req.params.id);
       if (!decoded.ok) return notFound(reply);
-      const { version } = req.query;
+      const version = req.body?.version;
       let result;
       try {
         result = await deleteRow(db, entity, decoded.filter, {
           ...(version !== undefined ? { version } : {}),
+          ...audited(req, req.body),
         });
       } catch (err) {
         return writeFailed(reply, entity, 'delete', err);

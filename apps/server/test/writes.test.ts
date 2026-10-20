@@ -275,9 +275,9 @@ describe('DELETE /api/entities/:entity/:id', () => {
   it('checks the version when one is given', async () => {
     const item = await newCompany('Versioned');
     const url = `/api/entities/companies/${item.id}`;
-    expect((await send('DELETE', `${url}?version=stale`)).status).toBe(409);
+    expect((await send('DELETE', url, { version: 'stale' })).status).toBe(409);
     expect(await sqlRow('select 1 from companies where id = $1', [item.id])).toBeDefined();
-    expect((await send('DELETE', `${url}?version=${item.version}`)).status).toBe(204);
+    expect((await send('DELETE', url, { version: item.version })).status).toBe(204);
   });
 
   it('returns 409 when other rows still reference it', async () => {
