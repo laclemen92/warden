@@ -34,6 +34,8 @@ export interface AppOptions {
   webDir?: string;
   /** Largest request body in bytes; larger ones get a 413. Fastify's default (1 MiB) if unset. */
   bodyLimit?: number;
+  /** Release version (`WARDEN_VERSION`, baked into the image); reported by /healthz. */
+  version?: string;
   logger?: FastifyServerOptions['logger'];
 }
 
@@ -46,6 +48,7 @@ export async function buildApp({
   roles,
   webDir,
   bodyLimit,
+  version,
   logger = false,
 }: AppOptions = {}) {
   if ((schema || drift || roles) && !auth) throw new Error('auth is required to serve /api routes');
@@ -72,7 +75,7 @@ export async function buildApp({
       .send({ statusCode: 500, error: 'Internal Server Error', message: 'Internal Server Error' });
   });
 
-  app.get('/healthz', async () => ({ status: 'ok' }));
+  app.get('/healthz', async () => ({ status: 'ok', ...(version ? { version } : {}) }));
 
   if (auth) await registerAuth(app, auth);
   // Each user gets the schema as their roles see it: entities they may do nothing with, and

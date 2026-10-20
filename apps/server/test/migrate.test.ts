@@ -108,6 +108,21 @@ describe('WARDEN_MIGRATE', () => {
     }
   });
 
+  it('reports WARDEN_VERSION from /healthz, or dev when unset', async () => {
+    for (const [env, version] of [
+      [{ WARDEN_VERSION: '0.2.0' }, '0.2.0'],
+      [{}, 'dev'],
+    ] as const) {
+      const app = await start(env);
+      try {
+        const res = await app.inject({ method: 'GET', url: '/healthz' });
+        expect(res.json()).toEqual({ status: 'ok', version });
+      } finally {
+        await app.close();
+      }
+    }
+  });
+
   it('warns when the runtime role can disable the audit triggers', async () => {
     expect(await startupWarnings()).toContainEqual(expect.stringMatching(OWNS_AUDIT_LOG));
   });

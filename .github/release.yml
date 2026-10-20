@@ -1,0 +1,13 @@
+# Categories for the release notes the release workflow generates from merged PRs.
+changelog:
+  categories:
+    - title: Security
+      labels: [security]
+    - title: Features
+      labels: [type:feature, enhancement]
+    - title: Fixes
+      labels: [bug]
+    - title: Maintenance
+      labels: [type:chore, documentation]
+    - title: Other changes
+      labels: ['*']
