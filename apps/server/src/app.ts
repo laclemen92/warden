@@ -5,6 +5,7 @@ import fastifyStatic from '@fastify/static';
 import type { EffectiveSchema, Policy } from '@wardenhq/core';
 import type { Database } from '@wardenhq/pg-adapter';
 import Fastify, { type FastifyServerOptions } from 'fastify';
+import { redactingLogger } from './logging.js';
 import { registerAuditRoutes } from './routes/audit.js';
 import { registerAuth, type AuthOptions } from './routes/auth.js';
 import { registerCapabilityRoutes } from './routes/capabilities.js';
@@ -48,7 +49,7 @@ export async function buildApp({
   if (schema && db && !policy) throw new Error('policy is required to serve entity routes');
   // Request ids are logged and stored with audit entries, so they must be unique across restarts
   // and replicas.
-  const app = Fastify({ logger, genReqId: () => randomUUID() });
+  const app = Fastify({ logger: redactingLogger(logger), genReqId: () => randomUUID() });
 
   // Don't leak database errors (SQL, constraint names, values) to clients; they are logged.
   app.setErrorHandler((err: Error & { statusCode?: number; validation?: unknown }, req, reply) => {

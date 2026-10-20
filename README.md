@@ -75,7 +75,7 @@ Warden signs users in with OIDC (authorization code + PKCE) and keeps server-sid
 | `WARDEN_SESSION_IDLE_TIMEOUT`     | no       | `2h`                   | A session ends after this long without a request (`30m`, `8h`, `7d`, or seconds).                                                    |
 | `WARDEN_SESSION_ABSOLUTE_TIMEOUT` | no       | `12h`                  | A session ends this long after login, however active.                                                                                |
 
-Both URLs must use https, except on `localhost`. When `WARDEN_PUBLIC_URL` is https, the session cookie is `__Host-warden_session` with `Secure`; it is always `HttpOnly` and `SameSite=Lax`. Only a hash of the session token is stored. Logging out (`POST /auth/logout`) deletes the session.
+Both URLs must use https, except on `localhost`. When `WARDEN_PUBLIC_URL` is https, the session cookie is `__Host-warden_session` with `Secure`; it is always `HttpOnly` and `SameSite=Lax`. Only a hash of the session token is stored. Logging out (`POST /auth/logout`) deletes the session. Request logs leave out the query string of `/auth/*` URLs and redact `code` and `state` parameters elsewhere, so authorization codes don't reach your log pipeline.
 
 ## Development
 

@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { Writable } from 'node:stream';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { MockOidc } from '@wardenhq/mock-oidc';
@@ -373,6 +374,41 @@ describe('sessions', () => {
       expect(res.statusCode).toBe(401);
     } finally {
       await shortApp.close();
+    }
+  });
+});
+
+describe('logging', () => {
+  it('never logs the authorization code or state', async () => {
+    const lines: string[] = [];
+    const stream = new Writable({
+      write(chunk: Buffer, _encoding, done) {
+        lines.push(chunk.toString());
+        done();
+      },
+    });
+    const loggedApp = await createWarden({
+      env: { DATABASE_URL: db.connectionString, WARDEN_CONFIG: EXAMPLE_CONFIG, ...authEnv(idp) },
+      logger: { level: 'info', stream },
+    });
+    try {
+      const { authorizeUrl, cookies } = await beginLogin(loggedApp);
+      const url = await signInAtIdp(authorizeUrl, 'viewer');
+      const code = url.searchParams.get('code');
+      const state = url.searchParams.get('state');
+      expect(code).toBeTruthy();
+      expect(state).toBeTruthy();
+      expect((await callback(loggedApp, url, cookies)).statusCode).toBe(302);
+
+      const callbackLines = lines.filter((l) => l.includes('/auth/callback'));
+      expect(callbackLines.length).toBeGreaterThan(0);
+      expect(callbackLines.join('')).toContain('/auth/callback?[redacted]');
+      for (const line of lines) {
+        expect(line).not.toContain(code);
+        expect(line).not.toContain(state);
+      }
+    } finally {
+      await loggedApp.close();
     }
   });
 });
