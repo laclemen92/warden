@@ -10,17 +10,38 @@ import {
   type FilterError,
   type Policy,
 } from '@wardenhq/core';
-import { openExport, recordExport, type Database } from '@wardenhq/pg-adapter';
+import { openExport, recordExport, type Database, type RowExport } from '@wardenhq/pg-adapter';
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import type { Views } from '../views.js';
 
 /** Larger exports are refused rather than cut short, so a file is never silently incomplete. */
 export const MAX_EXPORT_ROWS = 100_000;
 
+export interface ExportLimits {
+  /** Exports running at once on this server, across all users. */
+  maxConcurrent: number;
+  /** Exports one user may run at once. */
+  maxPerUser: number;
+  /** An export whose client stops reading for this long is ended. */
+  idleTimeoutMs: number;
+  /** An export still running this long after it started is ended. */
+  deadlineMs: number;
+}
+
+export const DEFAULT_EXPORT_LIMITS: ExportLimits = {
+  maxConcurrent: 4,
+  maxPerUser: 2,
+  idleTimeoutMs: 30_000,
+  deadlineMs: 15 * 60_000,
+};
+
 export interface ExportRouteOptions {
   db: Database;
   policy: Policy;
   views: Views;
+  /** Where exports read from; `db` when absent. A pool of their own can't starve other requests. */
+  exportDb?: Database;
+  limits?: Partial<ExportLimits>;
 }
 
 interface ExportQuery {
@@ -47,6 +68,38 @@ const BOM = '﻿';
 const notFound = (reply: FastifyReply) =>
   reply.code(404).send({ statusCode: 404, error: 'Not Found', message: 'Not Found' });
 
+const tooMany = (reply: FastifyReply) =>
+  reply.code(429).send({
+    statusCode: 429,
+    error: 'Too Many Requests',
+    message: 'too many exports are running; try again when one finishes',
+  });
+
+/** Counts running exports, so they can never hold every database connection. */
+function exportSlots({
+  maxConcurrent,
+  maxPerUser,
+}: Pick<ExportLimits, 'maxConcurrent' | 'maxPerUser'>) {
+  let running = 0;
+  const perUser = new Map<string, number>();
+  /** A release function, or undefined when a limit is reached. */
+  return (user: string): (() => void) | undefined => {
+    const mine = perUser.get(user) ?? 0;
+    if (running >= maxConcurrent || mine >= maxPerUser) return undefined;
+    running++;
+    perUser.set(user, mine + 1);
+    let held = true;
+    return () => {
+      if (!held) return;
+      held = false;
+      running--;
+      const left = (perUser.get(user) ?? 1) - 1;
+      if (left > 0) perUser.set(user, left);
+      else perUser.delete(user);
+    };
+  };
+}
+
 const badRequest = (reply: FastifyReply, message: string, details?: FilterError[]) =>
   reply
     .code(400)
@@ -59,8 +112,11 @@ const badRequest = (reply: FastifyReply, message: string, details?: FilterError[
  */
 export function registerExportRoutes(
   app: FastifyInstance,
-  { db, policy, views }: ExportRouteOptions,
+  { db, policy, views, exportDb = db, limits }: ExportRouteOptions,
 ) {
+  const { idleTimeoutMs, deadlineMs, ...caps } = { ...DEFAULT_EXPORT_LIMITS, ...limits };
+  const acquire = exportSlots(caps);
+
   app.get<{ Params: { entity: string }; Querystring: ExportQuery }>(
     '/api/export/:entity',
     { schema: { querystring: exportQuerySchema } },
@@ -103,20 +159,40 @@ export function registerExportRoutes(
         ? entity.fields.filter((f) => state.state.columns!.includes(f.name))
         : entity.fields;
 
-      const rows = await openExport(db, entity, {
-        sort: sort.sort,
-        ...(combined ? { filter: combined } : {}),
-      });
+      const session = req.session!;
+      const release = acquire(session.subject);
+      if (!release) return tooMany(reply);
+      // Every way the request ends closes the response, including a client that goes away.
+      reply.raw.once('close', release);
+
+      let rows: RowExport;
+      try {
+        rows = await openExport(exportDb, entity, {
+          sort: sort.sort,
+          ...(combined ? { filter: combined } : {}),
+          maxRows: MAX_EXPORT_ROWS,
+          deadlineMs,
+          idleTimeoutMs,
+          onTimeout: (reason) => {
+            req.log.warn({ entity: entity.key, reason }, 'export timed out');
+            // Abort rather than end the response, so the download fails instead of looking complete.
+            reply.raw.destroy();
+          },
+        });
+      } catch (err) {
+        release();
+        throw err;
+      }
       try {
         if (rows.total > MAX_EXPORT_ROWS) {
           await rows.close();
+          release();
           return badRequest(
             reply,
             `exports are limited to ${MAX_EXPORT_ROWS.toLocaleString('en-US')} rows; ` +
-              `this one has ${rows.total.toLocaleString('en-US')}, so narrow the filter`,
+              'this one has more, so narrow the filter',
           );
         }
-        const session = req.session!;
         await recordExport(db, {
           actor: {
             subject: session.subject,
@@ -135,6 +211,7 @@ export function registerExportRoutes(
         });
       } catch (err) {
         await rows.close();
+        release();
         throw err;
       }
 
@@ -154,12 +231,14 @@ export function registerExportRoutes(
       }
       const stamp = new Date().toISOString().slice(0, 19).replaceAll(':', '-');
       const filename = `${entity.key.replaceAll(/[^\w.-]/g, '_')}-${stamp}.csv`;
+      // Read one batch ahead of the socket rather than the default 16, so a slow client holds
+      // little memory and a stalled one parks the cursor (and trips the idle timeout) quickly.
       return reply
         .header('Content-Type', 'text/csv; charset=utf-8')
         .header('Content-Disposition', `attachment; filename="${filename}"`)
         .header('Cache-Control', 'no-store')
         .header('X-Content-Type-Options', 'nosniff')
-        .send(Readable.from(lines()));
+        .send(Readable.from(lines(), { highWaterMark: 1 }));
     },
   );
 }

@@ -82,11 +82,21 @@ export interface ExportOptions {
   sort: SortTerm[];
   /** Rows fetched per round trip. */
   batchSize?: number;
+  /** Stop counting past this many rows, so refusing a huge export stays cheap. */
+  maxRows?: number;
+  /** End the export this long after it opens, however it is going. */
+  deadlineMs?: number;
+  /** End the export when its reader hasn't asked for the next batch for this long. */
+  idleTimeoutMs?: number;
+  /** Called once the deadline or idle timeout has ended the export. */
+  onTimeout?: (reason: ExportTimeout) => void;
 }
+
+export type ExportTimeout = 'deadline' | 'idle';
 
 /** Every matching row of an export, from one snapshot of the database. */
 export interface RowExport {
-  /** How many rows `batches` will yield. */
+  /** How many rows `batches` will yield; `maxRows + 1` when there are more than `maxRows`. */
   total: number;
   /** The rows in order, a batch at a time. Ends the export when done or abandoned. */
   batches(): AsyncGenerator<Row[]>;
@@ -99,12 +109,12 @@ const EXPORT_CURSOR = sql.id('warden_export');
 /**
  * Open an export: a read-only, repeatable-read transaction with a cursor over the matching rows,
  * so the count and the rows agree and memory use doesn't grow with the table. It holds a
- * connection until it is read to the end or closed.
+ * connection until it is read to the end, closed, or timed out.
  */
 export async function openExport(
   db: Database,
   entity: Entity,
-  { filter, sort, batchSize = 1000 }: ExportOptions,
+  { filter, sort, batchSize = 1000, maxRows, deadlineMs, idleTimeoutMs, onTimeout }: ExportOptions,
 ): Promise<RowExport> {
   const trx = await db
     .startTransaction()
@@ -112,27 +122,52 @@ export async function openExport(
     .setAccessMode('read only')
     .execute();
   let open = true;
+  let deadline: NodeJS.Timeout | undefined;
+  let idle: NodeJS.Timeout | undefined;
   const close = async () => {
     if (!open) return;
     open = false;
+    clearTimeout(deadline);
+    clearTimeout(idle);
     await trx.rollback().execute();
   };
+  // A reader that stops pulling (a stalled download) would otherwise leave the transaction idle,
+  // holding a connection and pinning its snapshot, until the client goes away.
+  const timeOut = (reason: ExportTimeout) => {
+    if (!open) return;
+    const closing = close();
+    onTimeout?.(reason);
+    closing.catch(() => {});
+  };
+  const armIdle = () => {
+    if (idleTimeoutMs === undefined || !open) return;
+    idle = setTimeout(() => timeOut('idle'), idleTimeoutMs).unref();
+  };
+  if (deadlineMs !== undefined) {
+    deadline = setTimeout(() => timeOut('deadline'), deadlineMs).unref();
+  }
   try {
     const where = filter ? sql`where ${compileFilter(filter, ALIAS)}` : sql``;
+    const matching = sql`select 1 from ${from(entity)} ${where}`;
     const { rows } = await sql<{ total: string }>`
-      select count(*) as total from ${from(entity)} ${where}`.execute(trx);
+      select count(*) as total from (${
+        maxRows === undefined ? matching : sql`${matching} limit ${maxRows + 1}`
+      }) as matching`.execute(trx);
     await sql`
       declare ${EXPORT_CURSOR} no scroll cursor for
       select ${selection(entity)} from ${from(entity)} ${where} ${orderBy(sort)}`.execute(trx);
+    armIdle();
     return {
       total: Number(rows[0]?.total ?? 0),
       close,
       async *batches() {
         try {
           while (open) {
+            clearTimeout(idle);
             const { rows: batch } = await sql<Row>`
               fetch forward ${sql.lit(batchSize)} from ${EXPORT_CURSOR}`.execute(trx);
             if (batch.length === 0) break;
+            armIdle();
             yield batch;
           }
         } finally {

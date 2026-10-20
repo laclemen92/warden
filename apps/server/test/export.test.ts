@@ -266,7 +266,7 @@ describe('CSV export', () => {
     const before = await exportCount();
     const res = await exportCsv('admin', 'events');
     expect(res.statusCode).toBe(400);
-    expect(res.json().message).toMatch(/limited to 100,000 rows; this one has 100,001/);
+    expect(res.json().message).toMatch(/limited to 100,000 rows; this one has more/);
     expect(await exportCount()).toBe(before);
     // Narrowed, it goes through.
     const narrowed = await exportCsv('admin', 'events', {
