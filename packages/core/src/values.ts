@@ -107,17 +107,24 @@ const TEMPORAL: Record<string, { pattern: RegExp; expected: string }> = {
 TEMPORAL.timestamptz = TEMPORAL.timestamp!;
 TEMPORAL.timetz = TEMPORAL.time!;
 
-const temporal = (f: Field) => TEMPORAL[f.dataType] ?? TEMPORAL.timestamp!;
+const temporal = (f: Pick<Field, 'dataType'>) => TEMPORAL[f.dataType] ?? TEMPORAL.timestamp!;
 
 /** What a value of `f`'s date/time type looks like, as an error message. */
 export const expectedTemporal = (f: Field): string => temporal(f).expected;
 
 /** Error message when `value` isn't a date/time of `f`'s type. */
-export function checkTemporal(f: Field, value: string): string | undefined {
+export function checkTemporal(f: Pick<Field, 'dataType'>, value: string): string | undefined {
   const { pattern, expected } = temporal(f);
   if (!pattern.test(value)) return expected;
   return isRealDateTime(value) ? undefined : 'is not a valid date/time';
 }
+
+/**
+ * Error message when `value` isn't a timestamptz Postgres can hold, for values that aren't bound
+ * for a column (such as search bounds).
+ */
+export const checkTimestamp = (value: string): string | undefined =>
+  checkTemporal({ dataType: 'timestamptz' }, value);
 
 /**
  * Whether the date, time, and offset parts of a format-checked value exist (no February 30th,
@@ -153,3 +160,15 @@ function isRealDateTime(value: string): boolean {
 export const checkText = (value: string): string | undefined =>
   // Postgres text can't store NUL bytes.
   value.includes('\0') ? 'cannot contain NUL characters' : undefined;
+
+/** Whether `value` nests deeper than `max`, checked without recursion. */
+export function nestsDeeperThan(value: unknown, max: number): boolean {
+  const stack: [unknown, number][] = [[value, 0]];
+  while (stack.length > 0) {
+    const [v, depth] = stack.pop()!;
+    if (typeof v !== 'object' || v === null) continue;
+    if (depth >= max) return true;
+    for (const child of Object.values(v)) stack.push([child, depth + 1]);
+  }
+  return false;
+}

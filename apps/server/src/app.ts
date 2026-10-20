@@ -3,7 +3,7 @@ import { existsSync } from 'node:fs';
 import { STATUS_CODES } from 'node:http';
 import fastifyStatic from '@fastify/static';
 import type { EffectiveSchema, Policy } from '@wardenhq/core';
-import type { Database } from '@wardenhq/pg-adapter';
+import { isDataError, type Database } from '@wardenhq/pg-adapter';
 import Fastify, { type FastifyServerOptions } from 'fastify';
 import { redactingLogger } from './logging.js';
 import { registerAuditRoutes } from './routes/audit.js';
@@ -63,6 +63,14 @@ export async function buildApp({
 
   // Don't leak database errors (SQL, constraint names, values) to clients; they are logged.
   app.setErrorHandler((err: Error & { statusCode?: number; validation?: unknown }, req, reply) => {
+    // Input is checked before it reaches the database, but a value Postgres still can't accept
+    // was the client's, so it's a 400. The message stays generic, since it could echo the value.
+    if (isDataError(err)) {
+      req.log.warn({ err }, 'request failed with a data error');
+      return reply
+        .code(400)
+        .send({ statusCode: 400, error: 'Bad Request', message: 'a value is invalid' });
+    }
     const statusCode = err.statusCode ?? 500;
     if (statusCode < 500) {
       return reply

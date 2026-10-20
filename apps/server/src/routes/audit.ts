@@ -1,8 +1,9 @@
 import type { WardenConfig } from '@wardenhq/config';
-import { adminAreas, decodeRecordId, isAllowed, type Policy } from '@wardenhq/core';
+import { adminAreas, checkTimestamp, decodeRecordId, isAllowed, type Policy } from '@wardenhq/core';
 import { listAuditEntries, type AuditQuery, type Database } from '@wardenhq/pg-adapter';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { Views } from '../views.js';
+import { NO_NUL } from './schemas.js';
 
 export const DEFAULT_AUDIT_LIMIT = 50;
 export const MAX_AUDIT_LIMIT = 200;
@@ -39,9 +40,9 @@ const searchQuerySchema = {
   type: 'object',
   properties: {
     ...pageProperties,
-    entity: { type: 'string', minLength: 1, maxLength: 200 },
-    actor: { type: 'string', minLength: 1, maxLength: 200 },
-    action: { type: 'string', minLength: 1, maxLength: 100 },
+    entity: { type: 'string', minLength: 1, maxLength: 200, pattern: NO_NUL },
+    actor: { type: 'string', minLength: 1, maxLength: 200, pattern: NO_NUL },
+    action: { type: 'string', minLength: 1, maxLength: 100, pattern: NO_NUL },
     /** Inclusive. */
     from: { type: 'string', format: 'date-time' },
     /** Exclusive. */
@@ -116,6 +117,19 @@ export function registerAuditRoutes(
         return reply
           .code(400)
           .send({ statusCode: 400, error: 'Bad Request', message: 'unknown entity' });
+      }
+      // The schema's date-time format allows dates Postgres doesn't, such as year 0.
+      for (const [name, value] of [
+        ['from', from],
+        ['to', to],
+      ] as const) {
+        if (value !== undefined && checkTimestamp(value)) {
+          return reply.code(400).send({
+            statusCode: 400,
+            error: 'Bad Request',
+            message: `querystring/${name} is not a valid date-time`,
+          });
+        }
       }
       return page({
         visible,

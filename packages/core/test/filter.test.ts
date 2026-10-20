@@ -249,6 +249,18 @@ describe('validateFilter', () => {
     for (let i = 0; i < FILTER_LIMITS.maxDepth; i++) deep = { not: deep };
     expect(errorsFor(deep)[0]?.message).toMatch(/nest at most/);
 
+    // Deep enough to overflow the stack if it reached zod, so it is refused before parsing.
+    let deeper: unknown = { field: 'email', op: 'isNull' };
+    for (let i = 0; i < 10_000; i++) deeper = { and: [deeper] };
+    expect(errorsFor(deeper)).toEqual([{ path: '', message: 'filters can nest at most 8 levels' }]);
+
+    // The deepest filter allowed, ending in a list value, still passes the pre-check.
+    let deepest: Filter = { field: 'id', op: 'in', value: [1, 2] };
+    for (let i = 1; i < FILTER_LIMITS.maxDepth; i++) {
+      deepest = i % 2 ? { and: [deepest] } : { or: [deepest] };
+    }
+    valid(deepest);
+
     const wide = { or: Array.from({ length: 101 }, () => ({ field: 'email', op: 'isNull' })) };
     expect(errorsFor(wide)).toEqual([
       { path: '', message: 'filters can have at most 100 conditions' },

@@ -37,7 +37,7 @@ export {
   type AuditPage,
   type AuditQuery,
 } from './audit.js';
-export { mapWriteError, type WriteErrorResult } from './errors.js';
+export { isDataError, mapWriteError, type WriteErrorResult } from './errors.js';
 export {
   canDisableAuditTriggers,
   migrate,

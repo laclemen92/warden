@@ -3,7 +3,14 @@ import { resolveSchema, validateRecord, type Entity } from '@wardenhq/core';
 import { startPostgres, type TestDatabase } from '@wardenhq/testing';
 import { sql } from 'kysely';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { createDatabase, introspect, mapWriteError, type DatabaseHandle } from '../src/index.js';
+import {
+  AuditWriteError,
+  createDatabase,
+  introspect,
+  isDataError,
+  mapWriteError,
+  type DatabaseHandle,
+} from '../src/index.js';
 
 const SCHEMA = `
   create table values_test (
@@ -22,6 +29,8 @@ const SCHEMA = `
     uid    uuid,
     tags   varchar(2)[]
   );
+
+  create table odd_types (id int primary key, flags bit(3), span int4range, doc xml);
 
   create table teams (
     id    int primary key,
@@ -243,6 +252,30 @@ describe('mapWriteError', () => {
     expect(
       await failingWrite('values_test', sql`insert into values_test (day) values ('2026-02-30')`),
     ).toEqual({ status: 400, errors: [{ message: 'a date/time value is out of range' }] });
+  });
+
+  it('maps every other data error to a generic message', async () => {
+    for (const [value, column] of [
+      [sql`'1111'`, 'flags'], // 22026
+      [sql`'[2,1]'`, 'span'], // 22000
+      [sql`'<a>'`, 'doc'], // 2200N
+    ] as const) {
+      const insert = sql`insert into odd_types (id, ${sql.ref(column)}) values (1, ${value})`;
+      expect(await failingWrite('odd_types', insert), column).toEqual({
+        status: 400,
+        errors: [{ message: 'a value is invalid for its field' }],
+      });
+    }
+  });
+
+  it('recognizes data errors, including inside a failed audit write', () => {
+    const pgError = (code: string) => Object.assign(new Error('x'), { code });
+    expect(isDataError(pgError('22021'))).toBe(true);
+    expect(isDataError(pgError('2200N'))).toBe(true);
+    expect(isDataError(new AuditWriteError(pgError('22P05')))).toBe(true);
+    expect(isDataError(pgError('23505'))).toBe(false);
+    expect(isDataError(new AuditWriteError(pgError('42P01')))).toBe(false);
+    expect(isDataError(new Error('22000'))).toBe(false);
   });
 
   it('leaves other errors unmapped', async () => {
