@@ -188,9 +188,32 @@ describe('roles page API', () => {
     expect((await unassign({ email: 'editor@example.com', role: 'ghost' })).statusCode).toBe(204);
   });
 
+  it("refuses look-alike emails, which could fold onto someone else's", async () => {
+    for (const email of [
+      '\u212Aate@example.com',
+      'adm\u0131n@example.com',
+      '\uFF4Bate@example.com',
+    ]) {
+      const res = await assign({ email, role: 'ops' });
+      expect(res.statusCode, email).toBe(400);
+      expect(res.json<{ message: string }>().message).toBe('email must be an ASCII email address');
+    }
+  });
+
+  it('removes a non-ASCII assignment stored earlier only by its exact email', async () => {
+    await sqlPool.query(
+      `insert into warden.role_assignments (email, role, assigned_by)
+       values ('kate@example.com', 'ops', 'someone'), ('k\u0101te@example.com', 'ops', 'someone')`,
+    );
+    // The Kelvin sign would have lowercased onto kate@example.com before.
+    expect((await unassign({ email: '\u212Aate@example.com', role: 'ops' })).statusCode).toBe(404);
+    expect((await unassign({ email: 'k\u0101te@example.com', role: 'ops' })).statusCode).toBe(204);
+    expect((await unassign({ email: 'kate@example.com', role: 'ops' })).statusCode).toBe(204);
+  });
+
   it('rejects invalid assignments without changing anything', async () => {
     for (const [payload, message] of [
-      [{ email: 'not-an-email', role: 'ops' }, 'email must be an email address'],
+      [{ email: 'not-an-email', role: 'ops' }, 'email must be an ASCII email address'],
       [{ email: 'a@example.com', role: 'ghost' }, 'role "ghost" is not defined in config'],
       [{ email: 'a@example.com', role: 'constructor' }, 'role "constructor" is not defined'],
       [{ email: 'a@example.com', role: '__proto__' }, 'role "__proto__" is not defined'],
@@ -299,7 +322,7 @@ describe('roles page API', () => {
       `select count(*)::int as n from warden.audit_log where entity = 'warden.role_assignments'`,
     );
     // Only the admin's changes in the tests above.
-    expect(rows[0].n).toBe(5);
+    expect(rows[0].n).toBe(7);
   });
 
   it('requires a session', async () => {

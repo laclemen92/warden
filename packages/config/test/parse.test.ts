@@ -303,6 +303,19 @@ access:
     ]);
   });
 
+  it('rejects non-ASCII email domains, which could fold onto another domain', () => {
+    for (const domain of ['\u212Aite.io', 'k\u0131te.io', '\uFF4Bite.io', 'b\u00fccher.example']) {
+      expect(
+        issues(`roles:\n  viewer: {}\naccess:\n  emailDomains:\n    "${domain}": [viewer]\n`),
+      ).toMatchObject([
+        {
+          path: `access.emailDomains.${domain}`,
+          message: 'Expected an ASCII domain; write internationalized ones as xn--',
+        },
+      ]);
+    }
+  });
+
   it('rejects a table configured as both `table` and `schema.table`, pointing at both keys', () => {
     // Field rules split across the two keys would let support write salary.
     expect(

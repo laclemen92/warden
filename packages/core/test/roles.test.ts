@@ -208,3 +208,44 @@ describe('sessionEmail', () => {
     }
   });
 });
+
+// Each folds onto, or passes for, "kate@kite.io" somewhere: KELVIN SIGN lowercases to "k",
+// Turkish dotted capital I lowercases to "i" plus a combining dot, dotless i reads as "i",
+// and full-width letters fold to ASCII under NFKC.
+const LOOK_ALIKES = [
+  '\u212Aate@kite.io',
+  'kate@\u212Aite.io',
+  'kate@k\u0131te.io',
+  'kate@K\u0130TE.io',
+  '\uFF4Bate@kite.io',
+  'kate@\uFF4Bite.io',
+];
+
+describe('look-alike emails', () => {
+  const kite = access({ emailDomains: { 'kite.io': ['viewer'] } });
+
+  it('never match an assignment', () => {
+    expect(assignmentEmail(kite, user({ email: 'Kate@KITE.io' }))).toBe('kate@kite.io');
+    for (const email of LOOK_ALIKES) {
+      expect(assignmentEmail(kite, user({ email })), email).toBeUndefined();
+    }
+  });
+
+  it('never match an email domain', () => {
+    expect(resolveRoles(kite, user({ email: 'kate@KITE.io' }))).toEqual(['viewer']);
+    for (const email of LOOK_ALIKES) {
+      expect(resolveRoles(kite, user({ email })), email).toBeUndefined();
+    }
+  });
+
+  it('are refused as admin input, like any non-ASCII address', () => {
+    for (const email of [...LOOK_ALIKES, 'jos\u00e9@example.com', 'kate@b\u00fccher.example']) {
+      expect(parseEmail(email), email).toBeUndefined();
+    }
+    expect(parseEmail('kate@xn--bcher-kva.example')).toBe('kate@xn--bcher-kva.example');
+  });
+
+  it('are still shown as the session email, which matches nothing', () => {
+    expect(sessionEmail(kite, user({ email: '\u212Aate@kite.io' }))).toBe('\u212Aate@kite.io');
+  });
+});
