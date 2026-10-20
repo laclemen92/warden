@@ -1,5 +1,6 @@
 import {
   ACCESS_AUDIT_ACTIONS,
+  type ActionDetails,
   auditDiff,
   encodeRecordId,
   projectAuditEntry,
@@ -20,6 +21,8 @@ export interface AuditContext {
   /** Correlates the entry with the server's request logs. */
   requestId?: string;
   reason?: string;
+  /** The custom action's entry this write is part of. */
+  parentId?: string;
 }
 
 /**
@@ -50,7 +53,7 @@ const json = (value: unknown) =>
  * write and its entry commit or roll back together. Rows only hold exposed fields, so hidden
  * column values never reach the log.
  */
-export function auditHook({ actor, requestId, reason }: AuditContext): WriteHook {
+export function auditHook({ actor, requestId, reason, parentId }: AuditContext): WriteHook {
   return async (trx, { action, entity, before, after, written }) => {
     // The row as it now is; on delete, as it was. An update that changes the key is filed under
     // the new id.
@@ -63,17 +66,61 @@ export function auditHook({ actor, requestId, reason }: AuditContext): WriteHook
       await sql`
         insert into ${sql.id(WARDEN_SCHEMA, 'audit_log')}
           (request_id, actor_subject, actor_email, actor_roles, action, entity, record_id,
-           primary_key, before, after, diff, reason, written)
+           primary_key, before, after, diff, reason, written, parent_id)
         values (
           ${requestId ?? null}, ${actor.subject}, ${actor.email ?? null}, ${[...actor.roles]},
           ${action}, ${entity.key}, ${encodeRecordId(entity, row)},
           ${json(primaryKey)}::jsonb, ${json(before)}::jsonb, ${json(after)}::jsonb,
           ${json(auditDiff(before, after))}::jsonb, ${reason ?? null},
-          ${written ? [...written] : null}::text[])`.execute(trx);
+          ${written ? [...written] : null}::text[], ${parentId ?? null}::bigint)`.execute(trx);
     } catch (err) {
       throw new AuditWriteError(err);
     }
   };
+}
+
+/**
+ * Insert a custom action's parent entry inside its transaction and return its id, which every
+ * row the action changes points back at. It commits or rolls back with them. It is written
+ * before the action runs (children need its id, and the log is append-only), so it records what
+ * was asked for rather than the outcome.
+ */
+export async function insertActionEntry(
+  trx: Database,
+  {
+    actor,
+    requestId,
+    reason,
+    action,
+    entity,
+    record,
+    details,
+  }: Omit<AuditContext, 'parentId'> & {
+    /** The action's name. */
+    action: string;
+    entity: Entity;
+    /** The target row, for `target: 'one'`. */
+    record?: Record<string, unknown>;
+    details: ActionDetails;
+  },
+): Promise<string> {
+  const primaryKey =
+    record && entity.primaryKey.length > 0
+      ? Object.fromEntries(entity.primaryKey.map((key) => [key, record[key] ?? null]))
+      : null;
+  try {
+    const { rows } = await sql<{ id: string }>`
+      insert into ${sql.id(WARDEN_SCHEMA, 'audit_log')}
+        (request_id, actor_subject, actor_email, actor_roles, action, entity, record_id,
+         primary_key, details, reason)
+      values (${requestId ?? null}, ${actor.subject}, ${actor.email ?? null}, ${[...actor.roles]},
+              ${action}, ${entity.key}, ${record ? encodeRecordId(entity, record) : null},
+              ${json(primaryKey)}::jsonb, ${json(details)}::jsonb, ${reason ?? null})
+      returning id::text as id`.execute(trx);
+    return rows[0]!.id;
+  } catch (err) {
+    throw new AuditWriteError(err);
+  }
 }
 
 /**
@@ -125,6 +172,8 @@ export interface AuditQuery {
   from?: string;
   /** Exclusive upper bound on `occurred_at`. */
   to?: string;
+  /** Only the rows changed by the custom action with this parent entry id. */
+  parentId?: string;
   /** Only entries older than this entry id (the previous page's last id). */
   before?: string;
   limit: number;
@@ -149,9 +198,11 @@ interface AuditRow {
   before: Record<string, unknown> | null;
   after: Record<string, unknown> | null;
   diff: AuditEntry['diff'] | null;
-  details: ExportDetails | { sessions: number; email?: string } | null;
+  details: ExportDetails | ActionDetails | { sessions: number; email?: string } | null;
   primary_key: Record<string, unknown> | null;
   written: string[] | null;
+  parent_id: string | null;
+  parent_action: string | null;
 }
 
 const accessEntry = sql<SqlBool>`(a.entity, a.action) in (${sql.join(
@@ -169,7 +220,7 @@ const revokeDetails = (row: AuditRow): RevokeSessionsDetails => ({
 /** Audit entries matching `query`, newest first. */
 export async function listAuditEntries(db: Database, query: AuditQuery): Promise<AuditPage> {
   const { visible, includeAccessEntries, entity, recordId, actor, action } = query;
-  const { from, to, before, limit } = query;
+  const { from, to, parentId, before, limit } = query;
   const fields = sql`${JSON.stringify(visible)}::jsonb`;
   const entityEntry = sql<SqlBool>`(${fields} ? a.entity and
     -- The case keeps jsonb_object_keys away from diffs that aren't objects. An update counts only
@@ -195,13 +246,16 @@ export async function listAuditEntries(db: Database, query: AuditQuery): Promise
   if (action !== undefined) conditions.push(sql<SqlBool>`a.action = ${action}`);
   if (from !== undefined) conditions.push(sql<SqlBool>`a.occurred_at >= ${from}::timestamptz`);
   if (to !== undefined) conditions.push(sql<SqlBool>`a.occurred_at < ${to}::timestamptz`);
+  if (parentId !== undefined) conditions.push(sql<SqlBool>`a.parent_id = ${parentId}::bigint`);
   if (before !== undefined) conditions.push(sql<SqlBool>`a.id < ${before}::bigint`);
 
   const { rows } = await sql<AuditRow>`
     select a.id::text as id, to_json(a.occurred_at) #>> '{}' as occurred_at, a.request_id,
            a.actor_subject, a.actor_email, a.actor_roles, a.action, a.entity, a.record_id,
-           a.reason, a.before, a.after, a.diff, a.details, a.primary_key, a.written
+           a.reason, a.before, a.after, a.diff, a.details, a.primary_key, a.written,
+           a.parent_id::text as parent_id, p.action as parent_action
     from ${sql.id(WARDEN_SCHEMA, 'audit_log')} as a
+    left join ${sql.id(WARDEN_SCHEMA, 'audit_log')} as p on p.id = a.parent_id
     where ${sql.join(conditions, sql` and `)}
     order by a.id desc
     limit ${limit + 1}`.execute(db);
@@ -220,7 +274,9 @@ export async function listAuditEntries(db: Database, query: AuditQuery): Promise
         before: row.before,
         after: row.after,
         diff: row.diff ?? {},
-        details: row.details as ExportDetails | null,
+        details: row.details as ExportDetails | ActionDetails | null,
+        parent:
+          row.parent_id !== null ? { id: row.parent_id, action: row.parent_action ?? '' } : null,
       };
       // An entity's entry, or (only when asked for) an access entry, which is shown in full.
       if (Object.hasOwn(visible, row.entity)) {

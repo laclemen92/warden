@@ -1,5 +1,5 @@
 import { loadConfig, requireAccess } from '@wardenhq/config';
-import { resolvePolicy, resolveSchema } from '@wardenhq/core';
+import { resolveActionPolicy, resolvePolicy, resolveSchema } from '@wardenhq/core';
 import {
   assignedRoles,
   canDisableAuditTriggers,
@@ -9,6 +9,7 @@ import {
   migrate,
   pendingMigrations,
 } from '@wardenhq/pg-adapter';
+import { ActionsError, loadActions } from './actions.js';
 import { buildApp, type AppOptions } from './app.js';
 import { createOidcClient } from './auth/oidc.js';
 import { createSessions } from './auth/session.js';
@@ -145,7 +146,26 @@ export async function createWarden({
     const model = await introspect(pool, { schemas: config.schemas });
     const { schema, warnings: schemaWarnings } = resolveSchema(model, config);
     const { policy, warnings: policyWarnings } = resolvePolicy(schema, config);
-    const warnings = [...schemaWarnings, ...policyWarnings];
+    // Loaded after config and the schema, so its tables can be checked, and before routes.
+    // Without a module there are no actions, and config granting some only warns.
+    const loadedActions = env.WARDEN_ACTIONS ? await loadActions(env.WARDEN_ACTIONS, cwd) : [];
+    const {
+      actionPolicy,
+      warnings: actionWarnings,
+      errors: actionErrors,
+    } = resolveActionPolicy(
+      loadedActions.map((a) => a.spec),
+      schema,
+      policy,
+      config,
+    );
+    if (actionErrors.length > 0) throw new ActionsError(env.WARDEN_ACTIONS!, actionErrors);
+    const actions = {
+      actionPolicy,
+      definitions: new Map(loadedActions.map((a) => [a.spec.name, a.definition])),
+      defaultSchema: config.schemas[0] ?? 'public',
+    };
+    const warnings = [...schemaWarnings, ...policyWarnings, ...actionWarnings];
     // The first start records the schema drift baseline.
     await ensureSchemaSnapshot(db, model);
 
@@ -161,6 +181,7 @@ export async function createWarden({
       schema,
       db,
       policy,
+      actions,
       auth,
       drift: { model, config },
       roles: {
@@ -182,7 +203,11 @@ export async function createWarden({
     app.log.info({ version }, 'starting warden');
     if (migrations.length > 0) app.log.info({ migrations }, 'applied migrations');
     app.log.info(
-      { config: configPath ?? '(defaults)', entities: schema.entities.length },
+      {
+        config: configPath ?? '(defaults)',
+        entities: schema.entities.length,
+        actions: actionPolicy.actions.size,
+      },
       'schema loaded',
     );
     if (auditTamperable) {

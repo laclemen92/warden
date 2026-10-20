@@ -28,6 +28,7 @@ interface SearchQuery extends PageQuery {
   action?: string;
   from?: string;
   to?: string;
+  parent?: string;
 }
 
 const pageProperties = {
@@ -47,6 +48,8 @@ const searchQuerySchema = {
     from: { type: 'string', format: 'date-time' },
     /** Exclusive. */
     to: { type: 'string', format: 'date-time' },
+    /** A custom action's entry: the rows it changed. */
+    parent: pageProperties.cursor,
   },
 } as const;
 
@@ -111,7 +114,7 @@ export function registerAuditRoutes(
       },
     },
     async (req, reply) => {
-      const { entity, actor, action, from, to, cursor, limit } = req.query;
+      const { entity, actor, action, from, to, parent, cursor, limit } = req.query;
       const visible = visibleTo(req);
       // Hidden and unreadable entities are rejected exactly like nonexistent ones.
       if (entity !== undefined && !Object.hasOwn(visible, entity)) {
@@ -142,6 +145,7 @@ export function registerAuditRoutes(
         ...(action !== undefined ? { action } : {}),
         ...(from !== undefined ? { from } : {}),
         ...(to !== undefined ? { to } : {}),
+        ...(parent !== undefined ? { parentId: parent } : {}),
         ...(cursor !== undefined ? { before: cursor } : {}),
       });
     },

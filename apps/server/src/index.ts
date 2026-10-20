@@ -1,5 +1,6 @@
 import { fileURLToPath } from 'node:url';
 import { ConfigError } from '@wardenhq/config';
+import { ActionsError } from './actions.js';
 import { createWarden } from './warden.js';
 
 const port = Number(process.env.PORT ?? 3000);
@@ -8,8 +9,8 @@ const webDir =
   process.env.WARDEN_WEB_DIR ?? fileURLToPath(new URL('../../web/dist', import.meta.url));
 
 const app = await createWarden({ webDir, logger: true }).catch((err: unknown) => {
-  // Config errors are already formatted for humans; anything else gets a stack trace.
-  console.error(err instanceof ConfigError ? err.message : err);
+  // Config and actions errors are already formatted for humans; anything else gets a stack trace.
+  console.error(err instanceof ConfigError || err instanceof ActionsError ? err.message : err);
   process.exit(1);
 });
 

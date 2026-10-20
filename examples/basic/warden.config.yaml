@@ -51,11 +51,20 @@ roles:
     # page searches every change made through Warden. The roles page can give anyone any role,
     # admin included. `views` lets admins share saved grid views with everyone.
     admin: [schema, audit, roles, views]
+    # Custom actions (examples/basic/actions, loaded from WARDEN_ACTIONS) this role may run.
+    actions: ['*']
   ops:
     grants:
       users: [read, update]
       companies: [read, create, update]
       orders: [update]
+    # Running an action doesn't need the table grants it writes with, but a `deny` disables it.
+    actions: [move-user, deactivate-users]
+
+# Settings that override what an action's definition says.
+actions:
+  cancel-stale-orders:
+    requireReason: true
 
 # Who may sign in, and with which roles (required). Users matching no rule are denied, so the
 # mock IdP's `outsider` (example.org, no groups) can't sign in. `allowAll: true` would let every

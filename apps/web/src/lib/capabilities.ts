@@ -4,7 +4,7 @@ import { apiFetch } from './api';
 
 // Shape served by apps/server/src/routes/capabilities.ts.
 export interface Capabilities {
-  entities: Record<string, { actions: Action[] }>;
+  entities: Record<string, { actions: Action[]; customActions?: string[] }>;
 }
 
 export function useCapabilities() {

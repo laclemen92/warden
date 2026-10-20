@@ -46,9 +46,25 @@ export interface AuditEntry {
   before: Record<string, unknown> | null;
   after: Record<string, unknown> | null;
   diff: AuditDiff;
-  /** For actions that don't change a row, what they did. */
-  details: ExportDetails | RevokeSessionsDetails | null;
+  /** For entries that don't change a row (exports, custom actions, ...), what they did. */
+  details: ExportDetails | RevokeSessionsDetails | ActionDetails | null;
+  /** The custom action this change was part of. */
+  parent: { id: string; action: string } | null;
 }
+
+/**
+ * A custom action's parent entry: what was asked for. Every row it changed has its own entry
+ * pointing back at this one.
+ */
+export interface ActionDetails {
+  /** The input as sent, with record ids for picked records and sensitive fields redacted. */
+  input: Record<string, unknown>;
+  /** Ids of the records the action ran against. */
+  records: string[];
+}
+
+export const isActionDetails = (details: AuditEntry['details']): details is ActionDetails =>
+  details !== null && 'input' in details;
 
 /**
  * Entries about access rather than a table's rows, by the entity they're filed under: role
@@ -112,9 +128,13 @@ export function projectAuditEntry(
     before: entry.before && pick(entry.before, visible),
     after: entry.after && pick(entry.after, visible),
     diff: pick(entry.diff, visible),
-    // Entities' entries only ever have export details.
-    details:
-      entry.details && 'columns' in entry.details ? projectDetails(entry.details, visible) : null,
+    // Entities' entries have export or custom action details. An action's input isn't made of
+    // the entity's fields, so there is nothing to cut down.
+    details: isActionDetails(entry.details)
+      ? entry.details
+      : entry.details && 'columns' in entry.details
+        ? projectDetails(entry.details, visible)
+        : null,
   };
 }
 

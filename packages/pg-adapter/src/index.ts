@@ -19,7 +19,12 @@ export {
 } from './rows.js';
 export {
   createRow,
+  deleteIn,
   deleteRow,
+  insertIn,
+  lockRow,
+  lockRows,
+  updateIn,
   rowVersion,
   updateRow,
   type WriteAction,
@@ -32,6 +37,7 @@ export {
 export {
   AuditWriteError,
   auditHook,
+  insertActionEntry,
   listAuditEntries,
   recordExport,
   type AuditContext,
@@ -84,3 +90,12 @@ export {
   type SavedViewChanges,
   type SavedViewResult,
 } from './saved-views.js';
+export {
+  ActionWriteError,
+  createActionTx,
+  DEFAULT_TX_LIST_LIMIT,
+  MAX_TX_LIST_LIMIT,
+  setStatementTimeout,
+  toRecordRef,
+  type ActionTxOptions,
+} from './action-tx.js';

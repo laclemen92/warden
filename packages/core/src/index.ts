@@ -29,8 +29,29 @@ export { adminAreas } from './admin.js';
 export type * from './schema-drift.js';
 export { diffSchema } from './schema-drift.js';
 export type * from './audit.js';
-export { ACCESS_AUDIT_ACTIONS, auditDiff, filterFields, projectAuditEntry } from './audit.js';
+export {
+  ACCESS_AUDIT_ACTIONS,
+  auditDiff,
+  filterFields,
+  isActionDetails,
+  projectAuditEntry,
+} from './audit.js';
 export type * from './saved-view.js';
 export { VIEW_LIMITS, validateViewState, viewName } from './saved-view.js';
 export { csvCell, csvHeader, csvRow } from './csv.js';
 export { checkTimestamp } from './values.js';
+export type * from './actions.js';
+export {
+  ACTION_TARGETS,
+  DEFAULT_MAX_AFFECTED_ROWS,
+  MAX_ACTION_RECORDS,
+  REDACTED,
+  REF_KEYWORD,
+  canRunAction,
+  canonicalJson,
+  checkActionDefinitions,
+  previewTokenPayload,
+  redactInput,
+  resolveActionPolicy,
+  runnableActions,
+} from './actions.js';

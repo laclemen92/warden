@@ -1,8 +1,10 @@
 export {
+  ACTION_NAME,
   ACTIONS,
   ADMIN_AREAS,
   WRITE_ACTIONS,
   type AccessConfig,
+  type ActionConfig,
   wardenConfigSchema,
   type Action,
   type AdminArea,

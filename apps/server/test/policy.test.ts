@@ -245,7 +245,7 @@ describe('GET /api/capabilities', () => {
     for (const [entity, byUser] of Object.entries(ALLOWED)) {
       // Entities the user may do nothing with aren't listed at all.
       expect(entities[entity]).toEqual(
-        byUser[user].length > 0 ? { actions: byUser[user] } : undefined,
+        byUser[user].length > 0 ? { actions: byUser[user], customActions: [] } : undefined,
       );
     }
     // The capabilities agree with what each route actually does.

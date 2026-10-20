@@ -17,6 +17,10 @@ export const WRITE_ACTIONS = ['create', 'update', 'delete'] as const;
  */
 export const ADMIN_AREAS = ['schema', 'audit', 'roles', 'views'] as const;
 
+/** Custom action names, as `defineAction({ name })` gives them. */
+export const ACTION_NAME = /^[a-z][a-z0-9-]*$/;
+const actionName = z.string().regex(ACTION_NAME, 'Expected an action name such as "move-user"');
+
 const roleConfigSchema = z.strictObject({
   /** Actions this role may perform, keyed by table, or `*` for every exposed table. */
   grants: z
@@ -27,6 +31,20 @@ const roleConfigSchema = z.strictObject({
     .default({}),
   /** Admin areas this role may use. They show names that config hides, so grant them narrowly. */
   admin: z.array(z.enum(ADMIN_AREAS)).default([]),
+  /**
+   * Custom actions this role may run, or `*` for all. Running one doesn't need the table grants
+   * it writes with, but a table `deny` still disables it.
+   */
+  actions: z.array(z.union([z.literal('*'), actionName])).default([]),
+});
+
+const actionConfigSchema = z.strictObject({
+  /** Nobody may run it, whatever their roles grant. */
+  disabled: z.boolean().optional(),
+  /** Running it must say why, even if the action doesn't require it. */
+  requireReason: z.boolean().optional(),
+  /** Overrides the action's own label. */
+  label: name.optional(),
 });
 
 const roleList = z.array(name).min(1);
@@ -162,6 +180,8 @@ export const wardenConfigSchema = z
       .prefault({}),
     tables: z.record(tableKey, tableConfigSchema).default({}),
     roles: z.record(name, roleConfigSchema).default({}),
+    /** Per custom action (from `WARDEN_ACTIONS`), settings that override the action's own. */
+    actions: z.record(actionName, actionConfigSchema).default({}),
     /** Who may sign in, and with which roles. The server requires it (see `requireAccess`). */
     access: accessConfigSchema.optional(),
   })
@@ -259,6 +279,7 @@ export type TableConfig = z.infer<typeof tableConfigSchema>;
 export type ColumnConfig = z.infer<typeof columnConfigSchema>;
 export type RoleConfig = z.infer<typeof roleConfigSchema>;
 export type AccessConfig = z.infer<typeof accessConfigSchema>;
+export type ActionConfig = z.infer<typeof actionConfigSchema>;
 export type Action = (typeof ACTIONS)[number];
 export type WriteAction = (typeof WRITE_ACTIONS)[number];
 export type AdminArea = (typeof ADMIN_AREAS)[number];

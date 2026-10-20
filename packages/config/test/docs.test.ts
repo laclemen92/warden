@@ -16,6 +16,7 @@ const RECORD_PLACEHOLDERS: Record<string, string> = {
   grants: '<table>',
   groups: '<group>',
   emailDomains: '<domain>',
+  actions: '<action>',
 };
 
 /** Dotted paths of every leaf key in the config schema. */

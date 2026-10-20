@@ -1,6 +1,6 @@
 # RFC 0001: `defineAction`
 
-| Status    | Draft                                                                                                                |
+| Status    | Implemented (see [Implementation notes](#implementation-notes))                                                      |
 | --------- | -------------------------------------------------------------------------------------------------------------------- |
 | Issue     | [#44](https://github.com/laclemen92/warden/issues/44), part of [#43](https://github.com/laclemen92/warden/issues/43) |
 | Implement | [#45](https://github.com/laclemen92/warden/issues/45) (blocked by this RFC and #34)                                  |
@@ -391,3 +391,12 @@ A `@wardenhq/actions/testing` helper that runs an action against a test database
 - `tx.sql` with a config opt-in, audited as one coarse entry.
 - `@wardenhq/actions/testing`.
 - Optional generated row types (`warden types > warden-types.d.ts`) for typed `values`, as an opt-in for authors, not something Warden needs at runtime.
+
+## Implementation notes
+
+Where [#45](https://github.com/laclemen92/warden/issues/45) differs from the design above:
+
+- **The parent entry stores its request in `details`, not `after`.** `after` holds row values and is cut down to the reader's visible fields like any other entry, which would drop the input. `details` is `{ input, records }`.
+- **The parent doesn't record the result.** It is inserted before `run` (children need its id), and `warden.audit_log` is append-only, so it can't be updated with the outcome. The result is in the response and the server log.
+- **Field errors from `tx` writes aren't attached to form fields.** They name the written entity's fields, which can collide with the action's input fields, so they are sent as messages naming the field (`email: is already in use`) under an `invalid <entity> ...` message, rather than with `field`.
+- **The UI shows the result in the dialog** instead of a toast (Warden has no toast component yet), with a link for `redirect`.

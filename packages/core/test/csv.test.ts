@@ -88,6 +88,7 @@ describe('export audit details', () => {
       searchFields: ['email'],
       sort: '-email',
     },
+    parent: null,
   };
 
   it('keeps everything the reader can see', () => {

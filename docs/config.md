@@ -9,12 +9,15 @@ Warden needs one decision from you before it starts: who may sign in ([`access`]
 - [`tables`](#tables)
 - [`tables.<table>.columns`](#tablestablecolumns)
 - [`roles`](#roles)
+- [`actions`](#actions)
 - [`access`](#access)
 - [Schema drift](#schema-drift)
 - [Audit log](#audit-log)
 - [Saved views](#saved-views)
 - [CSV export](#csv-export)
 - [Full example](#full-example)
+
+Custom actions (code, loaded from `WARDEN_ACTIONS`) are described in [actions.md](actions.md).
 
 ## Loading the config
 
@@ -218,6 +221,7 @@ Roles grant actions on tables. Create, update, and delete are denied unless a ro
 | ----------------------------- | ------------------------------------------------------ | ------- |
 | `roles.<role>.grants.<table>` | list of `read`, `create`, `update`, `delete`, `export` | None    |
 | `roles.<role>.admin`          | list of `schema`, `audit`, `roles`, `views`            | None    |
+| `roles.<role>.actions`        | list of [custom action](#actions) names, or `*`        | None    |
 
 Each grant key is a table (`users`, `billing.invoices`) or `*` for every exposed table. A user with several roles gets every action any of them grants. A role name that isn't defined here grants nothing.
 
@@ -258,7 +262,46 @@ Here `ops` may update users and create or update companies. Nobody may create or
 - `roles`: the [roles page](#role-assignments), where admins assign roles to people. Someone who can assign roles can give anyone, themselves included, any role config defines, so treat it like the most powerful role you have.
 - `views`: sharing [saved views](#saved-views) with everyone, and editing or deleting any shared view.
 
+**`actions`** lists the [custom actions](#actions) the role may run, or `*` for all of them.
+
 Users get roles from [`access`](#access) when they sign in, plus any [assigned in the app](#role-assignments). The API enforces every rule; the UI only hides controls a user can't use. To restrict individual columns by role, see [field-level rules](#field-level-rules).
+
+## `actions`
+
+Custom actions are multi-step operations, written in code, that run in one transaction with one audit entry linking every row they change: for example, "move this user to another company and cancel their pending orders". A deployment defines them in a JavaScript or TypeScript module and points `WARDEN_ACTIONS` at it; see [Custom actions](actions.md) for writing one. Config decides who may run them, and can override a few of their settings:
+
+| Key                              | Type    | Default                  |
+| -------------------------------- | ------- | ------------------------ |
+| `actions.<action>.disabled`      | boolean | `false`                  |
+| `actions.<action>.requireReason` | boolean | The action's own setting |
+| `actions.<action>.label`         | string  | The action's own label   |
+
+Running an action is a write, so it is denied unless a role lists it in [`roles.<role>.actions`](#roles). A user may run an action when all of these hold:
+
+1. It loaded, isn't `disabled` here, and wasn't disabled by a warning at startup (below).
+2. One of the user's roles lists it, or lists `*`.
+3. No table `deny` covers anything in its `permissions` (the writes its code declares it may make).
+4. The user may `read` the action's table, and every table its form picks records from.
+
+The user does **not** need the table grants for what the action writes. Granting an action is a deliberate, narrow escalation: `ops` may "move a user and cancel their pending orders" without being able to update arbitrary orders. A table `deny` still beats it, as it beats every grant. To everyone else an action doesn't exist: it isn't listed, and its routes give the same 404 as a nonexistent one.
+
+```yaml
+roles:
+  ops:
+    grants:
+      users: [read]
+    actions: [move-user, refund-order]
+  admin:
+    actions: ['*']
+
+actions:
+  refund-order:
+    requireReason: true # running it must say why
+  legacy-cleanup:
+    disabled: true
+```
+
+Mismatches warn rather than fail, as for tables and columns: an action whose table, written tables, or picked tables are hidden or don't exist, or whose `permissions` include a write a table `deny` forbids, is disabled with a warning; and `roles.<role>.actions` or `actions` naming an action the module doesn't define is a warning. Mistakes in the module itself (a missing file, duplicate names, unsupported input fields) fail startup with an `ActionsError`.
 
 ## `access`
 
@@ -337,6 +380,8 @@ Every create, update, and delete made through Warden is recorded in the [audit l
 
 - **History** on a record lists its changes, newest first, with who made each one, why, and the before and after values. Anyone who may read the record sees it.
 - **Audit log** in the sidebar searches every entry by actor (email or subject), entity, action, and date range. Only users with a role that has `admin: [audit]` can open it. Besides changes to tables, it lists [role assignments](#role-assignments) and removals (`assign`, `unassign`: who gave or removed which role from whom) and sign-outs everywhere (`revoke_sessions`: whose sessions, and how many). These are shown in full, and only here: they belong to no table, so no record's History includes them.
+
+A [custom action](#actions) records one entry for the run, with its name, input (sensitive fields redacted) and target records, and an entry for every row it changed that links back to it. A record's History shows those as part of the action; on the audit log page, an action's entry links to the rows it changed.
 
 Both show an entry only for entities the user may read now, and only the fields they may read now: columns since hidden by config or restricted by a [field-level rule](#field-level-rules) are left out. An update is listed only if it changed a field the user can read that the request itself set; columns the database changed on its own, such as an `updated_at` maintained by a trigger, don't count. So an update to a salary only HR can read, with its reason, doesn't appear for anyone else at all. Creates and deletes are always listed, with their reason, since anyone who can read the table can see a row appear or go. Older updates, recorded before Warden tracked which fields a request set, can't tell the two apart: they are listed if any readable field changed, but their reason is shown only to users who can read every changed field. Schema drift acknowledgements are recorded in the log but not shown. [Exports](#csv-export) are listed with what they included.
 
@@ -425,11 +470,16 @@ roles:
       users: [read, update]
       companies: [read, create, update]
       orders: [update]
+    actions: [move-user]
   dba:
     admin: [schema, audit, views]
   finance:
     grants:
       billing.invoices: [read, update]
+
+actions:
+  move-user:
+    requireReason: true
 
 access:
   groupsClaim: groups

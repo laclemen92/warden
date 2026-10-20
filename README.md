@@ -81,6 +81,8 @@ Both URLs must use https, except on `localhost`. When `WARDEN_PUBLIC_URL` is htt
 
 **Logging out ends the IdP session too** when the IdP supports [RP-initiated logout](https://openid.net/specs/openid-connect-rpinitiated-1_0.html), that is, when its discovery document has an `end_session_endpoint`. After deleting Warden's session, the browser goes to that endpoint with `id_token_hint`, `client_id`, and `post_logout_redirect_uri` set to `<WARDEN_PUBLIC_URL>/`, and the IdP sends it back there once it has signed the user out. Without this, the next person to click "Sign in" on a shared machine would be signed straight back in as the previous user. Register `<WARDEN_PUBLIC_URL>/` as a post-logout redirect URI at the IdP, or it will refuse the logout request (some IdPs then show an error page instead of returning to Warden). `POST /auth/logout` returns `200` with `{ "redirectTo": "<IdP logout URL>" }` in that case. With an IdP that has no `end_session_endpoint`, or one Warden can't reach, it returns `204` and ends only Warden's session. To keep the ID token to send as the hint, Warden stores it with the session; it is deleted with the session and never accepted as a credential.
 
+Custom actions (multi-step, transactional, audited operations written in code) are loaded from the module `WARDEN_ACTIONS` points at; see [Custom actions](docs/actions.md).
+
 Request bodies are limited to 1 MiB; larger ones get a `413`. Set `WARDEN_BODY_LIMIT` (bytes, or a size like `512kb` or `2mb`) to change it. JSON values written to `json`/`jsonb` columns may nest at most 100 levels deep.
 
 Database timeouts and CSV export limits (how many may run at once, and when a stalled download is ended) are set with the `WARDEN_DB_*` and `WARDEN_EXPORT_*` variables in [timeouts and exports](docs/database.md#timeouts-and-exports).
@@ -101,18 +103,19 @@ pnpm typecheck
 
 ## Repository layout
 
-| Path                  | Purpose                                                     |
-| --------------------- | ----------------------------------------------------------- |
-| `apps/server`         | Fastify API server; also serves the built web UI            |
-| `apps/web`            | React UI                                                    |
-| `packages/core`       | Schema model types, policy engine, filter compilation       |
-| `packages/config`     | `warden.config.yaml`/`.json` schema and loader              |
-| `packages/pg-adapter` | Postgres introspection and query execution                  |
-| `packages/mock-oidc`  | Development-only OIDC provider with test users              |
-| `examples/basic`      | Example schema, seed data, and config used by compose/tests |
-| `e2e`                 | Playwright end-to-end tests against the compose stack       |
-| `docker`              | Production Dockerfile                                       |
-| `docs`                | Configuration reference, database setup, and releasing      |
+| Path                  | Purpose                                                         |
+| --------------------- | --------------------------------------------------------------- |
+| `apps/server`         | Fastify API server; also serves the built web UI                |
+| `apps/web`            | React UI                                                        |
+| `packages/core`       | Schema model types, policy engine, filter compilation           |
+| `packages/config`     | `warden.config.yaml`/`.json` schema and loader                  |
+| `packages/pg-adapter` | Postgres introspection and query execution                      |
+| `packages/actions`    | Types and errors for writing custom actions                     |
+| `packages/mock-oidc`  | Development-only OIDC provider with test users                  |
+| `examples/basic`      | Example schema, seed, config, and actions used by compose/tests |
+| `e2e`                 | Playwright end-to-end tests against the compose stack           |
+| `docker`              | Production Dockerfile                                           |
+| `docs`                | Configuration reference, database setup, and releasing          |
 
 ## License
 
