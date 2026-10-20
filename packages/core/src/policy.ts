@@ -151,10 +151,14 @@ const holdsAny = (roles: readonly string[], allowed: Set<string> | undefined) =>
   allowed === undefined || roles.some((role) => allowed.has(role));
 
 /**
- * The schema as someone holding `roles` sees it. Fields they can't read are removed, exactly as
- * if config hid them, and fields they can't write become read-only. Everything that names a
- * removed field (search, default sort, display field, relations) is adjusted to match, so every
- * check that uses the result treats those fields as nonexistent.
+ * The schema as someone holding `roles` sees it. Entities they may do nothing with are removed,
+ * and so are fields they can't read, exactly as if config hid them; fields they can't write
+ * become read-only. Everything that names a removed entity or field (search, default sort,
+ * display field, relations) is adjusted to match, so every check that uses the result treats
+ * them as nonexistent.
+ *
+ * An entity they may write but not read (say, create-only) stays, so they can fill in its form;
+ * reading it is still denied.
  */
 export function schemaFor(
   schema: EffectiveSchema,
@@ -164,6 +168,10 @@ export function schemaFor(
   const narrowed = new Map<string, Entity>();
   let changed = false;
   for (const entity of schema.entities) {
+    if (allowedActions(policy, roles, entity.key).length === 0) {
+      changed = true;
+      continue;
+    }
     const rules = policy.fields.get(entity.key);
     if (!rules) {
       narrowed.set(entity.key, entity);
@@ -194,14 +202,13 @@ export function schemaFor(
   }
   if (!changed) return schema;
 
-  // A relation needs every key column on both sides to be visible.
+  // A relation needs its target entity, and every key column on both sides, to be visible.
   const hasFields = (key: string, columns: string[]) => {
     const entity = narrowed.get(key);
     return entity !== undefined && columns.every((c) => entity.fields.some((f) => f.name === c));
   };
   return {
-    entities: schema.entities.map((original) => {
-      const entity = narrowed.get(original.key)!;
+    entities: [...narrowed.values()].map((entity) => {
       const relations = entity.relations.filter(
         (r) => hasFields(entity.key, r.columns) && hasFields(r.entity, r.targetColumns),
       );

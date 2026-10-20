@@ -217,6 +217,8 @@ How a request is decided:
 4. `export` is denied unless the user may also `read` the table.
 5. Otherwise the action is allowed only if one of the user's roles grants it on that table or on `*`.
 
+A table the user may do nothing with is hidden from them in the same way as a `hidden` table: it isn't in their sidebar or schema, relations to it are left out, and every request for it gets the same 404 as a table that doesn't exist. A table they may write but not read (for example, a role granted only `create`) stays visible so they can fill in its form: they see its columns, and reading its rows is refused with a 403. A write's response then carries only the new or changed record's id, not its values.
+
 **`export`** lets a role download a table's grid as CSV (see [CSV export](#csv-export)). `defaults.read: all` doesn't grant it, so nobody can export until a role is granted `export`.
 
 A grant naming a table that isn't exposed has no effect and produces a warning.

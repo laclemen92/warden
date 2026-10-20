@@ -183,3 +183,66 @@ describe('field rules in resolvePolicy', () => {
     expect(policy.fields.size).toBe(0);
   });
 });
+
+describe('schemaFor and entity actions', () => {
+  function resolveWith(config: unknown) {
+    const parsed = wardenConfigSchema.parse(config);
+    const { schema } = resolveSchema(model, parsed);
+    return { schema, ...resolvePolicy(schema, parsed) };
+  }
+  const keys = (schema: EffectiveSchema) => schema.entities.map((e) => e.key);
+
+  it('removes entities the roles may not read under defaults.read: granted', () => {
+    const { schema, policy } = resolveWith({
+      defaults: { read: 'granted' },
+      roles: { support: { grants: { users: ['read'] } } },
+    });
+    const narrowed = schemaFor(schema, policy, ['support']);
+    expect(keys(narrowed)).toEqual(['users']);
+    // The relation to the removed companies table goes with it.
+    expect(entity(narrowed, 'users').relations).toEqual([]);
+    expect(entity(narrowed, 'users')).toEqual({ ...entity(schema, 'users'), relations: [] });
+  });
+
+  it('removes entities whose read is denied, even with defaults.read: all and a * grant', () => {
+    const { schema, policy } = resolveWith({
+      roles: { support: { grants: { '*': ['read'] } } },
+      tables: { users: { deny: ['read'] } },
+    });
+    for (const roles of [[], ['support']]) {
+      const narrowed = schemaFor(schema, policy, roles);
+      expect(keys(narrowed)).toEqual(['companies']);
+      expect(entity(narrowed, 'companies').relations).toEqual([]);
+    }
+  });
+
+  it('leaves users with no roles nothing under defaults.read: granted', () => {
+    const { schema, policy } = resolveWith({
+      defaults: { read: 'granted' },
+      roles: { support: { grants: { '*': ['read'] } } },
+    });
+    expect(schemaFor(schema, policy, [])).toEqual({ entities: [] });
+    expect(schemaFor(schema, policy, ['unknown'])).toEqual({ entities: [] });
+  });
+
+  it('keeps entities the roles may write but not read, with their relations', () => {
+    const { schema, policy } = resolveWith({
+      defaults: { read: 'granted' },
+      roles: { intake: { grants: { users: ['create'], companies: ['read'] } } },
+    });
+    const narrowed = schemaFor(schema, policy, ['intake']);
+    expect(keys(narrowed)).toEqual(keys(schema));
+    expect(entity(narrowed, 'users').relations).toHaveLength(1);
+  });
+
+  it('applies field rules to the entities that remain', () => {
+    const { schema, policy } = resolveWith({
+      defaults: { read: 'granted' },
+      roles: { ops: { grants: { users: ['read'] } }, admin: { grants: {} } },
+      tables: { users: { columns: { salary: { readableBy: ['admin'] } } } },
+    });
+    const narrowed = schemaFor(schema, policy, ['ops']);
+    expect(keys(narrowed)).toEqual(['users']);
+    expect(fieldNames(entity(narrowed, 'users'))).not.toContain('salary');
+  });
+});

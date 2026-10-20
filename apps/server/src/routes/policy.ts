@@ -1,5 +1,6 @@
-import { isAllowed, type Action, type EffectiveSchema, type Policy } from '@wardenhq/core';
+import { isAllowed, type Action, type Policy } from '@wardenhq/core';
 import type { FastifyInstance } from 'fastify';
+import type { Views } from '../views.js';
 
 const ENTITY_ROUTE_PREFIX = '/api/entities/';
 
@@ -17,19 +18,19 @@ const METHOD_ACTIONS: Partial<Record<string, Action>> = {
  * Apply the policy to every route under `/api/entities/:entity`, whenever it was registered. Runs
  * before validation, so a denied caller learns nothing from input errors or record lookups.
  */
-export function registerPolicy(app: FastifyInstance, schema: EffectiveSchema, policy: Policy) {
-  const entities = new Set(schema.entities.map((e) => e.key));
-
+export function registerPolicy(app: FastifyInstance, policy: Policy, views: Views) {
   app.addHook('preValidation', async (req, reply) => {
     // The matched route, not the raw URL: the router decodes `/%61pi/...` to `/api/...`.
     if (!(req.routeOptions.url ?? '').startsWith(ENTITY_ROUTE_PREFIX)) return;
     const { entity } = req.params as { entity?: unknown };
-    // Hidden entities aren't in the effective schema, so they 404 exactly like nonexistent ones.
-    if (typeof entity !== 'string' || !entities.has(entity)) {
+    // Hidden entities, and those the caller may do nothing with, aren't in their view, so they
+    // 404 exactly like nonexistent ones.
+    const roles = req.roles ?? [];
+    if (typeof entity !== 'string' || !views(roles).entities.has(entity)) {
       return reply.code(404).send({ statusCode: 404, error: 'Not Found', message: 'Not Found' });
     }
     const action = METHOD_ACTIONS[req.method];
-    if (!action || !isAllowed(policy, req.roles ?? [], entity, action)) {
+    if (!action || !isAllowed(policy, roles, entity, action)) {
       req.log.info({ entity, action: action ?? req.method }, 'denied by policy');
       return reply.code(403).send({ statusCode: 403, error: 'Forbidden', message: 'Forbidden' });
     }

@@ -246,8 +246,11 @@ describe('record history', () => {
   });
 
   it('requires read on the entity', async () => {
+    // ops may do nothing with orders, so they don't exist for it.
     const res = await get('editor', `/api/entities/orders/${order.id}/history`);
-    expect(res.status).toBe(403);
+    const missing = await get('editor', `/api/entities/nope/${order.id}/history`);
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual(missing.body);
   });
 
   it('treats hidden and nonexistent entities alike', async () => {

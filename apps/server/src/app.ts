@@ -67,13 +67,14 @@ export async function buildApp({
   app.get('/healthz', async () => ({ status: 'ok' }));
 
   if (auth) await registerAuth(app, auth);
-  // Each user gets the schema as their roles see it: fields they can't read are left out.
+  // Each user gets the schema as their roles see it: entities they may do nothing with, and
+  // fields they can't read, are left out.
   const views = schema && policy ? createViews(schema, policy) : undefined;
   if (schema) app.get('/api/schema', async (req) => (views ? views(req.roles).schema : schema));
   if (schema && db && policy && views) {
-    registerPolicy(app, schema, policy);
+    registerPolicy(app, policy, views);
     registerEntityRoutes(app, schema, db, policy, views);
-    registerCapabilityRoutes(app, schema, policy);
+    registerCapabilityRoutes(app, policy, views);
     registerAuditRoutes(app, { db, policy, views, roles: auth?.roles ?? {} });
     registerExportRoutes(app, { db, policy, views });
     registerSavedViewRoutes(app, { db, policy, views, roles: auth?.roles ?? {} });
