@@ -27,3 +27,38 @@ export function auditDiff(
   }
   return diff;
 }
+
+/** An audit log entry as the API returns it. */
+export interface AuditEntry {
+  /** Increasing; also the cursor for the next page. */
+  id: string;
+  /** ISO 8601 with offset. */
+  occurredAt: string;
+  requestId: string | null;
+  actor: { subject: string; email: string | null; roles: string[] };
+  action: string;
+  entity: string;
+  recordId: string | null;
+  reason: string | null;
+  before: Record<string, unknown> | null;
+  after: Record<string, unknown> | null;
+  diff: AuditDiff;
+}
+
+const pick = <T>(values: Record<string, T>, fields: ReadonlySet<string>): Record<string, T> =>
+  Object.fromEntries(Object.entries(values).filter(([field]) => fields.has(field)));
+
+/**
+ * An entry cut down to `fields`, the ones the caller can read on its entity now. Entries record
+ * every field exposed at the time, so fields since hidden, or restricted by role, are dropped
+ * exactly as reads drop them.
+ */
+export function projectAuditEntry(entry: AuditEntry, fields: readonly string[]): AuditEntry {
+  const visible = new Set(fields);
+  return {
+    ...entry,
+    before: entry.before && pick(entry.before, visible),
+    after: entry.after && pick(entry.after, visible),
+    diff: pick(entry.diff, visible),
+  };
+}

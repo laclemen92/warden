@@ -1,5 +1,5 @@
 import type { Entity } from '@wardenhq/core';
-import { GitCompare, Shield, Table2 } from 'lucide-react';
+import { GitCompare, History, Shield, Table2 } from 'lucide-react';
 import { useState } from 'react';
 import { Link, NavLink, useMatch } from 'react-router';
 import {
@@ -17,6 +17,7 @@ import {
   SidebarMenuSkeleton,
 } from '@/components/ui/sidebar';
 import { UserMenu } from '@/components/user-menu';
+import { AUDIT_LOG_PATH, useCanViewAuditLog } from '@/lib/audit';
 import { entityPath, useSchema } from '@/lib/schema';
 import { SCHEMA_DRIFT_PATH, useCanViewSchemaDrift } from '@/lib/schema-drift';
 
@@ -40,6 +41,8 @@ export function AppSidebar() {
   const [query, setQuery] = useState('');
   const canViewSchemaDrift = useCanViewSchemaDrift();
   const schemaDriftActive = useMatch(SCHEMA_DRIFT_PATH) !== null;
+  const canViewAuditLog = useCanViewAuditLog();
+  const auditLogActive = useMatch(AUDIT_LOG_PATH) !== null;
 
   const needle = query.trim().toLowerCase();
   const entities = (schema?.entities ?? [])
@@ -93,20 +96,36 @@ export function AppSidebar() {
             </nav>
           </SidebarGroupContent>
         </SidebarGroup>
-        {canViewSchemaDrift && (
+        {(canViewSchemaDrift || canViewAuditLog) && (
           <SidebarGroup>
             <SidebarGroupLabel>Admin</SidebarGroupLabel>
             <SidebarGroupContent>
               <nav aria-label="Admin">
                 <SidebarMenu>
-                  <SidebarMenuItem>
-                    <SidebarMenuButton isActive={schemaDriftActive} tooltip="Schema drift" asChild>
-                      <NavLink to={SCHEMA_DRIFT_PATH}>
-                        <GitCompare />
-                        <span>Schema drift</span>
-                      </NavLink>
-                    </SidebarMenuButton>
-                  </SidebarMenuItem>
+                  {canViewAuditLog && (
+                    <SidebarMenuItem>
+                      <SidebarMenuButton isActive={auditLogActive} tooltip="Audit log" asChild>
+                        <NavLink to={AUDIT_LOG_PATH}>
+                          <History />
+                          <span>Audit log</span>
+                        </NavLink>
+                      </SidebarMenuButton>
+                    </SidebarMenuItem>
+                  )}
+                  {canViewSchemaDrift && (
+                    <SidebarMenuItem>
+                      <SidebarMenuButton
+                        isActive={schemaDriftActive}
+                        tooltip="Schema drift"
+                        asChild
+                      >
+                        <NavLink to={SCHEMA_DRIFT_PATH}>
+                          <GitCompare />
+                          <span>Schema drift</span>
+                        </NavLink>
+                      </SidebarMenuButton>
+                    </SidebarMenuItem>
+                  )}
                 </SidebarMenu>
               </nav>
             </SidebarGroupContent>

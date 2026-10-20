@@ -1,0 +1,384 @@
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import type { AuditEntry } from '@wardenhq/core';
+import type { MockOidc } from '@wardenhq/mock-oidc';
+import { readExampleSql, startPostgres, type TestDatabase } from '@wardenhq/testing';
+import pg from 'pg';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { createWarden } from '../src/warden.js';
+import { authEnv, login, startTestIdp } from './helpers/auth.js';
+
+// Reading is granted per table, so `ops` can't read orders. Only admins see full names, and
+// password hashes are hidden from everyone.
+const CONFIG = `
+defaults: { read: granted }
+tables:
+  users:
+    columns:
+      password_hash: { hidden: true }
+      full_name: { readableBy: [admin] }
+roles:
+  viewer: { grants: { '*': [read] } }
+  ops:
+    grants: { users: [read, update], companies: [read, create, update] }
+    admin: [audit]
+  admin:
+    grants: { '*': [read, create, update, delete] }
+    admin: [audit]
+access:
+  groups:
+    warden-viewers: [viewer]
+    warden-editors: [ops]
+    warden-admins: [admin]
+`;
+
+type User = 'viewer' | 'editor' | 'admin';
+interface Item {
+  id: string;
+  version: string;
+  values: Record<string, unknown>;
+}
+interface AuditPage {
+  items: AuditEntry[];
+  nextCursor: string | null;
+}
+
+let db: TestDatabase;
+let sqlPool: pg.Pool;
+let idp: MockOidc;
+let app: Awaited<ReturnType<typeof createWarden>>;
+const cookies = {} as Record<User, string>;
+
+const send = async (user: User, method: string, url: string, payload?: object) => {
+  const res = await app.inject({
+    method: method as 'GET',
+    url,
+    headers: { cookie: cookies[user] },
+    ...(payload ? { payload } : {}),
+  });
+  return { status: res.statusCode, body: res.body ? res.json() : undefined, raw: res.body };
+};
+const get = (user: User, url: string) => send(user, 'GET', url);
+
+const history = async (user: User, entity: string, id: string, query = '') => {
+  const res = await get(user, `/api/entities/${entity}/${id}/history${query}`);
+  expect(res.status, res.raw).toBe(200);
+  return res.body as AuditPage;
+};
+const search = async (user: User, query: Record<string, string> = {}) => {
+  const res = await get(user, `/api/audit?${new URLSearchParams(query)}`);
+  expect(res.status, res.raw).toBe(200);
+  return res.body as AuditPage;
+};
+const ids = (page: AuditPage) => page.items.map((e) => e.id);
+
+/** Entry ids matching a hand-written condition, newest first. */
+const expectedIds = async (where: string, params: unknown[] = []) =>
+  (
+    await sqlPool.query<{ id: string }>(
+      `select a.id::text from warden.audit_log a where ${where} order by a.id desc`,
+      params,
+    )
+  ).rows.map((r) => r.id);
+
+let company: Item;
+let user: Item;
+let order: Item;
+
+beforeAll(async () => {
+  db = await startPostgres({
+    sql: [await readExampleSql('basic/schema.sql'), await readExampleSql('basic/seed.sql')],
+  });
+  sqlPool = new pg.Pool({ connectionString: db.connectionString });
+  idp = await startTestIdp();
+  const dir = mkdtempSync(join(tmpdir(), 'warden-audit-read-'));
+  const config = join(dir, 'warden.config.yaml');
+  writeFileSync(config, CONFIG);
+  app = await createWarden({
+    env: { DATABASE_URL: db.connectionString, WARDEN_CONFIG: config, ...authEnv(idp) },
+  });
+  for (const u of ['viewer', 'editor', 'admin'] as const) cookies[u] = await login(app, u);
+
+  // A company created by the admin, then renamed by the editor.
+  let res = await send('admin', 'POST', '/api/entities/companies', {
+    values: { name: 'Audited Co' },
+    reason: 'onboarding',
+  });
+  expect(res.status, res.raw).toBe(201);
+  company = res.body as Item;
+  res = await send('editor', 'PATCH', `/api/entities/companies/${company.id}`, {
+    version: company.version,
+    values: { name: 'Renamed Co' },
+    reason: 'typo',
+  });
+  expect(res.status, res.raw).toBe(200);
+
+  // A user changed three times: full name only (admin-only field), full name and active flag,
+  // then active flag only.
+  user = (await get('admin', '/api/entities/users/1')).body as Item;
+  for (const values of [
+    { full_name: 'Secret Name' },
+    { full_name: 'Another Secret', is_active: false },
+    { is_active: true },
+  ]) {
+    res = await send('admin', 'PATCH', `/api/entities/users/${user.id}`, {
+      version: user.version,
+      values,
+    });
+    expect(res.status, res.raw).toBe(200);
+    user = res.body as Item;
+  }
+
+  // An order, which the editor can't read.
+  res = await send('admin', 'POST', '/api/entities/orders', {
+    values: { company_id: company.values.id, total: '10.00' },
+  });
+  expect(res.status, res.raw).toBe(201);
+  order = res.body as Item;
+
+  // Entries Warden wouldn't write today: a column since hidden, and a table not exposed.
+  await sqlPool.query(
+    `insert into warden.audit_log (actor_subject, action, entity, record_id, before, after, diff)
+     values ('legacy', 'update', 'users', $1, $2, $3, $4),
+            ('legacy', 'update', 'users', $1, $5, $6, $7),
+            ('legacy', 'update', 'secrets', '1', null, null, '{"token": {"from": "a", "to": "b"}}')`,
+    [
+      user.id,
+      { id: user.values.id, password_hash: 'old', is_active: true },
+      { id: user.values.id, password_hash: 'new', is_active: false },
+      { password_hash: { from: 'old', to: 'new' }, is_active: { from: true, to: false } },
+      { id: user.values.id, password_hash: 'newer' },
+      { id: user.values.id, password_hash: 'newest' },
+      { password_hash: { from: 'newer', to: 'newest' } },
+    ],
+  );
+  // And a schema drift acknowledgement, whose diff names hidden tables.
+  await sqlPool.query(
+    `insert into warden.audit_log (actor_subject, action, entity, record_id, diff)
+     values ('admin', 'acknowledge', 'warden.schema_snapshots', '2', '{"addedTables": ["secrets"]}')`,
+  );
+}, 120_000);
+
+afterAll(async () => {
+  await app?.close();
+  await idp?.close();
+  await sqlPool?.end();
+  await db?.stop();
+});
+
+describe('record history', () => {
+  it('lists a record’s entries newest first, with actor, reason, and diff', async () => {
+    const page = await history('viewer', 'companies', company.id);
+    expect(page.nextCursor).toBeNull();
+    expect(page.items).toHaveLength(2);
+    const [update, create] = page.items;
+    expect(update).toMatchObject({
+      action: 'update',
+      entity: 'companies',
+      recordId: company.id,
+      reason: 'typo',
+      actor: { subject: 'editor', email: 'editor@example.com', roles: ['ops'] },
+      diff: { name: { from: 'Audited Co', to: 'Renamed Co' } },
+      before: { name: 'Audited Co' },
+      after: { name: 'Renamed Co' },
+    });
+    expect(Object.keys(update!.diff)).toEqual(['name']);
+    expect(update!.requestId).toEqual(expect.any(String));
+    expect(new Date(update!.occurredAt).getTime()).not.toBeNaN();
+    expect(create).toMatchObject({ action: 'create', reason: 'onboarding', before: null });
+    expect(Number(update!.id)).toBeGreaterThan(Number(create!.id));
+    expect(ids(page)).toEqual(
+      await expectedIds(`entity = 'companies' and record_id = $1`, [company.id]),
+    );
+  });
+
+  it('pages with a cursor', async () => {
+    const first = await history('viewer', 'companies', company.id, '?limit=1');
+    expect(first.items).toHaveLength(1);
+    expect(first.nextCursor).toBe(first.items[0]!.id);
+    const second = await history(
+      'viewer',
+      'companies',
+      company.id,
+      `?limit=1&cursor=${first.nextCursor}`,
+    );
+    expect(second.items.map((e) => e.action)).toEqual(['create']);
+    expect(second.nextCursor).toBeNull();
+  });
+
+  it('shows only fields the caller can read, and skips changes to nothing else', async () => {
+    const admin = await history('admin', 'users', user.id);
+    const viewer = await history('viewer', 'users', user.id);
+    // The admin sees the full-name-only update; the viewer doesn't, nor the legacy entry that
+    // only changed the hidden password hash.
+    expect(admin.items.map((e) => Object.keys(e.diff).sort())).toEqual([
+      ['is_active'],
+      ['is_active'],
+      ['full_name', 'is_active'],
+      ['full_name'],
+    ]);
+    expect(viewer.items.map((e) => Object.keys(e.diff).sort())).toEqual([
+      ['is_active'],
+      ['is_active'],
+      ['is_active'],
+    ]);
+    for (const entry of [...admin.items, ...viewer.items]) {
+      expect(JSON.stringify(entry)).not.toContain('password_hash');
+    }
+    for (const entry of viewer.items) {
+      expect(JSON.stringify(entry)).not.toMatch(/full_name|Secret/);
+    }
+    expect(viewer.items[2]).toMatchObject({
+      before: { is_active: true },
+      after: { is_active: false },
+    });
+  });
+
+  it('is still available after the record is deleted', async () => {
+    const created = await send('admin', 'POST', '/api/entities/companies', {
+      values: { name: 'Doomed' },
+    });
+    const { id } = created.body as Item;
+    expect((await send('admin', 'DELETE', `/api/entities/companies/${id}`)).status).toBe(204);
+    const page = await history('viewer', 'companies', id);
+    expect(page.items.map((e) => e.action)).toEqual(['delete', 'create']);
+  });
+
+  it('requires read on the entity', async () => {
+    const res = await get('editor', `/api/entities/orders/${order.id}/history`);
+    expect(res.status).toBe(403);
+  });
+
+  it('treats hidden and nonexistent entities alike', async () => {
+    const hidden = await get('admin', '/api/entities/secrets/1/history');
+    const missing = await get('admin', '/api/entities/nope/1/history');
+    expect(hidden.status).toBe(404);
+    expect(hidden.body).toEqual(missing.body);
+  });
+
+  it('rejects malformed ids and cursors', async () => {
+    expect((await get('viewer', '/api/entities/companies/not-an-id/history')).status).toBe(404);
+    for (const cursor of ['abc', '0', '-1', '1 or 1=1', '9'.repeat(19)]) {
+      const res = await get(
+        'viewer',
+        `/api/entities/companies/${company.id}/history?cursor=${encodeURIComponent(cursor)}`,
+      );
+      expect(res.status, cursor).toBe(400);
+    }
+  });
+
+  it('requires a session', async () => {
+    const res = await app.inject({ url: `/api/entities/companies/${company.id}/history` });
+    expect(res.statusCode).toBe(401);
+  });
+});
+
+describe('audit search', () => {
+  it('is a nonexistent route to users without the audit area', async () => {
+    const missing = await get('viewer', '/api/nope');
+    const normalize = (body: string) => body.replaceAll(/\/api\/[\w?=&-]+/g, '<url>');
+    for (const url of ['/api/audit', '/api/audit?limit=nope', '/api/audit?entity=secrets']) {
+      const res = await get('viewer', url);
+      expect(res.status, url).toBe(404);
+      expect(normalize(res.raw)).toBe(normalize(missing.raw));
+    }
+  });
+
+  it('lists entries for readable entities, newest first', async () => {
+    const page = await search('admin');
+    // Less the legacy entry that only changed the hidden password hash.
+    expect(ids(page)).toEqual(
+      await expectedIds(
+        `entity in ('companies', 'users', 'orders')
+         and (diff = '{}' or diff - 'password_hash' <> '{}')`,
+      ),
+    );
+    expect(page.items.filter((e) => e.actor.subject === 'legacy')).toHaveLength(1);
+  });
+
+  it('never shows schema acknowledgements or unexposed tables', async () => {
+    const page = await search('admin', { limit: '200' });
+    expect(page.items.map((e) => e.entity)).not.toContain('warden.schema_snapshots');
+    expect(page.items.map((e) => e.entity)).not.toContain('secrets');
+    expect(JSON.stringify(page)).not.toContain('password_hash');
+  });
+
+  it('narrows to what the caller can read', async () => {
+    const page = await search('editor');
+    const entities = new Set(page.items.map((e) => e.entity));
+    expect([...entities].sort()).toEqual(['companies', 'users']);
+    expect(JSON.stringify(page)).not.toMatch(/full_name|Secret/);
+  });
+
+  it('filters by actor, entity, action, and date range', async () => {
+    expect(ids(await search('admin', { actor: 'EDITOR@' }))).toEqual(
+      await expectedIds(`actor_email ilike '%editor@%'`),
+    );
+    expect(ids(await search('admin', { actor: 'legacy' }))).toHaveLength(1);
+    expect(ids(await search('admin', { entity: 'orders' }))).toEqual(
+      await expectedIds(`entity = 'orders'`),
+    );
+    expect(ids(await search('admin', { action: 'create', entity: 'companies' }))).toEqual(
+      await expectedIds(`entity = 'companies' and action = 'create'`),
+    );
+
+    const { rows } = await sqlPool.query<{ id: string; at: string }>(
+      `select id::text, to_json(occurred_at) #>> '{}' as at from warden.audit_log
+       where entity = 'companies' order by id limit 2`,
+    );
+    const [first, second] = rows;
+    const from = new Date(first!.at).toISOString();
+    expect(ids(await search('admin', { from, to: from }))).toEqual([]);
+    const until = await search('admin', { entity: 'companies', to: second!.at });
+    expect(ids(until)).toEqual(
+      await expectedIds(`entity = 'companies' and occurred_at < $1`, [second!.at]),
+    );
+    const since = await search('admin', { entity: 'companies', from: second!.at });
+    expect(ids(since)).toEqual(
+      await expectedIds(`entity = 'companies' and occurred_at >= $1`, [second!.at]),
+    );
+  });
+
+  it('pages with a cursor', async () => {
+    const all = ids(await search('admin', { limit: '200' }));
+    const seen: string[] = [];
+    let cursor: string | null = null;
+    do {
+      const page: AuditPage = await search('admin', { limit: '3', ...(cursor ? { cursor } : {}) });
+      seen.push(...ids(page));
+      cursor = page.nextCursor;
+    } while (cursor);
+    expect(seen).toEqual(all);
+  });
+
+  it('treats actor input as data', async () => {
+    for (const actor of ["%' or 1=1 --", '%', '_', '\\']) {
+      expect(ids(await search('admin', { actor })), actor).toEqual([]);
+    }
+  });
+
+  it('rejects hidden, unreadable, and nonexistent entities alike', async () => {
+    const missing = await get('editor', '/api/audit?entity=nope');
+    expect(missing.status).toBe(400);
+    for (const entity of ['secrets', 'orders', '__proto__', 'constructor']) {
+      const res = await get('editor', `/api/audit?entity=${entity}`);
+      expect(res.status, entity).toBe(400);
+      expect(res.body).toEqual(missing.body);
+    }
+  });
+
+  it('rejects malformed dates, cursors, and limits', async () => {
+    for (const query of [
+      'from=yesterday',
+      'to=2026-01-01',
+      "from=2026-01-01T00:00:00Z' or 1=1",
+      'cursor=abc',
+      `cursor=${'9'.repeat(19)}`,
+      'limit=0',
+      'limit=201',
+    ]) {
+      expect((await get('admin', `/api/audit?${query}`)).status, query).toBe(400);
+    }
+  });
+});

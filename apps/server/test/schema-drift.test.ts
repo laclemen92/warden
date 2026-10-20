@@ -80,7 +80,7 @@ describe('schema drift', () => {
   it('tells the UI which users may open it', async () => {
     const me = async (cookie: string) =>
       (await app.inject({ method: 'GET', url: '/api/me', headers: { cookie } })).json();
-    expect(await me(admin)).toMatchObject({ admin: ['schema'] });
+    expect(await me(admin)).toMatchObject({ admin: ['schema', 'audit'] });
     expect(await me(viewer)).toMatchObject({ admin: [] });
   });
 

@@ -8,8 +8,11 @@ const tableKey = z.string().regex(/^[^.]+(\.[^.]+)?$/, 'Expected "table" or "sch
 export const ACTIONS = ['read', 'create', 'update', 'delete'] as const;
 const actions = z.array(z.enum(ACTIONS));
 
-/** Warden administration areas a role can be given. `schema`: the schema drift page. */
-export const ADMIN_AREAS = ['schema'] as const;
+/**
+ * Warden administration areas a role can be given. `schema`: the schema drift page. `audit`: the
+ * audit log page.
+ */
+export const ADMIN_AREAS = ['schema', 'audit'] as const;
 
 const roleConfigSchema = z.strictObject({
   /** Actions this role may perform, keyed by table, or `*` for every exposed table. */
