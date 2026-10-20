@@ -1,5 +1,15 @@
+import type { Filter } from '@wardenhq/core';
 import { describe, expect, it } from 'vitest';
-import { listUrl, maxPage, parseSort, readGridState, writeGridState } from '../src/lib/grid-state';
+import {
+  listUrl,
+  maxPage,
+  parseSort,
+  readGridState,
+  showsView,
+  viewParams,
+  viewStateOf,
+  writeGridState,
+} from '../src/lib/grid-state';
 import { orders } from './fixtures';
 
 const read = (search: string) => readGridState(new URLSearchParams(search), orders);
@@ -29,6 +39,13 @@ describe('readGridState', () => {
 
   it.each(['page=0', 'page=-1', 'page=abc', 'page=1.5'])('ignores a bad page (%s)', (search) => {
     expect(read(search).page).toBe(1);
+  });
+
+  it('reads visible columns in entity order, ignoring unknown ones', () => {
+    expect(read('columns=total,id,nope').columns).toEqual(['id', 'total']);
+    // Every column, or none that exist, means the default: all of them.
+    expect(read('columns=nope').columns).toBeUndefined();
+    expect(read(`columns=${orders.fields.map((f) => f.name).join(',')}`).columns).toBeUndefined();
   });
 
   it('only allows the offered page sizes', () => {
@@ -67,6 +84,42 @@ describe('writeGridState', () => {
 
   it('drops defaults and cleared values', () => {
     expect(write('filter=x&q=a&pageSize=25', { filter: null, q: '  ', pageSize: 50 })).toBe('');
+  });
+
+  it('keeps the page when only columns change', () => {
+    expect(write('page=3', { columns: ['id', 'total'] })).toBe('page=3&columns=id%2Ctotal');
+    expect(write('page=3&columns=id', { columns: null })).toBe('page=3');
+  });
+});
+
+describe('saved view state', () => {
+  const filter: Filter = { field: 'status', op: 'eq', value: 'paid' };
+  const params = (search: string) => new URLSearchParams(search);
+
+  it('converts between a view and grid params', () => {
+    const state = { filter, q: 'gift', sort: '-total', columns: ['id', 'total'] };
+    const search = viewParams(state);
+    expect(Object.fromEntries(search)).toEqual({
+      sort: '-total',
+      filter: JSON.stringify(filter),
+      q: 'gift',
+      columns: 'id,total',
+    });
+    expect(viewStateOf(search, orders)).toEqual(state);
+    expect(viewStateOf(params('page=2&pageSize=25'), orders)).toEqual({});
+    // An unparseable filter can't be saved; the grid shows the server's error for it.
+    expect(viewStateOf(params('filter=%7Bnope'), orders)).toEqual({});
+  });
+
+  it('matches a view regardless of page, filter key order, and column order', () => {
+    const state = { filter, sort: '-total', columns: ['total', 'id'] };
+    const search = `sort=-total&columns=id,total&page=3&pageSize=25&filter=${encodeURIComponent(
+      '{"value":"paid","op":"eq","field":"status"}',
+    )}`;
+    expect(showsView(params(search), orders, state)).toBe(true);
+    expect(showsView(params(search + '&q=x'), orders, state)).toBe(false);
+    expect(showsView(params('sort=-total'), orders, state)).toBe(false);
+    expect(showsView(params(''), orders, {})).toBe(true);
   });
 });
 

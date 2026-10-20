@@ -11,6 +11,7 @@ Warden works with no config at all: it introspects the database and exposes ever
 - [`roles`](#roles)
 - [`access`](#access)
 - [Schema drift](#schema-drift)
+- [Saved views](#saved-views)
 - [Full example](#full-example)
 
 ## Loading the config
@@ -232,6 +233,7 @@ Here `ops` may update users and create or update companies. Nobody may create or
 - `schema`: the [schema drift](#schema-drift) page. It names every table and column in the database, including ones config hides, so give it only to people who may see the whole schema.
 - `audit`: the [audit log](#audit-log) page, which searches every change made through Warden.
 - `roles`: the [roles page](#role-assignments), where admins assign roles to people. Someone who can assign roles can give anyone, themselves included, any role config defines, so treat it like the most powerful role you have.
+- `views`: sharing [saved views](#saved-views) with everyone, and editing or deleting any shared view.
 
 Users get roles from [`access`](#access) when they sign in, plus any [assigned in the app](#role-assignments). The API enforces every rule; the UI only hides controls a user can't use. To restrict individual columns by role, see [field-level rules](#field-level-rules).
 
@@ -303,6 +305,16 @@ Every create, update, and delete made through Warden is recorded in the [audit l
 
 Both show an entry only for entities the user may read now, and only the fields they may read now: columns since hidden by config or restricted by a [field-level rule](#field-level-rules) are left out, and an update that changed only such fields isn't listed. Schema drift acknowledgements are recorded in the log but not shown.
 
+## Saved views
+
+Everyone who can read a table can save its grid's filters, search, sort, and visible columns as a named view, from **Views** above the grid. A view is private to whoever saved it unless they share it. Sharing needs a role with `admin: [views]`; a shared view appears for everyone who can read the table, and anyone with `admin: [views]` may edit or delete it.
+
+Each view has a link, `/entities/<table>?view=<id>`, that opens the grid with the view applied. It always applies the view's current state, so editing a shared view updates everyone's link. The grid's own URL already carries its state, so copying the address bar shares the grid as it is, without saving a view.
+
+Views follow the same rules as everything else. A view can only use columns its author can see. A shared view that uses a column someone can't see (because of [`readableBy`](#field-level-rules), or because the column was hidden or dropped since) doesn't appear for them at all. Its owner, and anyone who may delete it, see it marked as out of date so they can fix or delete it.
+
+Views are stored in [`warden.saved_views`](database.md#saved-views).
+
 ## Full example
 
 ```yaml
@@ -348,7 +360,7 @@ roles:
       companies: [read, create, update]
       orders: [update]
   dba:
-    admin: [schema, audit]
+    admin: [schema, audit, views]
   finance:
     grants:
       billing.invoices: [read, update]

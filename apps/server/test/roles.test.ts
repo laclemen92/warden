@@ -75,7 +75,7 @@ describe('roles page API', () => {
         {
           name: 'admin',
           grants: { '*': ['read', 'create', 'update', 'delete'] },
-          admin: ['schema', 'audit', 'roles'],
+          admin: ['schema', 'audit', 'roles', 'views'],
         },
         {
           name: 'ops',
@@ -97,7 +97,7 @@ describe('roles page API', () => {
       },
       assignments: [],
     });
-    expect(await me(admin)).toMatchObject({ admin: ['schema', 'audit', 'roles'] });
+    expect(await me(admin)).toMatchObject({ admin: ['schema', 'audit', 'roles', 'views'] });
   });
 
   it('adds an assigned role to existing sessions right away, and removes it again', async () => {

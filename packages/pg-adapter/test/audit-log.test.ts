@@ -176,4 +176,13 @@ describe('documented runtime grants', () => {
       await appHandle.close();
     }
   });
+
+  it('lets the runtime role manage saved views', async () => {
+    const { rows } = await app.query<{ id: string }>(
+      `insert into warden.saved_views (entity, name, owner_subject, state)
+       values ('users', 'Mine', 'a', '{}') returning id`,
+    );
+    await app.query(`update warden.saved_views set shared = true where id = $1`, [rows[0]!.id]);
+    await app.query(`delete from warden.saved_views where id = $1`, [rows[0]!.id]);
+  });
 });
