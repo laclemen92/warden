@@ -19,6 +19,13 @@ const SORTABLE: ReadonlySet<FieldCategory> = new Set([
 /** Whether rows can be ordered by this field. */
 export const isSortable = (f: Field): boolean => SORTABLE.has(fieldCategory(f));
 
+/** The field names in a sort string like `-created_at,email`, without checking them. */
+export const parseSortFields = (input: string): string[] =>
+  input
+    .split(',')
+    .map((p) => p.trim().replace(/^[-+]/, ''))
+    .filter(Boolean);
+
 export type SortResolution = { ok: true; sort: SortTerm[] } | { ok: false; message: string };
 
 /**

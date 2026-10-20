@@ -1,3 +1,6 @@
+import type { Filter } from './filter.js';
+import { parseSortFields } from './sort.js';
+
 /** One field's change in an audit entry. A missing side (create, delete) is null. */
 export interface FieldChange {
   from: unknown;
@@ -43,6 +46,22 @@ export interface AuditEntry {
   before: Record<string, unknown> | null;
   after: Record<string, unknown> | null;
   diff: AuditDiff;
+  /** For actions that don't change a row, what they did. */
+  details: ExportDetails | null;
+}
+
+/** What an export included, recorded as the entry's details. */
+export interface ExportDetails {
+  rowCount: number;
+  columns: string[];
+  filter?: Filter;
+  q?: string;
+  sort?: string;
+  /**
+   * Set when the filter or sort named a field the caller can't read now, so it was left out.
+   * The entry still shows that the export happened.
+   */
+  redacted?: true;
 }
 
 const pick = <T>(values: Record<string, T>, fields: ReadonlySet<string>): Record<string, T> =>
@@ -60,5 +79,31 @@ export function projectAuditEntry(entry: AuditEntry, fields: readonly string[]):
     before: entry.before && pick(entry.before, visible),
     after: entry.after && pick(entry.after, visible),
     diff: pick(entry.diff, visible),
+    details: entry.details && projectDetails(entry.details, visible),
   };
+}
+
+/**
+ * Export details cut down to `visible` fields. A filter or sort can't be cut down without
+ * changing its meaning, so one that names any other field is left out entirely.
+ */
+function projectDetails(details: ExportDetails, visible: ReadonlySet<string>): ExportDetails {
+  const { filter, sort, columns, ...rest } = details;
+  const filterOk = filter === undefined || filterFields(filter).every((f) => visible.has(f));
+  const sortOk = sort === undefined || parseSortFields(sort).every((f) => visible.has(f));
+  return {
+    ...rest,
+    columns: columns.filter((c) => visible.has(c)),
+    ...(filter !== undefined && filterOk ? { filter } : {}),
+    ...(sort !== undefined && sortOk ? { sort } : {}),
+    ...(!filterOk || !sortOk ? { redacted: true as const } : {}),
+  };
+}
+
+/** Every field a filter names. */
+function filterFields(filter: Filter): string[] {
+  if ('and' in filter) return filter.and.flatMap(filterFields);
+  if ('or' in filter) return filter.or.flatMap(filterFields);
+  if ('not' in filter) return filterFields(filter.not);
+  return [filter.field];
 }

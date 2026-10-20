@@ -6,7 +6,16 @@ export {
 } from './database.js';
 export { compileFilter, escapeLike } from './filter.js';
 export { introspect, WARDEN_SCHEMA, type IntrospectOptions } from './introspect.js';
-export { getRow, listRows, type ListOptions, type ListResult, type Row } from './rows.js';
+export {
+  getRow,
+  listRows,
+  openExport,
+  type ExportOptions,
+  type ListOptions,
+  type ListResult,
+  type Row,
+  type RowExport,
+} from './rows.js';
 export {
   createRow,
   deleteRow,
@@ -23,6 +32,7 @@ export {
   AuditWriteError,
   auditHook,
   listAuditEntries,
+  recordExport,
   type AuditContext,
   type AuditPage,
   type AuditQuery,

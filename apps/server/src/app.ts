@@ -9,6 +9,7 @@ import { registerAuditRoutes } from './routes/audit.js';
 import { registerAuth, type AuthOptions } from './routes/auth.js';
 import { registerCapabilityRoutes } from './routes/capabilities.js';
 import { registerEntityRoutes } from './routes/entities.js';
+import { registerExportRoutes } from './routes/export.js';
 import { registerPolicy } from './routes/policy.js';
 import { registerRoleRoutes, type RoleRoutesOptions } from './routes/roles.js';
 import { registerSavedViewRoutes } from './routes/saved-views.js';
@@ -74,6 +75,7 @@ export async function buildApp({
     registerEntityRoutes(app, schema, db, policy, views);
     registerCapabilityRoutes(app, schema, policy);
     registerAuditRoutes(app, { db, policy, views, roles: auth?.roles ?? {} });
+    registerExportRoutes(app, { db, policy, views });
     registerSavedViewRoutes(app, { db, policy, views, roles: auth?.roles ?? {} });
   }
   if (drift && db) registerSchemaDriftRoutes(app, { ...drift, db });

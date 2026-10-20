@@ -41,18 +41,9 @@ export async function listRows(
   if (after) conditions.push(keysetAfter(sort, after));
   const where = conditions.length > 0 ? sql`where ${sql.join(conditions, sql` and `)}` : sql``;
 
-  const orderBy = sort.length
-    ? sql`order by ${sql.join(
-        sort.map(
-          (t) =>
-            sql`${column(t.field)} ${sql.raw(t.direction === 'desc' ? 'desc' : 'asc')} nulls last`,
-        ),
-      )}`
-    : sql``;
-
   // Fetch one extra row to learn whether another page exists without a count.
   const { rows } = await sql<Row>`
-    select ${selection(entity)} from ${from(entity)} ${where} ${orderBy}
+    select ${selection(entity)} from ${from(entity)} ${where} ${orderBy(sort)}
     limit ${limit + 1} offset ${offset}`.execute(db);
 
   const result: ListResult = { rows: rows.slice(0, limit), hasMore: rows.length > limit };
@@ -64,6 +55,87 @@ export async function listRows(
     result.total = Number(countRows[0]?.total ?? 0);
   }
   return result;
+}
+
+const orderBy = (sort: SortTerm[]) =>
+  sort.length
+    ? sql`order by ${sql.join(
+        sort.map(
+          (t) =>
+            sql`${column(t.field)} ${sql.raw(t.direction === 'desc' ? 'desc' : 'asc')} nulls last`,
+        ),
+      )}`
+    : sql``;
+
+export interface ExportOptions {
+  /** Must already be validated against the entity. */
+  filter?: Filter;
+  /** Must already be resolved against the entity (see `resolveSort`). */
+  sort: SortTerm[];
+  /** Rows fetched per round trip. */
+  batchSize?: number;
+}
+
+/** Every matching row of an export, from one snapshot of the database. */
+export interface RowExport {
+  /** How many rows `batches` will yield. */
+  total: number;
+  /** The rows in order, a batch at a time. Ends the export when done or abandoned. */
+  batches(): AsyncGenerator<Row[]>;
+  /** End the export without reading it. Safe to call more than once. */
+  close(): Promise<void>;
+}
+
+const EXPORT_CURSOR = sql.id('warden_export');
+
+/**
+ * Open an export: a read-only, repeatable-read transaction with a cursor over the matching rows,
+ * so the count and the rows agree and memory use doesn't grow with the table. It holds a
+ * connection until it is read to the end or closed.
+ */
+export async function openExport(
+  db: Database,
+  entity: Entity,
+  { filter, sort, batchSize = 1000 }: ExportOptions,
+): Promise<RowExport> {
+  const trx = await db
+    .startTransaction()
+    .setIsolationLevel('repeatable read')
+    .setAccessMode('read only')
+    .execute();
+  let open = true;
+  const close = async () => {
+    if (!open) return;
+    open = false;
+    await trx.rollback().execute();
+  };
+  try {
+    const where = filter ? sql`where ${compileFilter(filter, ALIAS)}` : sql``;
+    const { rows } = await sql<{ total: string }>`
+      select count(*) as total from ${from(entity)} ${where}`.execute(trx);
+    await sql`
+      declare ${EXPORT_CURSOR} no scroll cursor for
+      select ${selection(entity)} from ${from(entity)} ${where} ${orderBy(sort)}`.execute(trx);
+    return {
+      total: Number(rows[0]?.total ?? 0),
+      close,
+      async *batches() {
+        try {
+          while (open) {
+            const { rows: batch } = await sql<Row>`
+              fetch forward ${sql.lit(batchSize)} from ${EXPORT_CURSOR}`.execute(trx);
+            if (batch.length === 0) break;
+            yield batch;
+          }
+        } finally {
+          await close();
+        }
+      },
+    };
+  } catch (err) {
+    await close();
+    throw err;
+  }
 }
 
 /** Fetch a single row matching a primary-key filter (from `decodeRecordId`). */

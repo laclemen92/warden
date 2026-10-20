@@ -1,15 +1,68 @@
-import type { Entity } from '@wardenhq/core';
+import { parseSortFields, type Entity, type ExportDetails } from '@wardenhq/core';
 import { Link } from 'react-router';
 import { FieldValue } from '@/components/field-value';
 import { Badge } from '@/components/ui/badge';
 import type { AuditEntry } from '@/lib/audit';
+import { describeCondition, filterToConditions } from '@/lib/filters';
 import { recordPath } from '@/lib/records';
 
 const ACTION_VARIANTS: Record<string, 'default' | 'secondary' | 'destructive' | 'outline'> = {
   create: 'default',
   update: 'secondary',
   delete: 'destructive',
+  export: 'outline',
 };
+
+const numberFormat = new Intl.NumberFormat();
+
+/** What an export included. Details naming fields the reader can't see are already removed. */
+function ExportSummary({
+  details,
+  entity,
+}: {
+  details: ExportDetails;
+  entity: Entity | undefined;
+}) {
+  const label = (name: string) => entity?.fields.find((f) => f.name === name)?.label ?? name;
+  const conditions =
+    details.filter && entity ? filterToConditions(JSON.stringify(details.filter)) : undefined;
+  const filter = details.filter
+    ? conditions
+      ? conditions.map((c) => describeCondition(entity!, c)).join(', ')
+      : 'Custom filter'
+    : undefined;
+  const sort = details.sort
+    ?.split(',')
+    .map((part) => {
+      const name = parseSortFields(part)[0] ?? part;
+      return `${label(name)}${part.trim().startsWith('-') ? ' (descending)' : ''}`;
+    })
+    .join(', ');
+  const rows: [string, string][] = [
+    ['Rows', numberFormat.format(details.rowCount)],
+    ['Columns', details.columns.map(label).join(', ') || '—'],
+    ...(filter ? [['Filter', filter] as [string, string]] : []),
+    ...(details.q ? [['Search', details.q] as [string, string]] : []),
+    ...(sort ? [['Sort', sort] as [string, string]] : []),
+  ];
+  return (
+    <div className="space-y-2 text-sm">
+      <dl className="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1">
+        {rows.map(([term, value]) => (
+          <div key={term} className="contents">
+            <dt className="text-muted-foreground">{term}</dt>
+            <dd>{value}</dd>
+          </div>
+        ))}
+      </dl>
+      {details.redacted && (
+        <p className="text-muted-foreground">
+          The filter or sort used columns you can't see, so it isn't shown.
+        </p>
+      )}
+    </div>
+  );
+}
 
 const formatTime = (iso: string) => {
   const date = new Date(iso);
@@ -75,7 +128,9 @@ export function AuditEntryItem({
           {entry.reason}
         </p>
       )}
-      {ordered.length > 0 ? (
+      {entry.details ? (
+        <ExportSummary details={entry.details} entity={entity} />
+      ) : ordered.length > 0 ? (
         <div className="overflow-x-auto rounded-md border">
           <table className="w-full text-sm">
             <thead className="bg-muted/50 text-left">

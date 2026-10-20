@@ -13,7 +13,7 @@ export {
 } from './filter.js';
 export { checkFieldValue } from './filter.js';
 export type * from './sort.js';
-export { MAX_SORT_TERMS, isSortable, resolveSort } from './sort.js';
+export { MAX_SORT_TERMS, isSortable, parseSortFields, resolveSort } from './sort.js';
 export type * from './record-id.js';
 export { decodeRecordId, encodeRecordId } from './record-id.js';
 export type * from './cursor.js';
@@ -32,3 +32,4 @@ export type * from './audit.js';
 export { auditDiff, projectAuditEntry } from './audit.js';
 export type * from './saved-view.js';
 export { VIEW_LIMITS, validateViewState, viewName } from './saved-view.js';
+export { csvCell, csvHeader, csvRow } from './csv.js';

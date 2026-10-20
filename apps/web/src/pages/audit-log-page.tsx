@@ -19,7 +19,7 @@ import { NotFoundPage } from '@/pages/not-found-page';
 
 // Radix selects can't have an empty value, so "any" stands for no filter.
 const ANY = '*';
-const ACTIONS = ['create', 'update', 'delete'];
+const ACTIONS = ['create', 'update', 'delete', 'export'];
 
 export function AuditLogPage() {
   const [params, setParams] = useSearchParams();

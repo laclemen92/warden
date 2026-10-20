@@ -74,7 +74,7 @@ describe('roles page API', () => {
         { name: 'viewer', grants: { '*': ['read'] }, admin: [] },
         {
           name: 'admin',
-          grants: { '*': ['read', 'create', 'update', 'delete'] },
+          grants: { '*': ['read', 'create', 'update', 'delete', 'export'] },
           admin: ['schema', 'audit', 'roles', 'views'],
         },
         {

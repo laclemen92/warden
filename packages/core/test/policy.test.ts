@@ -175,6 +175,32 @@ describe('policy deny', () => {
   });
 });
 
+describe('export', () => {
+  it('needs its own grant, even when reading is allowed by default', () => {
+    const policy = policyFor({ roles: { analyst: { grants: { users: ['export'] } } } });
+    expect(isAllowed(policy, [], 'users', 'export')).toBe(false);
+    expect(allowedActions(policy, ['analyst'], 'users')).toEqual(['read', 'export']);
+    expect(allowedActions(policy, ['analyst'], 'companies')).toEqual(['read']);
+  });
+
+  it('also needs read', () => {
+    const granted = policyFor({
+      defaults: { read: 'granted' },
+      roles: { exporter: { grants: { '*': ['export'] } }, reader: { grants: { users: ['read'] } } },
+    });
+    expect(isAllowed(granted, ['exporter'], 'users', 'export')).toBe(false);
+    expect(isAllowed(granted, ['exporter', 'reader'], 'users', 'export')).toBe(true);
+
+    const denied = policyFor({
+      roles: { admin: { grants: { '*': ['read', 'export'] } } },
+      tables: { users: { deny: ['read'] }, orders: { deny: ['export'] } },
+    });
+    expect(isAllowed(denied, ['admin'], 'users', 'export')).toBe(false);
+    expect(isAllowed(denied, ['admin'], 'orders', 'export')).toBe(false);
+    expect(isAllowed(denied, ['admin'], 'companies', 'export')).toBe(true);
+  });
+});
+
 describe('policy for entities that are not exposed', () => {
   it('denies every action on hidden or nonexistent entities, whatever is granted', () => {
     const policy = policyFor({

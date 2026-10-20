@@ -125,6 +125,8 @@ export function isAllowed(
   if (!policy.entities.has(entity)) return false;
   if (policy.denied.get(entity)?.has(action)) return false;
   if (action === 'read' && policy.readByDefault) return true;
+  // Exporting is reading in bulk, so it needs read too.
+  if (action === 'export' && !isAllowed(policy, roles, entity, 'read')) return false;
   return roles.some((role) => {
     const grants = policy.roles.get(role);
     return (
