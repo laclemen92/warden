@@ -30,6 +30,7 @@ import {
   type WriteOptions,
 } from '@wardenhq/pg-adapter';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import type { Views } from '../views.js';
 
 export const DEFAULT_LIMIT = 50;
 export const MAX_LIMIT = 500;
@@ -113,10 +114,14 @@ const conflict = (reply: FastifyReply) =>
     message: 'the record has changed since it was read',
   });
 
-/** Rows with a primary key carry the version an update must quote. */
+/**
+ * A row as `entity` shows it: only its fields, so a row read or written in full is cut down to
+ * what the caller may see. Rows with a primary key carry the version an update must quote.
+ */
 const toItem = (entity: Entity, row: Row) => {
   const id = encodeRecordId(entity, row);
-  return { id, ...(id !== null ? { version: rowVersion(entity, row) } : {}), values: row };
+  const values = Object.fromEntries(entity.fields.map((f) => [f.name, row[f.name] ?? null]));
+  return { id, ...(id !== null ? { version: rowVersion(entity, row) } : {}), values };
 };
 
 export function registerEntityRoutes(
@@ -124,9 +129,21 @@ export function registerEntityRoutes(
   schema: EffectiveSchema,
   db: Database,
   policy: Policy,
+  views: Views,
 ) {
   // Hidden entities aren't in the effective schema, so they 404 exactly like nonexistent ones.
   const entities = new Map(schema.entities.map((e) => [e.key, e]));
+
+  /**
+   * The entity in full, for writing (audit entries record every exposed field), and as the
+   * caller sees it, for everything they send or get back: fields they can't read don't exist in
+   * the view, and fields they can't write are read-only.
+   */
+  const lookup = (req: FastifyRequest, key: string) => {
+    const entity = entities.get(key);
+    const view = views(req.roles).entities.get(key);
+    return entity && view ? { entity, view } : undefined;
+  };
 
   // A write's response shows the row only to callers who could read it anyway.
   const written = (req: FastifyRequest, entity: Entity, row: Row) =>
@@ -173,7 +190,8 @@ export function registerEntityRoutes(
     '/api/entities/:entity',
     { schema: { querystring: listQuerySchema } },
     async (req, reply) => {
-      const entity = entities.get(req.params.entity);
+      // Reads only ever touch the caller's view, so unreadable fields are never selected.
+      const entity = lookup(req, req.params.entity)?.view;
       if (!entity) return notFound(reply);
       const { q, limit, offset, cursor, count } = req.query;
 
@@ -235,7 +253,7 @@ export function registerEntityRoutes(
   app.get<{ Params: { entity: string; id: string } }>(
     '/api/entities/:entity/:id',
     async (req, reply) => {
-      const entity = entities.get(req.params.entity);
+      const entity = lookup(req, req.params.entity)?.view;
       if (!entity) return notFound(reply);
       const decoded = decodeRecordId(entity, req.params.id);
       if (!decoded.ok) return notFound(reply);
@@ -248,17 +266,18 @@ export function registerEntityRoutes(
     '/api/entities/:entity',
     { schema: { body: createBodySchema } },
     async (req, reply) => {
-      const entity = entities.get(req.params.entity);
-      if (!entity) return notFound(reply);
-      const record = validateRecord(entity, req.body.values, 'create');
+      const found = lookup(req, req.params.entity);
+      if (!found) return notFound(reply);
+      const { entity, view } = found;
+      const record = validateRecord(view, req.body.values, 'create');
       if (!record.ok) return badRequest(reply, 'invalid record', record.errors);
       let row;
       try {
         row = await createRow(db, entity, record.values, audited(req, req.body));
       } catch (err) {
-        return writeFailed(reply, entity, 'create', err);
+        return writeFailed(reply, view, 'create', err);
       }
-      return reply.code(201).send(written(req, entity, row));
+      return reply.code(201).send(written(req, view, row));
     },
   );
 
@@ -266,24 +285,26 @@ export function registerEntityRoutes(
     '/api/entities/:entity/:id',
     { schema: { body: updateBodySchema } },
     async (req, reply) => {
-      const entity = entities.get(req.params.entity);
-      if (!entity) return notFound(reply);
-      const decoded = decodeRecordId(entity, req.params.id);
+      const found = lookup(req, req.params.entity);
+      if (!found) return notFound(reply);
+      const { entity, view } = found;
+      const decoded = decodeRecordId(view, req.params.id);
       if (!decoded.ok) return notFound(reply);
-      const record = validateRecord(entity, req.body.values, 'update');
+      const record = validateRecord(view, req.body.values, 'update');
       if (!record.ok) return badRequest(reply, 'invalid record', record.errors);
       if (Object.keys(record.values).length === 0) return badRequest(reply, 'no fields to update');
       let result;
       try {
         result = await updateRow(db, entity, decoded.filter, record.values, {
           version: req.body.version,
+          versionEntity: view,
           ...audited(req, req.body),
         });
       } catch (err) {
-        return writeFailed(reply, entity, 'update', err);
+        return writeFailed(reply, view, 'update', err);
       }
       if (!result.ok) return result.reason === 'conflict' ? conflict(reply) : notFound(reply);
-      return written(req, entity, result.row);
+      return written(req, view, result.row);
     },
   );
 
@@ -291,19 +312,20 @@ export function registerEntityRoutes(
     '/api/entities/:entity/:id',
     { schema: { body: deleteBodySchema } },
     async (req, reply) => {
-      const entity = entities.get(req.params.entity);
-      if (!entity) return notFound(reply);
-      const decoded = decodeRecordId(entity, req.params.id);
+      const found = lookup(req, req.params.entity);
+      if (!found) return notFound(reply);
+      const { entity, view } = found;
+      const decoded = decodeRecordId(view, req.params.id);
       if (!decoded.ok) return notFound(reply);
       const version = req.body?.version;
       let result;
       try {
         result = await deleteRow(db, entity, decoded.filter, {
-          ...(version !== undefined ? { version } : {}),
+          ...(version !== undefined ? { version, versionEntity: view } : {}),
           ...audited(req, req.body),
         });
       } catch (err) {
-        return writeFailed(reply, entity, 'delete', err);
+        return writeFailed(reply, view, 'delete', err);
       }
       if (!result.ok) return result.reason === 'conflict' ? conflict(reply) : notFound(reply);
       return reply.code(204).send();

@@ -26,6 +26,16 @@ export interface WriteOptions {
   onWrite?: WriteHook;
 }
 
+export interface VersionCheck {
+  /** The version the client last read. */
+  version: string;
+  /**
+   * The entity the client read the version through, when it saw fewer fields than are written
+   * (field-level read rules). Changes to fields it can't see then aren't conflicts.
+   */
+  versionEntity?: Entity;
+}
+
 export type WriteResult = { ok: true; row: Row } | { ok: false; reason: 'notFound' | 'conflict' };
 
 const ALIAS = 't';
@@ -102,14 +112,14 @@ export async function updateRow(
   entity: Entity,
   filter: Filter,
   values: Record<string, unknown>,
-  { version, onWrite }: WriteOptions & { version: string },
+  { version, versionEntity = entity, onWrite }: WriteOptions & VersionCheck,
 ): Promise<WriteResult> {
   const set = assignments(entity, values);
   if (set.length === 0) throw new Error('nothing to update');
   return db.transaction().execute(async (trx): Promise<WriteResult> => {
     const before = await lockRow(trx, entity, filter);
     if (!before) return { ok: false, reason: 'notFound' };
-    if (rowVersion(entity, before) !== version) return { ok: false, reason: 'conflict' };
+    if (rowVersion(versionEntity, before) !== version) return { ok: false, reason: 'conflict' };
     const { rows } = await sql<Row>`
       update ${table(entity)}
       set ${sql.join(set.map((s) => sql`${sql.id(s.f.name)} = ${s.value}`))}
@@ -128,12 +138,12 @@ export async function deleteRow(
   db: Database,
   entity: Entity,
   filter: Filter,
-  { version, onWrite }: WriteOptions & { version?: string } = {},
+  { version, versionEntity = entity, onWrite }: WriteOptions & Partial<VersionCheck> = {},
 ): Promise<WriteResult> {
   return db.transaction().execute(async (trx): Promise<WriteResult> => {
     const before = await lockRow(trx, entity, filter);
     if (!before) return { ok: false, reason: 'notFound' };
-    if (version !== undefined && rowVersion(entity, before) !== version) {
+    if (version !== undefined && rowVersion(versionEntity, before) !== version) {
       return { ok: false, reason: 'conflict' };
     }
     await sql`delete from ${table(entity)} where ${compileFilter(filter, ALIAS)}`.execute(trx);

@@ -22,6 +22,10 @@ tables:
     columns:
       password_hash: { hidden: true }
       created_at: { readOnly: true, label: Joined }
+      # Field-level rules: everyone sees role but only admins change it, and viewers don't see
+      # when someone last logged in.
+      role: { writableBy: [admin] }
+      last_login_at: { readableBy: [admin, ops] }
 
   orders:
     defaultSort: { column: placed_at, direction: desc }

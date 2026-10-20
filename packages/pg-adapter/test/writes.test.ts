@@ -203,6 +203,36 @@ describe('updateRow', () => {
     expect(result.ok).toBe(true);
   });
 
+  it('checks the version through the entity the client read', async () => {
+    // A view without `price`, as field-level read rules produce.
+    const view = { ...things, fields: things.fields.filter((f) => f.name !== 'price') };
+    const created = await createRow(handle.db, things, valid(things, { name: 'v1' }, 'create'));
+    const filter = byId(things, String(created.id));
+    const version = rowVersion(view, created);
+    await sql`update things set price = 9 where id = ${created.id}`.execute(handle.db);
+    // A change the client can't see isn't a conflict...
+    const result = await updateRow(
+      handle.db,
+      things,
+      filter,
+      { name: 'v2' },
+      {
+        version,
+        versionEntity: view,
+      },
+    );
+    expect(result.ok).toBe(true);
+    // ...but one it can see is, and the full row is still returned for the audit log.
+    expect(result.ok && result.row.price).toBe('9.00');
+    expect(
+      await updateRow(handle.db, things, filter, { name: 'v3' }, { version, versionEntity: view }),
+    ).toEqual({ ok: false, reason: 'conflict' });
+    expect(await deleteRow(handle.db, things, filter, { version, versionEntity: view })).toEqual({
+      ok: false,
+      reason: 'conflict',
+    });
+  });
+
   it('reports a missing row', async () => {
     expect(
       await updateRow(handle.db, things, byId(things, '999999'), { name: 'x' }, { version: 'v' }),

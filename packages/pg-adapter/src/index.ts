@@ -16,6 +16,7 @@ export {
   type WriteChange,
   type WriteHook,
   type WriteOptions,
+  type VersionCheck,
   type WriteResult,
 } from './writes.js';
 export { AuditWriteError, auditHook, type AuditContext } from './audit.js';

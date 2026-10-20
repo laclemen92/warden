@@ -1,7 +1,7 @@
 // The schema entry point, not the package root: the root pulls in the Node-only file loader,
 // and core also runs in the browser.
 import { ACTIONS, type Action, type WardenConfig } from '@wardenhq/config/schema';
-import type { EffectiveSchema, SchemaWarning } from './effective-schema.js';
+import type { EffectiveSchema, Entity, SchemaWarning } from './effective-schema.js';
 
 export type { Action };
 
@@ -13,6 +13,14 @@ export interface Policy {
   roles: Map<string, RoleGrants>;
   /** Per entity, actions nobody may perform. */
   denied: Map<string, Set<Action>>;
+  /** Per entity and field, the roles that may read or write it, where config restricts them. */
+  fields: Map<string, Map<string, FieldRule>>;
+}
+
+/** Roles a field is restricted to. A missing side means no restriction beyond the entity's. */
+export interface FieldRule {
+  readableBy?: Set<string>;
+  writableBy?: Set<string>;
 }
 
 interface RoleGrants {
@@ -62,12 +70,43 @@ export function resolvePolicy(schema: EffectiveSchema, config: WardenConfig): Re
     if (key) addAll(denied, key, table.deny);
   }
 
+  const entities = new Map(schema.entities.map((e) => [e.key, e]));
+  const fields = new Map<string, Map<string, FieldRule>>();
+  for (const [tableKey, table] of Object.entries(config.tables)) {
+    if (table.hidden) continue;
+    const qualified = tableKey.includes('.') ? tableKey : `${defaultSchema}.${tableKey}`;
+    const entity = entities.get(entityKeys.get(qualified) ?? '');
+    // Missing tables and columns are already warned about by resolveSchema.
+    if (!entity) continue;
+    for (const [column, { readableBy, writableBy }] of Object.entries(table.columns)) {
+      if (!readableBy && !writableBy) continue;
+      if (!entity.fields.some((f) => f.name === column)) continue;
+      const rule: FieldRule = {};
+      if (readableBy) {
+        // Record ids are built from the primary key, so it can't be hidden from anyone.
+        if (entity.primaryKey.includes(column)) {
+          warnings.push({
+            path: `tables.${tableKey}.columns.${column}.readableBy`,
+            message: 'primary key columns are readable by everyone who can read the table',
+          });
+        } else {
+          rule.readableBy = new Set(readableBy);
+        }
+      }
+      if (writableBy) rule.writableBy = new Set(writableBy);
+      const byField = fields.get(entity.key) ?? new Map<string, FieldRule>();
+      byField.set(column, rule);
+      fields.set(entity.key, byField);
+    }
+  }
+
   return {
     policy: {
       entities: new Set(entityKeys.values()),
       readByDefault: config.defaults.read === 'all',
       roles,
       denied,
+      fields,
     },
     warnings,
   };
@@ -104,4 +143,67 @@ function addAll(map: Map<string, Set<Action>>, key: string, actions: readonly Ac
   const set = map.get(key) ?? new Set<Action>();
   actions.forEach((a) => set.add(a));
   map.set(key, set);
+}
+
+const holdsAny = (roles: readonly string[], allowed: Set<string> | undefined) =>
+  allowed === undefined || roles.some((role) => allowed.has(role));
+
+/**
+ * The schema as someone holding `roles` sees it. Fields they can't read are removed, exactly as
+ * if config hid them, and fields they can't write become read-only. Everything that names a
+ * removed field (search, default sort, display field, relations) is adjusted to match, so every
+ * check that uses the result treats those fields as nonexistent.
+ */
+export function schemaFor(
+  schema: EffectiveSchema,
+  policy: Policy,
+  roles: readonly string[],
+): EffectiveSchema {
+  const narrowed = new Map<string, Entity>();
+  let changed = false;
+  for (const entity of schema.entities) {
+    const rules = policy.fields.get(entity.key);
+    if (!rules) {
+      narrowed.set(entity.key, entity);
+      continue;
+    }
+    const readable = (field: string) => holdsAny(roles, rules.get(field)?.readableBy);
+    const writable = (field: string) => holdsAny(roles, rules.get(field)?.writableBy);
+    const fields = entity.fields
+      .filter((f) => readable(f.name))
+      .map((f) => (f.readOnly || writable(f.name) ? f : { ...f, readOnly: true }));
+    const visible = new Set(fields.map((f) => f.name));
+    if (fields.length === entity.fields.length && fields.every((f, i) => f === entity.fields[i])) {
+      narrowed.set(entity.key, entity);
+      continue;
+    }
+    changed = true;
+    const { defaultSort, ...rest } = entity;
+    narrowed.set(entity.key, {
+      ...rest,
+      fields,
+      // Primary key columns are always readable.
+      displayField: visible.has(entity.displayField)
+        ? entity.displayField
+        : (entity.primaryKey[0] ?? fields[0]?.name ?? ''),
+      searchable: entity.searchable.filter((f) => visible.has(f)),
+      ...(defaultSort && visible.has(defaultSort.column) ? { defaultSort } : {}),
+    });
+  }
+  if (!changed) return schema;
+
+  // A relation needs every key column on both sides to be visible.
+  const hasFields = (key: string, columns: string[]) => {
+    const entity = narrowed.get(key);
+    return entity !== undefined && columns.every((c) => entity.fields.some((f) => f.name === c));
+  };
+  return {
+    entities: schema.entities.map((original) => {
+      const entity = narrowed.get(original.key)!;
+      const relations = entity.relations.filter(
+        (r) => hasFields(entity.key, r.columns) && hasFields(r.entity, r.targetColumns),
+      );
+      return relations.length === entity.relations.length ? entity : { ...entity, relations };
+    }),
+  };
 }

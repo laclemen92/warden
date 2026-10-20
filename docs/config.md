@@ -145,11 +145,13 @@ tables:
 
 Each key is a column name in that table.
 
-| Key                                        | Type    | Default                                                  |
-| ------------------------------------------ | ------- | -------------------------------------------------------- |
-| `tables.<table>.columns.<column>.hidden`   | boolean | Per `defaults.newColumns` if no entry, otherwise `false` |
-| `tables.<table>.columns.<column>.readOnly` | boolean | Per `defaults.newColumns` if no entry, otherwise `false` |
-| `tables.<table>.columns.<column>.label`    | string  | Humanized name (`created_at` → `Created at`)             |
+| Key                                          | Type               | Default                                                  |
+| -------------------------------------------- | ------------------ | -------------------------------------------------------- |
+| `tables.<table>.columns.<column>.hidden`     | boolean            | Per `defaults.newColumns` if no entry, otherwise `false` |
+| `tables.<table>.columns.<column>.readOnly`   | boolean            | Per `defaults.newColumns` if no entry, otherwise `false` |
+| `tables.<table>.columns.<column>.label`      | string             | Humanized name (`created_at` → `Created at`)             |
+| `tables.<table>.columns.<column>.readableBy` | list of role names | Everyone who can read the table                          |
+| `tables.<table>.columns.<column>.writableBy` | list of role names | Everyone who can write the table                         |
 
 **`hidden`** removes the column completely. It's never selected from the database, never returned by the API, never sent to the UI, and never accepted as input. Filtering or sorting on it fails exactly as for a column that doesn't exist. Foreign keys through a hidden column don't produce relations. Primary key columns can't be hidden, because rows are addressed by them: Warden warns and keeps them visible.
 
@@ -164,6 +166,30 @@ tables:
       password_hash: { hidden: true }
       created_at: { readOnly: true, label: Joined }
 ```
+
+### Field-level rules
+
+**`readableBy`** limits who can see the column. To a user holding none of the listed roles, the column is hidden in the same way as `hidden`: it isn't selected, returned, shown, or accepted as input, filtering or sorting on it fails exactly as for a column that doesn't exist, it's left out of search, and foreign keys through it don't produce relations. If it is the table's `displayField` or `defaultSort` column, that user gets the primary key and the default order instead. Primary key columns are always readable: Warden warns and ignores `readableBy` on them.
+
+**`writableBy`** limits who can change the column. Everyone else who can read it sees it as read-only, and writes to it are rejected with `is read-only`.
+
+Both apply on top of the table's actions, not instead of them: `writableBy` doesn't let a role update a table it has no `update` grant for. A user with several roles may read or write the column if any of them is listed. Every role in `writableBy` must also be in `readableBy` when both are set, `hidden` columns can't have `readableBy`, and `readOnly` columns can't have `writableBy`.
+
+```yaml
+roles:
+  admin: { grants: { '*': [read, create, update, delete] } }
+  hr: { grants: { users: [read, update] } }
+  support: { grants: { users: [read, update] } }
+tables:
+  users:
+    columns:
+      role: { writableBy: [admin] } # everyone sees it, only admin changes it
+      salary: { readableBy: [hr, admin], writableBy: [hr] }
+```
+
+Here `support` can update users but sees `role` as read-only and doesn't see `salary` at all. `admin` sees `salary` but can't change it.
+
+Version tokens are computed from the fields each user can see, so a change to a field someone can't see doesn't make their edit a conflict. Audit entries always record every exposed field.
 
 ## `roles`
 
@@ -205,9 +231,7 @@ Here `ops` may update users and create or update companies. Nobody may create or
 
 - `schema`: the [schema drift](#schema-drift) page. It names every table and column in the database, including ones config hides, so give it only to people who may see the whole schema.
 
-Users get roles from [`access`](#access) when they sign in.
-
-> **Status:** enforcement on the API is tracked in [#29](https://github.com/laclemen92/warden/issues/29). Until it lands, roles are assigned (and shown at `/api/me`) but not enforced.
+Users get roles from [`access`](#access) when they sign in. The API enforces every rule; the UI only hides controls a user can't use. To restrict individual columns by role, see [field-level rules](#field-level-rules).
 
 ## `access`
 
@@ -276,6 +300,7 @@ tables:
     columns:
       password_hash: { hidden: true }
       created_at: { readOnly: true, label: Joined }
+      role: { writableBy: [ops] }
 
   orders:
     defaultSort: { column: placed_at, direction: desc }
@@ -286,6 +311,7 @@ tables:
   billing.invoices:
     columns:
       stripe_customer_id: { hidden: true }
+      notes: { readableBy: [finance] }
 
   schema_migrations:
     hidden: true
