@@ -307,20 +307,26 @@ describe('humanize', () => {
   });
 });
 
-describe('primary keys on update', () => {
+describe('primary keys', () => {
   const keyed: SchemaModel = {
     enums: [],
     tables: [
       table(
         'memberships',
         [
-          col('org', { hasDefault: true }),
+          col('org'),
           col('member'),
           col('since', { dataType: 'date', formattedType: 'date', nullable: true }),
         ],
         { primaryKey: ['org', 'member'] },
       ),
       table('events', [id, col('name')]),
+      table('serials', [col('id', { dataType: 'int4', hasDefault: true }), col('name')]),
+      table('by_default', [col('id', { identity: 'byDefault', hasDefault: true })]),
+      table('uuids', [col('id', { dataType: 'uuid', hasDefault: true })]),
+      table('tenant_docs', [col('tenant'), col('id', { hasDefault: true })], {
+        primaryKey: ['tenant', 'id'],
+      }),
     ],
   };
   const resolveKeyed = (config: unknown, key: string) => {
@@ -366,5 +372,47 @@ describe('primary keys on update', () => {
       'memberships',
     );
     expect(locked.fields.find((f) => f.name === 'org')?.readOnly).toBe(true);
+  });
+
+  it('makes key columns with a default read-only, on create too', () => {
+    for (const key of ['serials', 'by_default', 'uuids']) {
+      const entity = resolveKeyed({}, key);
+      expect(entity.fields[0]).toMatchObject({ name: 'id', readOnly: true });
+      expect(entity.fields[0]).not.toHaveProperty('createOnly');
+      expect(entityFor(entity, 'create').fields[0]?.readOnly).toBe(true);
+    }
+    // Only the column with the default; the rest of a composite key stays settable on create.
+    expect(
+      resolveKeyed({}, 'tenant_docs').fields.map((f) => [f.name, f.readOnly, f.createOnly]),
+    ).toEqual([
+      ['tenant', false, true],
+      ['id', true, undefined],
+    ]);
+    // updatablePrimaryKey alone doesn't make them writable.
+    expect(
+      resolveKeyed({ tables: { serials: { updatablePrimaryKey: true } } }, 'serials').fields[0]
+        ?.readOnly,
+    ).toBe(true);
+  });
+
+  it('lets creates set key columns with a default only when the table opts in', () => {
+    const serials = resolveKeyed(
+      { tables: { serials: { insertablePrimaryKey: true } } },
+      'serials',
+    );
+    expect(serials.fields[0]).toMatchObject({ readOnly: false, createOnly: true });
+    expect(entityFor(serials, 'update').fields[0]?.readOnly).toBe(true);
+
+    const both = resolveKeyed(
+      { tables: { serials: { insertablePrimaryKey: true, updatablePrimaryKey: true } } },
+      'serials',
+    );
+    expect(both.fields[0]?.readOnly).toBe(false);
+    expect(both.fields[0]).not.toHaveProperty('createOnly');
+    // Identity GENERATED ALWAYS stays read-only.
+    expect(
+      resolveKeyed({ tables: { events: { insertablePrimaryKey: true } } }, 'events').fields[0]
+        ?.readOnly,
+    ).toBe(true);
   });
 });
