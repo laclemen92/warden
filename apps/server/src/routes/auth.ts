@@ -19,7 +19,7 @@ export interface AuthOptions {
   sessionSecret: string;
   sessions: Sessions;
   oidc: OidcClient;
-  /** Config `access` rules; without them every IdP user signs in with no roles. */
+  /** Config `access` rules; without them nobody can sign in. */
   access?: AccessConfig;
   /** Config `roles`: which admin areas each grants, and which assigned roles still exist. */
   roles?: WardenConfig['roles'];

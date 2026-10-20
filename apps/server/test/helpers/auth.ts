@@ -1,3 +1,6 @@
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { startMockOidc, type MockOidc } from '@wardenhq/mock-oidc';
 import type { FastifyInstance, LightMyRequestResponse } from 'fastify';
 import { expect } from 'vitest';
@@ -31,6 +34,16 @@ export function authEnv(idp: MockOidc, overrides: Record<string, string> = {}) {
     ...overrides,
   };
 }
+
+/** Write a config file to a fresh temp directory and return its path. */
+export function writeConfig(source: string): string {
+  const file = join(mkdtempSync(join(tmpdir(), 'warden-test-')), 'warden.config.yaml');
+  writeFileSync(file, source);
+  return file;
+}
+
+/** Defaults, plus the opt-in that lets every IdP user in (Warden refuses to start without `access`). */
+export const ALLOW_ALL_CONFIG = 'access: { allowAll: true }\n';
 
 /** `name=value` pairs from Set-Cookie headers, for sending back in a Cookie header. */
 export function cookiesFrom(header: string | string[] | undefined): Map<string, string> {

@@ -1,6 +1,6 @@
 # Configuration reference
 
-Warden works with no config at all: it introspects the database and exposes every table and column, readable by everyone who can sign in and writable by nobody. A config file only narrows and customizes that. It hides tables and columns, locks fields read-only, adjusts labels and defaults, and grants write actions to roles.
+Warden needs one decision from you before it starts: who may sign in ([`access`](#access)). Beyond that it introspects the database and exposes every table and column, readable by everyone who can sign in and writable by nobody. The rest of the config only narrows and customizes that. It hides tables and columns, locks fields read-only, adjusts labels and defaults, and grants write actions to roles.
 
 - [Loading the config](#loading-the-config)
 - [Errors and warnings](#errors-and-warnings)
@@ -22,7 +22,7 @@ Warden reads one file at startup, YAML or JSON. It uses the first of:
 
 1. The path in the `WARDEN_CONFIG` environment variable, relative to the working directory. This file must exist.
 2. `warden.config.yaml`, `warden.config.yml`, or `warden.config.json` in the working directory, checked in that order.
-3. No file: the built-in defaults.
+3. No file: the built-in defaults. Warden still won't start, because [`access`](#access) is required.
 
 In Docker, mount the file and point `WARDEN_CONFIG` at it:
 
@@ -33,7 +33,7 @@ docker run -v ./warden.config.yaml:/config/warden.config.yaml:ro \
 
 Config is read once. Restart Warden to apply changes.
 
-An empty file is valid and means the same as no file. Every key below is optional.
+An empty file means the same as no file. Every key below is optional except `access`.
 
 ## Errors and warnings
 
@@ -256,10 +256,13 @@ Decides who may sign in and which [roles](#roles) they get, from the claims in t
 | `access.groups.<group>`        | list of role names | None     |
 | `access.emailDomains.<domain>` | list of role names | None     |
 | `access.requireVerifiedEmail`  | boolean            | `true`   |
+| `access.allowAll`              | boolean            | `false`  |
 
-**Without `access`**, everyone the IdP authenticates may sign in, with no roles: they can read per [`defaults.read`](#defaults) and write nothing. Limit who can sign in at the IdP (for example, assign the Warden app to specific users or groups), or configure `access`.
+**`access` is required.** Without it, Warden fails to start with a `ConfigError`. Otherwise anyone your IdP authenticates (anyone with a Google account, if the issuer is Google) could sign in and read the database.
 
-**With `access`**, a user gets every role of every rule they match, and a user who matches no rule (and has no [role assignment](#role-assignments)) is denied. The login fails with `/login?error=access_denied`, and no session is created.
+A user gets every role of every rule they match, and a user who matches no rule (and has no [role assignment](#role-assignments)) is denied. The login fails with `/login?error=access_denied`, and no session is created.
+
+- **`allowAll`** lets in everyone the IdP authenticates. Users who match no rule sign in with no roles: they can read per [`defaults.read`](#defaults) and write nothing. Use it only when the IdP itself restricts who can sign in (for example, you assigned the Warden app to specific users or groups), never with a public or multi-tenant issuer. Warden logs a warning at startup while it is on. Rules still apply alongside it, giving roles to the users they match.
 
 - **`groups`** maps an IdP group to roles. It matches when the group is in the ID token claim named by **`groupsClaim`** (a list of strings, or a single string). Group names match exactly and are case-sensitive. Most IdPs only send groups when asked, so add the right scope to `OIDC_SCOPES` (often `groups`) or configure the claim at the IdP. Entra ID sends group object IDs, not names; Keycloak may prefix groups with `/`.
 - **`emailDomains`** maps an email domain to roles, a default for everyone at that domain. It matches the part of the `email` claim after the last `@`, case-insensitively, and only that exact domain: `example.com` doesn't match `eu.example.com`.
@@ -280,6 +283,13 @@ access:
     warden-ops: [ops]
   emailDomains:
     example.com: [viewer] # everyone at example.com can sign in and read
+```
+
+If your IdP already decides who may use Warden, opt in to letting all of them in explicitly:
+
+```yaml
+access:
+  allowAll: true
 ```
 
 ## Role assignments

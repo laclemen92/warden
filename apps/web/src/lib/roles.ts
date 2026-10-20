@@ -24,8 +24,13 @@ export interface RoleAssignment {
 
 export interface RolesReport {
   roles: RoleDefinition[];
-  /** Config's `access` rules; null when config has none and every IdP user may sign in. */
-  access: { groups: Record<string, string[]>; emailDomains: Record<string, string[]> } | null;
+  /** Config's `access` rules; null when config has none, so nobody may sign in. */
+  access: {
+    groups: Record<string, string[]>;
+    emailDomains: Record<string, string[]>;
+    /** Everyone the IdP authenticates may sign in, with no roles unless a rule gives some. */
+    allowAll: boolean;
+  } | null;
   assignments: RoleAssignment[];
 }
 

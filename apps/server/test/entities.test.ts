@@ -313,7 +313,7 @@ describe('hidden entities', () => {
   it('are unreachable through list and get', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'warden-entities-'));
     const config = join(dir, 'warden.config.yaml');
-    writeFileSync(config, 'tables:\n  companies: { hidden: true }\n');
+    writeFileSync(config, 'tables:\n  companies: { hidden: true }\naccess: { allowAll: true }\n');
     const hidden = await createWarden({
       env: { DATABASE_URL: db.connectionString, WARDEN_CONFIG: config, ...authEnv(idp) },
     });

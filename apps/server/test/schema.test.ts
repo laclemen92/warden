@@ -6,8 +6,9 @@ import { fileURLToPath } from 'node:url';
 import { validateRecord, type EffectiveSchema } from '@wardenhq/core';
 import { readExampleSql, startPostgres, type TestDatabase } from '@wardenhq/testing';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { ConfigError } from '@wardenhq/config';
 import { createWarden, type WardenOptions } from '../src/warden.js';
-import { authEnv, login, startTestIdp } from './helpers/auth.js';
+import { ALLOW_ALL_CONFIG, authEnv, login, startTestIdp, writeConfig } from './helpers/auth.js';
 import type { MockOidc } from '@wardenhq/mock-oidc';
 
 const EXAMPLE_CONFIG = fileURLToPath(
@@ -85,8 +86,8 @@ describe('GET /api/schema', () => {
     });
   });
 
-  it('exposes everything when there is no config file', async () => {
-    const { schema } = await getSchema({});
+  it('exposes everything when config only opts in to allowAll', async () => {
+    const { schema } = await getSchema({ WARDEN_CONFIG: writeConfig(ALLOW_ALL_CONFIG) });
     const users = schema.entities.find((e) => e.key === 'users');
     expect(users?.fields.map((f) => f.name)).toContain('password_hash');
   });
@@ -96,7 +97,7 @@ describe('GET /api/schema', () => {
     const configPath = join(dir, 'warden.config.yaml');
     writeFileSync(
       configPath,
-      'tables:\n  invoices: {}\n  users:\n    columns:\n      nickname: {}\n',
+      'tables:\n  invoices: {}\n  users:\n    columns:\n      nickname: {}\n' + ALLOW_ALL_CONFIG,
     );
 
     const lines: Record<string, unknown>[] = [];
@@ -111,9 +112,29 @@ describe('GET /api/schema', () => {
 
     expect(schema.entities.length).toBe(3);
     expect(lines.map((l) => [l.configPath, l.msg])).toEqual([
+      [
+        undefined,
+        'access.allowAll is on: everyone the identity provider authenticates can sign in and read per defaults.read',
+      ],
       ['tables.invoices', 'config: table "public.invoices" does not exist'],
       ['tables.users.columns.nickname', 'config: column "nickname" does not exist'],
     ]);
+  });
+
+  it.each([
+    ['without a config file', {}],
+    [
+      'when config has no access section',
+      { WARDEN_CONFIG: writeConfig('roles: { viewer: {} }\n') },
+    ],
+  ])('fails startup %s', async (_, env: Record<string, string>) => {
+    const start = createWarden({
+      // A cwd without a config file, so the repo's own files can't be picked up.
+      cwd: mkdtempSync(join(tmpdir(), 'warden-server-')),
+      env: { DATABASE_URL: db.connectionString, ...authEnv(idp), ...env },
+    });
+    await expect(start).rejects.toBeInstanceOf(ConfigError);
+    await expect(start).rejects.toThrow(/access: Required\..*access\.allowAll: true/);
   });
 
   it('requires DATABASE_URL', async () => {

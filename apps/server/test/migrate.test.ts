@@ -4,14 +4,21 @@ import { readExampleSql, startPostgres, type TestDatabase } from '@wardenhq/test
 import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createWarden, parseMigrateFlag } from '../src/warden.js';
-import { authEnv, startTestIdp } from './helpers/auth.js';
+import { ALLOW_ALL_CONFIG, authEnv, startTestIdp, writeConfig } from './helpers/auth.js';
 
 let db: TestDatabase;
 let sqlPool: pg.Pool;
 let idp: MockOidc;
 
 const start = (env: Record<string, string> = {}) =>
-  createWarden({ env: { DATABASE_URL: db.connectionString, ...authEnv(idp), ...env } });
+  createWarden({
+    env: {
+      DATABASE_URL: db.connectionString,
+      WARDEN_CONFIG: writeConfig(ALLOW_ALL_CONFIG),
+      ...authEnv(idp),
+      ...env,
+    },
+  });
 
 const wardenSchemaExists = async () => {
   const { rows } = await sqlPool.query(

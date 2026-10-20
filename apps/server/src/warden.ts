@@ -1,4 +1,4 @@
-import { loadConfig } from '@wardenhq/config';
+import { loadConfig, requireAccess } from '@wardenhq/config';
 import { resolvePolicy, resolveSchema } from '@wardenhq/core';
 import {
   assignedRoles,
@@ -30,7 +30,7 @@ export function parseMigrateFlag(value: string | undefined): boolean {
 
 /**
  * Load config, migrate Warden's own schema (or check it is current), introspect the database, and build the app. Config that doesn't match the
- * database is logged as warnings; invalid config throws a ConfigError.
+ * database is logged as warnings; invalid config, or config without `access`, throws a ConfigError.
  */
 export async function createWarden({
   env = process.env,
@@ -43,7 +43,9 @@ export async function createWarden({
   const authSettings = parseAuthSettings(env);
   const runMigrations = parseMigrateFlag(env.WARDEN_MIGRATE);
 
-  const { config, path: configPath } = await loadConfig({ cwd, env });
+  const loaded = await loadConfig({ cwd, env });
+  requireAccess(loaded);
+  const { config, path: configPath } = loaded;
   // Route idle-connection errors to the app logger once it exists.
   let logIdleError = (err: Error) => console.error('idle database connection error', err);
   const { pool, db, close } = createDatabase({
@@ -97,6 +99,11 @@ export async function createWarden({
       { config: configPath ?? '(defaults)', entities: schema.entities.length },
       'schema loaded',
     );
+    if (config.access?.allowAll) {
+      app.log.warn(
+        'access.allowAll is on: everyone the identity provider authenticates can sign in and read per defaults.read',
+      );
+    }
     for (const warning of warnings) {
       app.log.warn({ configPath: warning.path }, `config: ${warning.message}`);
     }

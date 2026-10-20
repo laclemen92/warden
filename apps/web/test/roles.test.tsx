@@ -15,6 +15,7 @@ const report: RolesReport = {
   access: {
     groups: { 'warden-admins': ['admin'] },
     emailDomains: { 'example.com': ['viewer'] },
+    allowAll: false,
   },
   assignments: [
     {
@@ -193,13 +194,30 @@ describe('roles page', () => {
     expect(bodyOf(fetchMock, 'DELETE')).toEqual({ email: 'eve@example.org', role: 'ops' });
   });
 
-  it('explains when config has no access rules', async () => {
+  it('explains when access lets everyone in', async () => {
     stubFetch({
       ...base(['roles']),
-      'GET /api/admin/roles': { status: 200, body: { ...report, access: null } },
+      'GET /api/admin/roles': {
+        status: 200,
+        body: { ...report, access: { groups: {}, emailDomains: {}, allowAll: true } },
+      },
     });
     renderAt('/admin/roles');
     const access = await screen.findByRole('region', { name: 'Access rules' });
-    expect(access).toHaveTextContent('Everyone the identity provider authenticates can sign in');
+    expect(access).toHaveTextContent('everyone the identity provider authenticates can sign in');
+    expect(access).not.toHaveTextContent('only people with an assignment');
+  });
+
+  it('explains when access has no rules', async () => {
+    stubFetch({
+      ...base(['roles']),
+      'GET /api/admin/roles': {
+        status: 200,
+        body: { ...report, access: { groups: {}, emailDomains: {}, allowAll: false } },
+      },
+    });
+    renderAt('/admin/roles');
+    const access = await screen.findByRole('region', { name: 'Access rules' });
+    expect(access).toHaveTextContent('only people with an assignment can sign in');
   });
 });

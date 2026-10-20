@@ -48,6 +48,11 @@ const accessConfigSchema = z.strictObject({
    * Turn off only for IdPs that never send the claim and don't let users set their own email.
    */
   requireVerifiedEmail: z.boolean().default(true),
+  /**
+   * Let in everyone the IdP authenticates, with no roles unless a rule or assignment gives some.
+   * Only for IdPs that already restrict who can sign in.
+   */
+  allowAll: z.boolean().default(false),
 });
 
 const columnConfigSchema = z.strictObject({
@@ -145,7 +150,7 @@ export const wardenConfigSchema = z
       .prefault({}),
     tables: z.record(tableKey, tableConfigSchema).default({}),
     roles: z.record(name, roleConfigSchema).default({}),
-    /** Who may sign in, and with which roles. Without it, every IdP user signs in with no roles. */
+    /** Who may sign in, and with which roles. The server requires it (see `requireAccess`). */
     access: accessConfigSchema.optional(),
   })
   .superRefine((config, ctx) => {

@@ -30,6 +30,11 @@ roles:
   ops:
     grants:
       users: [read, update]
+access: # who may sign in (required)
+  groups:
+    warden-ops: [ops]
+  emailDomains:
+    example.com: [viewer]
 ```
 
 See the [configuration reference](docs/config.md) for every option and [database setup](docs/database.md) for migrations, database roles, and the audit log.

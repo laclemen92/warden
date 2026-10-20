@@ -3,16 +3,16 @@ import type { AccessConfig } from '@wardenhq/config';
 /**
  * Roles for a signed-in user, from their ID token claims and the config's `access` rules, plus
  * roles `assigned` to them in the app (looked up by {@link assignmentEmail}; only roles config
- * defines). `undefined` means nothing matched and the user may not use Warden. Without `access`,
- * every IdP user is let in, with no roles unless assigned some, so reading follows
- * `defaults.read` and nothing is writable.
+ * defines). `undefined` means nothing matched and the user may not use Warden. With
+ * `access.allowAll`, such a user is let in with no roles. Without `access`, nobody is let in:
+ * an auth boundary must not fail open.
  */
 export function resolveRoles(
   access: AccessConfig | undefined,
   claims: Record<string, unknown>,
   assigned: readonly string[] = [],
 ): string[] | undefined {
-  if (!access) return [...new Set(assigned)].sort();
+  if (!access) return undefined;
 
   const matched: string[][] = [];
   for (const group of claimGroups(claims[access.groupsClaim])) {
@@ -28,7 +28,8 @@ export function resolveRoles(
   // An assignment is an access rule for one user, so it also lets them in.
   if (assigned.length > 0) matched.push([...assigned]);
 
-  return matched.length > 0 ? [...new Set(matched.flat())].sort() : undefined;
+  if (matched.length === 0) return access.allowAll ? [] : undefined;
+  return [...new Set(matched.flat())].sort();
 }
 
 function claimGroups(value: unknown): string[] {
