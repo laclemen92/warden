@@ -3,7 +3,7 @@ import { entityFor, type Entity, type Field, type Filter } from '@wardenhq/core'
 import { sql } from 'kysely';
 import type { Database } from './database.js';
 import { compileFilter } from './filter.js';
-import type { Row } from './rows.js';
+import { entityTable, type Row } from './rows.js';
 
 export type WriteAction = 'create' | 'update' | 'delete';
 
@@ -41,8 +41,9 @@ export type WriteResult = { ok: true; row: Row } | { ok: false; reason: 'notFoun
 const ALIAS = 't';
 const table = (entity: Entity) => sql`${sql.id(entity.schema, entity.name)} as ${sql.id(ALIAS)}`;
 // As in reads, `only` keeps inheritance children (separate entities) out of locks, updates, and
-// deletes. Inserts need no `only`: they always land in the named table.
-const onlyTable = (entity: Entity) => sql`only ${table(entity)}`;
+// deletes, except on partitioned tables (see `entityTable`). Inserts need no `only`: they always
+// land in the named table, or are routed to its partition.
+const entityRows = (entity: Entity) => sql`${entityTable(entity)} as ${sql.id(ALIAS)}`;
 // As in reads, only exposed fields are selected, so hidden columns never leave the database.
 const selection = (entity: Entity) => sql.join(entity.fields.map((f) => sql.id(ALIAS, f.name)));
 const returning = (entity: Entity) => sql`returning ${selection(entity)}`;
@@ -101,7 +102,7 @@ export async function createRow(
 /** Lock the row a primary-key filter (from `decodeRecordId`) addresses. */
 async function lockRow(trx: Database, entity: Entity, filter: Filter) {
   const { rows } = await sql<Row>`
-    select ${selection(entity)} from ${onlyTable(entity)}
+    select ${selection(entity)} from ${entityRows(entity)}
     where ${compileFilter(filter, ALIAS)} limit 1 for update`.execute(trx);
   return rows[0];
 }
@@ -124,7 +125,7 @@ export async function updateRow(
     if (!before) return { ok: false, reason: 'notFound' };
     if (rowVersion(versionEntity, before) !== version) return { ok: false, reason: 'conflict' };
     const { rows } = await sql<Row>`
-      update ${onlyTable(entity)}
+      update ${entityRows(entity)}
       set ${sql.join(set.map((s) => sql`${sql.id(s.f.name)} = ${s.value}`))}
       where ${compileFilter(filter, ALIAS)} ${returning(entity)}`.execute(trx);
     const row = rows[0]!;
@@ -149,7 +150,7 @@ export async function deleteRow(
     if (version !== undefined && rowVersion(versionEntity, before) !== version) {
       return { ok: false, reason: 'conflict' };
     }
-    await sql`delete from ${onlyTable(entity)} where ${compileFilter(filter, ALIAS)}`.execute(trx);
+    await sql`delete from ${entityRows(entity)} where ${compileFilter(filter, ALIAS)}`.execute(trx);
     await onWrite?.(trx, { action: 'delete', entity, before, after: null });
     return { ok: true, row: before };
   });
