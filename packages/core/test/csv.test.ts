@@ -37,11 +37,38 @@ describe('csvCell', () => {
     expect(csvCell(field('ok', 'bool'), false)).toBe('false');
   });
 
-  it.each(['=1+1', '+1', '-1', '@SUM(A1)', '\tx', '\rx', '=HYPERLINK("http://x")'])(
-    'defuses a formula in text (%j)',
+  it.each([
+    '=1+1',
+    '+1',
+    '-1',
+    '@SUM(A1)',
+    '\tx',
+    '\rx',
+    '=HYPERLINK("http://x")',
+    ' =1+1',
+    '  \n=1+1',
+    '\u00a0=1+1',
+    '\u3000=1+1',
+    '\u200b=1+1',
+    '\ufeff=1+1',
+    '＝1+1',
+    '＋1',
+    '－1',
+    '＠SUM(A1)',
+    '|cmd',
+    ' |cmd',
+    ';cmd',
+    '｜cmd',
+    '；cmd',
+  ])('defuses a formula in text (%j)', (value) => {
+    const cell = csvCell(text, value);
+    expect(cell.replace(/^"/, '').startsWith("'")).toBe(true);
+  });
+
+  it.each(['a=1', 'x | y', 'ok;', ' text', '1-2', '', '   '])(
+    'leaves plain text alone (%j)',
     (value) => {
-      const cell = csvCell(text, value);
-      expect(cell.replace(/^"/, '').startsWith("'")).toBe(true);
+      expect(csvCell(text, value).replace(/^"/, '').startsWith("'")).toBe(false);
     },
   );
 

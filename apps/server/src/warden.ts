@@ -212,7 +212,7 @@ export async function createWarden({
     );
     if (auditTamperable) {
       app.log.warn(
-        'the database role Warden runs as owns warden.audit_log (or is a superuser), so it could disable the append-only triggers; run Warden as a separate role (see docs/database.md)',
+        'the database role Warden runs as owns warden.audit_log, the warden schema, or the audit trigger function (or is a superuser), so it could disable the append-only triggers; run Warden as a separate role (see docs/database.md)',
       );
     }
     if (config.access?.allowAll) {

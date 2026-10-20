@@ -74,12 +74,18 @@ const isApi = (req: FastifyRequest) =>
 
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
+// Logout isn't under /api, but a forged one still signs the user out.
+const LOGOUT = '/auth/logout';
+const needsJson = (req: FastifyRequest) =>
+  req.method === 'POST' && (isApi(req) || req.routeOptions.url === LOGOUT);
+
 /**
  * Why a state-changing request must be refused as a possible cross-site request forgery, if it
  * must. Warden sends no CORS headers, so a cross-origin page can only make "simple" requests: a
- * POST with a form or text/plain body. Requiring JSON on every /api POST forces a preflight that
- * fails, even from a sibling subdomain that SameSite=Lax cookies don't stop. Browsers that send
- * Sec-Fetch-Site get the same answer up front, for every unsafe method and path.
+ * POST with a form or text/plain body. Requiring JSON on every /api POST and on logout forces a
+ * preflight that fails, even from a sibling subdomain that SameSite=Lax cookies don't stop, and
+ * in browsers too old to send Sec-Fetch-Site. Browsers that send it get the same answer up front,
+ * for every unsafe method and path.
  */
 function csrfRejection(req: FastifyRequest): { status: number; message: string } | undefined {
   if (SAFE_METHODS.has(req.method)) return undefined;
@@ -88,7 +94,7 @@ function csrfRejection(req: FastifyRequest): { status: number; message: string }
     return { status: 403, message: 'cross-site requests are not allowed' };
   }
   const mime = req.headers['content-type']?.split(';')[0]?.trim().toLowerCase();
-  if (req.method === 'POST' && isApi(req) && mime !== 'application/json') {
+  if (needsJson(req) && mime !== 'application/json') {
     return { status: 415, message: 'expected an application/json body' };
   }
   return undefined;
@@ -189,10 +195,10 @@ export async function registerAuth(
     return reply.redirect(state.returnTo);
   });
 
-  // POST only, and the cookie is SameSite=Lax, so other sites can't log users out. When the IdP
+  // A JSON POST (see csrfRejection), so other sites can't log users out. When the IdP
   // supports RP-initiated logout, the browser goes there next to end the IdP's session too;
   // otherwise the next sign-in on a shared machine would silently reuse it.
-  app.post('/auth/logout', async (req, reply) => {
+  app.post(LOGOUT, async (req, reply) => {
     const idToken = await sessions.end(req, reply);
     let redirectTo;
     try {

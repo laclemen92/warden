@@ -38,7 +38,8 @@ export interface AuditEntry {
   /** ISO 8601 with offset. */
   occurredAt: string;
   requestId: string | null;
-  actor: { subject: string; email: string | null; roles: string[] };
+  /** `roles` is left out of a record's History for readers without `admin: [audit]`. */
+  actor: { subject: string; email: string | null; roles?: string[] };
   action: string;
   entity: string;
   recordId: string | null;

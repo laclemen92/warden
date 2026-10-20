@@ -149,6 +149,29 @@ describe('documented runtime grants', () => {
     }
   });
 
+  it.each([
+    ['the warden schema', 'schema warden'],
+    ['the trigger function', 'function warden.audit_log_append_only()'],
+  ])('reports that a role owning %s can disable them', async (_, object) => {
+    const { rows } = await sql<{ owner: string }>`select current_user as owner`.execute(handle.db);
+    const appHandle = createDatabase({ connectionString: appConnectionString });
+    try {
+      await sql.raw(`alter ${object} owner to warden_app`).execute(handle.db);
+      expect(await canDisableAuditTriggers(appHandle.db)).toBe(true);
+    } finally {
+      await sql.raw(`alter ${object} owner to "${rows[0]!.owner}"`).execute(handle.db);
+      // Handing ownership back drops the grants the runtime role held as owner.
+      await sql.raw(await documentedGrants()).execute(handle.db);
+      await appHandle.close();
+    }
+    const again = createDatabase({ connectionString: appConnectionString });
+    try {
+      expect(await canDisableAuditTriggers(again.db)).toBe(false);
+    } finally {
+      await again.close();
+    }
+  });
+
   it('reports that a member of the owner role can disable them', async () => {
     const { rows } = await sql<{ owner: string }>`
       select tableowner as owner from pg_tables

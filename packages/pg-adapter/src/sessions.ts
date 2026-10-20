@@ -20,7 +20,7 @@ export interface NewSession {
   name?: string;
   /** ID token claims, kept for role resolution. */
   claims: Record<string, unknown>;
-  /** The raw ID token, for `id_token_hint` at logout. */
+  /** The ID token, for `id_token_hint` at logout, as the caller encrypted it. */
   idToken?: string;
 }
 
