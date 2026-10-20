@@ -8,6 +8,8 @@ export type Row = Record<string, unknown>;
 export interface RecordItem {
   /** Opaque record id; null when the entity has no primary key. */
   id: string | null;
+  /** Present when `id` is; an update must send it back (a stale one gets 409). */
+  version?: string;
   values: Row;
 }
 
