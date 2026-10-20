@@ -6,8 +6,10 @@ import {
   createDatabase,
   deleteExpiredSessions,
   deleteSession,
+  deleteSessionsForSubject,
   insertSession,
   introspect,
+  listSignedInUsers,
   migrate,
   MIGRATIONS,
   touchSession,
@@ -128,5 +130,92 @@ describe('sessions', () => {
 
     expect(await deleteExpiredSessions(handle.db, TIMEOUTS)).toBe(2);
     expect(await touchSession(handle.db, keep, TIMEOUTS)).toBeDefined();
+  });
+
+  it('lists signed-in users with their live sessions, newest details first', async () => {
+    await sql`delete from warden.sessions`.execute(handle.db);
+    const [older, newer, expired, other] = [newHash(), newHash(), newHash(), newHash()];
+    await insertSession(handle.db, {
+      tokenHash: older,
+      subject: 'editor',
+      email: 'old@example.com',
+      claims: {},
+    });
+    await insertSession(handle.db, {
+      tokenHash: newer,
+      subject: 'editor',
+      email: 'editor@example.com',
+      name: 'Eddie',
+      claims: {},
+    });
+    await insertSession(handle.db, { tokenHash: expired, subject: 'gone', claims: {} });
+    await insertSession(handle.db, { tokenHash: other, subject: 'viewer', claims: {} });
+    await sql`update warden.sessions set last_seen_at = now() - interval '10 minutes'
+              where token_hash = ${older}`.execute(handle.db);
+    await sql`update warden.sessions set last_seen_at = now() - interval '5 minutes'
+              where token_hash = ${other}`.execute(handle.db);
+    await sql`update warden.sessions set last_seen_at = now() - interval '2 hours'
+              where token_hash = ${expired}`.execute(handle.db);
+
+    expect(await listSignedInUsers(handle.db, TIMEOUTS)).toEqual([
+      {
+        subject: 'editor',
+        email: 'editor@example.com',
+        name: 'Eddie',
+        sessions: 2,
+        lastSeenAt: expect.any(String),
+      },
+      { subject: 'viewer', email: null, name: null, sessions: 1, lastSeenAt: expect.any(String) },
+    ]);
+  });
+
+  it("deletes all of one subject's sessions and audits it", async () => {
+    await sql`delete from warden.sessions`.execute(handle.db);
+    const mine = [newHash(), newHash(), newHash()];
+    const theirs = newHash();
+    for (const tokenHash of mine) {
+      await insertSession(handle.db, { tokenHash, subject: 'editor', claims: {} });
+    }
+    // Expired sessions go too; they would be cleaned up anyway.
+    await sql`update warden.sessions set created_at = now() - interval '2 days'
+              where token_hash = ${mine[2]!}`.execute(handle.db);
+    await insertSession(handle.db, { tokenHash: theirs, subject: 'editor2', claims: {} });
+
+    const actor = {
+      subject: 'admin',
+      email: 'admin@example.com',
+      roles: ['admin'],
+      requestId: 'req-1',
+    };
+    expect(await deleteSessionsForSubject(handle.db, { subject: 'editor', actor })).toBe(3);
+    for (const tokenHash of mine) {
+      expect(await touchSession(handle.db, tokenHash, TIMEOUTS)).toBeUndefined();
+    }
+    expect(await touchSession(handle.db, theirs, TIMEOUTS)).toBeDefined();
+
+    // Nothing left to revoke: nothing is audited.
+    expect(await deleteSessionsForSubject(handle.db, { subject: 'editor', actor })).toBe(0);
+    // A subject is matched exactly, never as a pattern.
+    expect(await deleteSessionsForSubject(handle.db, { subject: 'editor%', actor })).toBe(0);
+
+    const { rows } = await sql`
+      select request_id, actor_subject, actor_email, actor_roles, action, entity, primary_key,
+             details, record_id, before, after
+      from warden.audit_log where entity = 'warden.sessions'`.execute(handle.db);
+    expect(rows).toEqual([
+      {
+        request_id: 'req-1',
+        actor_subject: 'admin',
+        actor_email: 'admin@example.com',
+        actor_roles: ['admin'],
+        action: 'revoke_sessions',
+        entity: 'warden.sessions',
+        primary_key: { subject: 'editor' },
+        details: { sessions: 3 },
+        record_id: null,
+        before: null,
+        after: null,
+      },
+    ]);
   });
 });

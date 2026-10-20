@@ -87,7 +87,13 @@ export async function createWarden({
       policy,
       auth,
       drift: { model, config },
-      roles: { config },
+      roles: {
+        config,
+        sessionTimeouts: {
+          idleSeconds: authSettings.idleTimeoutSeconds,
+          absoluteSeconds: authSettings.absoluteTimeoutSeconds,
+        },
+      },
       logger,
       ...(webDir ? { webDir } : {}),
     });

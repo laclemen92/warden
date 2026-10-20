@@ -42,11 +42,14 @@ export { migrate, MIGRATIONS, pendingMigrations, type Migration } from './migrat
 export {
   deleteExpiredSessions,
   deleteSession,
+  deleteSessionsForSubject,
   insertSession,
+  listSignedInUsers,
   touchSession,
   type NewSession,
   type Session,
   type SessionTimeouts,
+  type SignedInUser,
 } from './sessions.js';
 export {
   assignedRoles,

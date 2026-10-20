@@ -1,4 +1,4 @@
-import { X } from 'lucide-react';
+import { LogOut, X } from 'lucide-react';
 import { useState, type FormEvent, type ReactNode } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -23,10 +23,12 @@ import { ApiError } from '@/lib/api';
 import {
   describeGrants,
   useAssignRole,
+  useRevokeSessions,
   useRoles,
   useUnassignRole,
   type RoleAssignment,
   type RolesReport,
+  type SignedInUser,
 } from '@/lib/roles';
 import { NotFoundPage } from '@/pages/not-found-page';
 
@@ -55,6 +57,7 @@ export function RolesPage() {
         </p>
       </div>
       <AssignmentsSection report={report} />
+      <SignedInSection users={report.signedIn} />
       <RolesSection roles={report.roles} />
       <AccessSection access={report.access} />
     </div>
@@ -214,6 +217,71 @@ function AssignForm({ roles }: { roles: string[] }) {
         </p>
       )}
     </form>
+  );
+}
+
+function SignedInSection({ users }: { users: SignedInUser[] }) {
+  return (
+    <Section
+      title="Signed in"
+      description="People with a live session. Groups from the identity provider are read at sign-in, so after removing someone from a group there, sign them out here to apply it now."
+    >
+      {users.length === 0 ? (
+        <p className="text-sm text-muted-foreground">Nobody is signed in.</p>
+      ) : (
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>User</TableHead>
+              <TableHead>Sessions</TableHead>
+              <TableHead>Last seen</TableHead>
+              <TableHead>
+                <span className="sr-only">Actions</span>
+              </TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {users.map((user) => (
+              <SignedInRow key={user.subject} {...user} />
+            ))}
+          </TableBody>
+        </Table>
+      )}
+    </Section>
+  );
+}
+
+function SignedInRow({ subject, email, name, sessions, lastSeenAt }: SignedInUser) {
+  const revoke = useRevokeSessions();
+  const label = email ?? name ?? subject;
+  return (
+    <TableRow>
+      <TableCell>
+        <div className="font-mono">{label}</div>
+        {label !== subject && <div className="text-xs text-muted-foreground">{subject}</div>}
+      </TableCell>
+      <TableCell className="text-muted-foreground">{sessions}</TableCell>
+      <TableCell className="text-muted-foreground">{lastSeenAt}</TableCell>
+      <TableCell className="text-right">
+        <div className="flex flex-col items-end gap-1">
+          <Button
+            variant="ghost"
+            size="sm"
+            aria-label={`Sign out ${label} everywhere`}
+            disabled={revoke.isPending}
+            onClick={() => revoke.mutate(subject)}
+          >
+            <LogOut />
+            Sign out everywhere
+          </Button>
+          {revoke.error && (
+            <p role="alert" className="text-sm text-destructive">
+              Couldn't sign out.
+            </p>
+          )}
+        </div>
+      </TableCell>
+    </TableRow>
   );
 }
 

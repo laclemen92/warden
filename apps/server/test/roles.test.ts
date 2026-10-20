@@ -13,6 +13,7 @@ const EXAMPLE_CONFIG = fileURLToPath(
 );
 const ROLES = '/api/admin/roles';
 const ASSIGNMENTS = '/api/admin/roles/assignments';
+const SESSIONS = '/api/admin/roles/sessions';
 
 let db: TestDatabase;
 let sqlPool: pg.Pool;
@@ -52,6 +53,13 @@ const unassign = (payload: unknown, cookie = admin) =>
     headers: { cookie },
     payload: payload as object,
   });
+const revoke = (payload: unknown, cookie = admin) =>
+  app.inject({
+    method: 'DELETE',
+    url: SESSIONS,
+    headers: { cookie },
+    payload: payload as object,
+  });
 const me = async (cookie: string) =>
   (await app.inject({ method: 'GET', url: '/api/me', headers: { cookie } })).json<{
     roles: string[];
@@ -69,7 +77,9 @@ describe('roles page API', () => {
   it('lists config roles and access rules read-only, with assignments', async () => {
     const res = await app.inject({ method: 'GET', url: ROLES, headers: { cookie: admin } });
     expect(res.statusCode, res.body).toBe(200);
-    expect(res.json()).toEqual({
+    const { signedIn, ...report } = res.json<{ signedIn: { subject: string }[] }>();
+    expect(signedIn.map((u) => u.subject).sort()).toEqual(['admin', 'editor', 'viewer']);
+    expect(report).toEqual({
       roles: [
         { name: 'viewer', grants: { '*': ['read'] }, admin: [] },
         {
@@ -194,6 +204,47 @@ describe('roles page API', () => {
     expect(rows[0].n).toBe(0);
   });
 
+  it('signs a user out everywhere, lists who is signed in, and audits it', async () => {
+    const first = await login(app, 'editor');
+    const second = await login(app, 'editor');
+    const signedIn = async () =>
+      (await app.inject({ method: 'GET', url: ROLES, headers: { cookie: admin } })).json<{
+        signedIn: { subject: string; email: string | null; sessions: number }[];
+      }>().signedIn;
+    expect(await signedIn()).toContainEqual(
+      expect.objectContaining({ subject: 'editor', email: 'editor@example.com', sessions: 3 }),
+    );
+
+    const res = await revoke({ subject: 'editor' });
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.json()).toEqual({ revoked: 3 });
+    for (const cookie of [editor, first, second]) {
+      const after = await app.inject({ method: 'GET', url: '/api/me', headers: { cookie } });
+      expect(after.statusCode).toBe(401);
+    }
+    expect((await me(viewer)).roles).toEqual(['viewer']);
+    expect((await signedIn()).map((u) => u.subject)).not.toContain('editor');
+
+    expect((await revoke({ subject: 'editor' })).json()).toEqual({ revoked: 0 });
+    for (const payload of [{}, { subject: '' }]) {
+      expect((await revoke(payload)).statusCode, JSON.stringify(payload)).toBe(400);
+    }
+
+    const { rows } = await sqlPool.query(
+      `select actor_subject, action, primary_key, details
+       from warden.audit_log where entity = 'warden.sessions'`,
+    );
+    expect(rows).toEqual([
+      {
+        actor_subject: 'admin',
+        action: 'revoke_sessions',
+        primary_key: { subject: 'editor' },
+        details: { sessions: 3 },
+      },
+    ]);
+    editor = await login(app, 'editor');
+  });
+
   it('is indistinguishable from a missing route for users without admin: [roles]', async () => {
     const missing = async (method: 'GET' | 'POST' | 'DELETE') => {
       const res = await app.inject({ method, url: '/api/admin/nope', headers: { cookie: viewer } });
@@ -224,6 +275,19 @@ describe('roles page API', () => {
         }
       }
     }
+    for (const cookie of [viewer, editor]) {
+      for (const payload of ['{"subject":"admin"}', '{not json']) {
+        const res = await app.inject({
+          method: 'DELETE',
+          url: SESSIONS,
+          headers: { cookie, 'content-type': 'application/json' },
+          payload,
+        });
+        expect(res.statusCode).toBe(404);
+        expect(normalize(res.body)).toBe(await missing('DELETE'));
+      }
+    }
+    expect((await me(admin)).roles).toEqual(['admin', 'viewer']);
     expect((await me(editor)).roles).toEqual(['ops', 'viewer']);
     const { rows } = await sqlPool.query(
       `select count(*)::int as n from warden.audit_log where entity = 'warden.role_assignments'`,
@@ -236,5 +300,6 @@ describe('roles page API', () => {
     expect((await app.inject({ method: 'GET', url: ROLES })).statusCode).toBe(401);
     expect((await assign({ email: 'a@example.com', role: 'ops' }, '')).statusCode).toBe(401);
     expect((await unassign({ email: 'a@example.com', role: 'ops' }, '')).statusCode).toBe(401);
+    expect((await revoke({ subject: 'admin' }, '')).statusCode).toBe(401);
   });
 });

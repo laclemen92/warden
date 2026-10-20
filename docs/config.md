@@ -274,7 +274,7 @@ A user gets every role of every rule they match, and a user who matches no rule 
 
 Every role named here must be defined under `roles`, and a domain may only be listed once; otherwise startup fails.
 
-Roles are resolved again from the stored claims on every request, so restarting Warden with stricter rules applies to existing sessions too. Claims themselves are only refreshed at sign-in, so a user removed from a group at the IdP keeps that group's roles until their session expires.
+Roles are resolved again from the stored claims on every request, so restarting Warden with stricter rules applies to existing sessions too. Claims themselves are only refreshed at sign-in, so a change at the IdP (for example, removing a user from a group) takes effect the next time they sign in, or when an admin [signs them out everywhere](#role-assignments). Until then they keep that group's roles, at most until their session expires.
 
 ```yaml
 roles:
@@ -304,6 +304,8 @@ Config is the source of truth for which roles exist and what they grant. On top 
 - An assignment counts as an access rule: a user who matches no rule in `access` can sign in if they have one.
 - Only roles defined under `roles` can be assigned. If a role is later removed from config, its assignments stop having any effect (the page marks them "Not in config") and come back if the role does.
 - Roles are resolved on every request, so assigning or removing a role applies to existing sessions immediately.
+
+The page also lists who is signed in: each user with a live session, how many sessions (browsers or devices) they have, and when they were last seen. **Sign out everywhere** deletes all of that user's sessions, so their next request fails and they must sign in again, which reads their claims from the IdP afresh. Use it after removing someone from a group or disabling them at the IdP, or if a session token may have leaked. It doesn't stop them signing in again if the IdP and your access rules still let them. The API is `DELETE /api/admin/roles/sessions` with `{ "subject": "<OIDC subject>" }`; it returns `{ "revoked": <count> }`.
 
 Each assignment and removal is recorded in the [audit log](database.md#role-assignments). Assignments are stored in the `warden` schema, so they survive restarts and config changes.
 
