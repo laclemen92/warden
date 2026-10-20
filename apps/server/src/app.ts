@@ -10,6 +10,7 @@ import { registerCapabilityRoutes } from './routes/capabilities.js';
 import { registerEntityRoutes } from './routes/entities.js';
 import { registerPolicy } from './routes/policy.js';
 import { registerSchemaDriftRoutes, type SchemaDriftOptions } from './routes/schema-drift.js';
+import { createViews } from './views.js';
 
 export interface AppOptions {
   /** Effective schema to serve. Already narrowed by config, so it is safe to send as-is. */
@@ -59,10 +60,12 @@ export async function buildApp({
   app.get('/healthz', async () => ({ status: 'ok' }));
 
   if (auth) await registerAuth(app, auth);
-  if (schema) app.get('/api/schema', async () => schema);
-  if (schema && db && policy) {
+  // Each user gets the schema as their roles see it: fields they can't read are left out.
+  const views = schema && policy ? createViews(schema, policy) : undefined;
+  if (schema) app.get('/api/schema', async (req) => (views ? views(req.roles).schema : schema));
+  if (schema && db && policy && views) {
     registerPolicy(app, schema, policy);
-    registerEntityRoutes(app, schema, db, policy);
+    registerEntityRoutes(app, schema, db, policy, views);
     registerCapabilityRoutes(app, schema, policy);
   }
   if (drift && db) registerSchemaDriftRoutes(app, { ...drift, db });

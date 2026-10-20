@@ -50,6 +50,10 @@ const columnConfigSchema = z.strictObject({
   /** Shown but never writable. */
   readOnly: z.boolean().optional(),
   label: name.optional(),
+  /** Only these roles see the column; to everyone else it is hidden. */
+  readableBy: roleList.optional(),
+  /** Only these roles may write the column; everyone else sees it read-only. */
+  writableBy: roleList.optional(),
 });
 
 const tableConfigSchema = z
@@ -71,6 +75,26 @@ const tableConfigSchema = z
     deny: actions.optional(),
   })
   .superRefine((table, ctx) => {
+    for (const [column, config] of Object.entries(table.columns)) {
+      const issue = (key: string, message: string) =>
+        ctx.addIssue({ code: 'custom', path: ['columns', column, key], message });
+      if (config.hidden && config.readableBy) {
+        issue('readableBy', 'a hidden column is readable by nobody; remove one of the two');
+      }
+      if (config.readOnly && config.writableBy) {
+        issue('writableBy', 'a read-only column is writable by nobody; remove one of the two');
+      }
+      // Writing a column you can't see would be editing blind.
+      config.writableBy?.forEach((role, i) => {
+        if (config.readableBy && !config.readableBy.includes(role)) {
+          ctx.addIssue({
+            code: 'custom',
+            path: ['columns', column, 'writableBy', i],
+            message: `role "${role}" can write "${column}" but not read it; add it to readableBy`,
+          });
+        }
+      });
+    }
     const hidden = (column: string) => table.columns[column]?.hidden === true;
     if (table.displayField && hidden(table.displayField)) {
       ctx.addIssue({
@@ -127,7 +151,22 @@ export const wardenConfigSchema = z
         });
       }
     };
-    for (const key of Object.keys(config.tables)) checkSchema(key, ['tables', key]);
+    for (const [key, table] of Object.entries(config.tables)) {
+      checkSchema(key, ['tables', key]);
+      for (const [column, columnConfig] of Object.entries(table.columns)) {
+        for (const rule of ['readableBy', 'writableBy'] as const) {
+          columnConfig[rule]?.forEach((role, i) => {
+            if (!Object.hasOwn(config.roles, role)) {
+              ctx.addIssue({
+                code: 'custom',
+                path: ['tables', key, 'columns', column, rule, i],
+                message: `role "${role}" is not defined in \`roles\``,
+              });
+            }
+          });
+        }
+      }
+    }
     for (const [role, { grants }] of Object.entries(config.roles)) {
       for (const key of Object.keys(grants)) checkSchema(key, ['roles', role, 'grants', key]);
     }

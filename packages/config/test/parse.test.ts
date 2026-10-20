@@ -257,6 +257,69 @@ access:
     ]);
   });
 
+  it('parses per-column readableBy and writableBy', () => {
+    const config = parseConfig(
+      `roles:
+  admin: {}
+  hr: {}
+tables:
+  users:
+    columns:
+      role: { writableBy: [admin] }
+      salary: { readableBy: [hr, admin], writableBy: [hr] }
+`,
+      FILE,
+    );
+    expect(config.tables.users?.columns).toEqual({
+      role: { writableBy: ['admin'] },
+      salary: { readableBy: ['hr', 'admin'], writableBy: ['hr'] },
+    });
+  });
+
+  it('rejects column rules that name unknown roles or contradict each other', () => {
+    expect(
+      issues(`roles:
+  admin: {}
+  hr: {}
+tables:
+  users:
+    columns:
+      c: { hidden: true, readableBy: [admin] }
+      d: { readOnly: true, writableBy: [admin] }
+      e: { readableBy: [hr], writableBy: [admin, hr] }
+      f: { readableBy: [] }
+`),
+    ).toMatchObject([
+      // Shape errors come before the cross-field checks.
+      { path: 'tables.users.columns.f.readableBy' },
+      { path: 'tables.users.columns.c.readableBy', message: expect.stringContaining('hidden') },
+      { path: 'tables.users.columns.d.writableBy', message: expect.stringContaining('read-only') },
+      {
+        path: 'tables.users.columns.e.writableBy.0',
+        message: 'role "admin" can write "e" but not read it; add it to readableBy',
+      },
+    ]);
+    expect(
+      issues(`roles:
+  admin: {}
+tables:
+  users:
+    columns:
+      a: { readableBy: [nobody] }
+      b: { writableBy: [constructor] }
+`),
+    ).toMatchObject([
+      {
+        path: 'tables.users.columns.a.readableBy.0',
+        message: 'role "nobody" is not defined in `roles`',
+      },
+      {
+        path: 'tables.users.columns.b.writableBy.0',
+        message: 'role "constructor" is not defined in `roles`',
+      },
+    ]);
+  });
+
   it('rejects malformed table keys', () => {
     expect(issues(`tables:\n  a.b.c: {}\n`)).toMatchObject([
       { path: 'tables.a.b.c', message: 'Expected "table" or "schema.table"' },
