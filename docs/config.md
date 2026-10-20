@@ -114,6 +114,7 @@ Each key is a table, as `table` (in the default schema) or `schema.table`. Warde
 | `tables.<table>.defaultSort.direction` | `asc`, `desc`                                              | `asc`                                          |
 | `tables.<table>.searchable`            | list of column names                                       | Visible text columns                           |
 | `tables.<table>.deny`                  | list of `read`, `create`, `update`, `delete`               | None                                           |
+| `tables.<table>.requireReason`         | list of `create`, `update`, `delete`                       | None                                           |
 | `tables.<table>.columns`               | map of column name to [column config](#tablestablecolumns) | None                                           |
 
 **`hidden`** removes the table completely. It doesn't appear in the UI, the schema API, or any relation, and requesting it returns the same 404 as a table that doesn't exist. No grant can make a hidden table accessible.
@@ -128,6 +129,8 @@ Each key is a table, as `table` (in the default schema) or `schema.table`. Warde
 
 **`deny`** lists actions nobody may perform on this table, whatever their roles grant. It beats every grant, including `*`. Denying `read` blocks reading for everyone, even with `defaults.read: all`.
 
+**`requireReason`** lists writes that must say why. Every write may send a `reason`, which is stored in the [audit log](#audit-log); for these actions the API rejects a write without one (or with only whitespace) with a 400, and the UI asks for it before saving or deleting. It doesn't grant or deny anything: the caller still needs a role that may perform the action.
+
 A column hidden in the same table can't be the `displayField`, the `defaultSort` column, or `searchable`. That fails startup. A column that doesn't exist, or is hidden by `defaults.newColumns: hidden`, is dropped from these settings with a warning.
 
 ```yaml
@@ -138,6 +141,7 @@ tables:
     defaultSort: { column: placed_at, direction: desc }
     searchable: [number, notes]
     deny: [create, delete]
+    requireReason: [update]
   internal_jobs:
     hidden: true
 ```
@@ -298,7 +302,7 @@ The page reflects the schema as of Warden's last start. **Acknowledge** makes th
 
 ## Audit log
 
-Every create, update, and delete made through Warden is recorded in the [audit log](database.md#the-audit-log). Entries are shown in two places:
+Every create, update, and delete made through Warden is recorded in the [audit log](database.md#the-audit-log), with the reason given for it, if any. A table's [`requireReason`](#tables) makes the reason mandatory for chosen actions. Entries are shown in two places:
 
 - **History** on a record lists its changes, newest first, with who made each one, why, and the before and after values. Anyone who may read the record sees it.
 - **Audit log** in the sidebar searches every entry by actor (email or subject), entity, action, and date range. Only users with a role that has `admin: [audit]` can open it.
@@ -335,6 +339,7 @@ tables:
       password_hash: { hidden: true }
       created_at: { readOnly: true, label: Joined }
       role: { writableBy: [ops] }
+    requireReason: [delete]
 
   orders:
     defaultSort: { column: placed_at, direction: desc }

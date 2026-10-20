@@ -32,6 +32,11 @@ export interface RecordList {
   total?: number;
 }
 
+// apps/server/src/routes/entities.ts: the longest reason a write may give, and the message for a
+// write that config requires a reason for but has none.
+export const MAX_REASON_LENGTH = 2000;
+export const REASON_REQUIRED = 'a reason is required for this change';
+
 export function recordPath(entity: Pick<Entity, 'key'>, id: string): string {
   return `${entityPath(entity)}/${encodeURIComponent(id)}`;
 }
@@ -110,11 +115,14 @@ export function useUpdateRecord(entity: Entity) {
 export function useDeleteRecord(entity: Entity) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (record: RecordItem & { id: string }) =>
+    mutationFn: ({ reason, ...record }: RecordItem & { id: string; reason?: string }) =>
       apiFetch<void>(`${recordsUrl(entity.key)}/${encodeURIComponent(record.id)}`, {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(record.version ? { version: record.version } : {}),
+        body: JSON.stringify({
+          ...(record.version ? { version: record.version } : {}),
+          ...(reason ? { reason } : {}),
+        }),
       }),
     onSuccess: (_, record) => {
       // Other tables' rows can change too (cascades, set null), so refetch every list. The

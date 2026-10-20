@@ -1,4 +1,4 @@
-import { useState, type MouseEvent } from 'react';
+import { useId, useState, type MouseEvent } from 'react';
 import type { Entity, Field, Relation } from '@wardenhq/core';
 import { Pencil, Trash2 } from 'lucide-react';
 import { Link, useNavigate, useParams } from 'react-router';
@@ -18,10 +18,13 @@ import {
 import { Button, buttonVariants } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Textarea } from '@/components/ui/textarea';
 import { ApiError } from '@/lib/api';
 import { useRecordHistory } from '@/lib/audit';
 import { useCan } from '@/lib/capabilities';
 import {
+  MAX_REASON_LENGTH,
+  REASON_REQUIRED,
   editRecordPath,
   recordPath,
   useDeleteRecord,
@@ -189,6 +192,8 @@ const STALE_MESSAGE = 'the record has changed since it was read';
 
 function deleteErrorMessage(error: Error): string {
   if (!(error instanceof ApiError)) return "Couldn't delete this record.";
+  // Config changed since the schema was loaded.
+  if (error.message === REASON_REQUIRED) return 'Give a reason for deleting this record.';
   if (error.status === 403) return "You don't have permission to delete this record.";
   if (error.status === 409) {
     return error.message === STALE_MESSAGE
@@ -204,21 +209,28 @@ function DeleteRecord({ entity, record }: { entity: Entity; record: RecordItem &
   const remove = useDeleteRecord(entity);
   const navigate = useNavigate();
   const [open, setOpen] = useState(false);
+  const [reason, setReason] = useState('');
+  const reasonId = useId();
   if (!canDelete) return null;
 
+  const reasonRequired = entity.requireReason?.includes('delete') ?? false;
   const title = displayText(record.values[entity.displayField]);
   const confirm = (event: MouseEvent) => {
     // Keep the dialog open until the delete settles, so errors show in it.
     event.preventDefault();
-    remove.mutate(record, {
-      onSuccess: () => void navigate(entityPath(entity), { replace: true }),
-      onError: (error) => {
-        // Someone else already deleted it.
-        if (error instanceof ApiError && error.status === 404) {
-          void navigate(entityPath(entity), { replace: true });
-        }
+    const trimmed = reason.trim();
+    remove.mutate(
+      { ...record, ...(trimmed ? { reason: trimmed } : {}) },
+      {
+        onSuccess: () => void navigate(entityPath(entity), { replace: true }),
+        onError: (error) => {
+          // Someone else already deleted it.
+          if (error instanceof ApiError && error.status === 404) {
+            void navigate(entityPath(entity), { replace: true });
+          }
+        },
       },
-    });
+    );
   };
 
   return (
@@ -226,7 +238,10 @@ function DeleteRecord({ entity, record }: { entity: Entity; record: RecordItem &
       open={open}
       onOpenChange={(next) => {
         setOpen(next);
-        if (!next) remove.reset();
+        if (!next) {
+          remove.reset();
+          setReason('');
+        }
       }}
     >
       <AlertDialogTrigger asChild>
@@ -242,6 +257,25 @@ function DeleteRecord({ entity, record }: { entity: Entity; record: RecordItem &
             This permanently deletes the record from {entity.label}. It can't be undone.
           </AlertDialogDescription>
         </AlertDialogHeader>
+        {reasonRequired && (
+          <div className="space-y-1">
+            <label htmlFor={reasonId} className="text-sm font-medium">
+              Reason
+            </label>
+            <Textarea
+              id={reasonId}
+              rows={2}
+              value={reason}
+              maxLength={MAX_REASON_LENGTH}
+              aria-required
+              aria-describedby={`${reasonId}-help`}
+              onChange={(e) => setReason(e.target.value)}
+            />
+            <p id={`${reasonId}-help`} className="text-xs text-muted-foreground">
+              Required. Saved in the audit log with this change.
+            </p>
+          </div>
+        )}
         {remove.error && (
           <p role="alert" className="text-sm text-destructive">
             {deleteErrorMessage(remove.error)}
@@ -251,7 +285,7 @@ function DeleteRecord({ entity, record }: { entity: Entity; record: RecordItem &
           <AlertDialogCancel>Cancel</AlertDialogCancel>
           <AlertDialogAction
             className={buttonVariants({ variant: 'destructive' })}
-            disabled={remove.isPending}
+            disabled={remove.isPending || (reasonRequired && reason.trim() === '')}
             onClick={confirm}
           >
             {remove.isPending ? 'Deleting…' : 'Delete'}

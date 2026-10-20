@@ -146,6 +146,15 @@ describe('resolveSchema with config', () => {
     expect(schema.entities.find((e) => e.key === 'users')?.relations).toEqual([]);
   });
 
+  it('lists the writes that require a reason, in canonical order', () => {
+    const config = { tables: { users: { requireReason: ['delete', 'create', 'delete'] } } };
+    expect(entity(config, 'users').requireReason).toEqual(['create', 'delete']);
+    expect(entity(config, 'companies')).not.toHaveProperty('requireReason');
+    expect(entity({ tables: { users: { requireReason: [] } } }, 'users')).not.toHaveProperty(
+      'requireReason',
+    );
+  });
+
   it('drops relations whose FK columns are hidden', () => {
     const config = { tables: { users: { columns: { company_id: { hidden: true } } } } };
     expect(entity(config, 'users').relations).toEqual([]);

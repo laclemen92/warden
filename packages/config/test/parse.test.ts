@@ -147,6 +147,14 @@ tables:
     expect(config.tables.orders?.deny).toEqual(['create', 'delete']);
   });
 
+  it('parses requireReason, which only takes write actions', () => {
+    const config = parseConfig('tables:\n  users: { requireReason: [update, delete] }\n', FILE);
+    expect(config.tables.users?.requireReason).toEqual(['update', 'delete']);
+    expect(
+      issues('tables:\n  users: { requireReason: [read] }\n').map((i) => [i.path, i.line]),
+    ).toEqual([['tables.users.requireReason.0', 2]]);
+  });
+
   it('rejects unknown actions and role keys', () => {
     expect(
       issues(`tables:

@@ -63,6 +63,8 @@ const listQuerySchema = {
 
 const MAX_VERSION_LENGTH = 100;
 export const MAX_REASON_LENGTH = 2000;
+/** Sent when config requires a reason for the write and none (or only whitespace) was given. */
+export const REASON_REQUIRED = 'a reason is required for this change';
 
 /** Every write may say why; the reason is stored in the audit log. */
 interface WriteBody {
@@ -150,6 +152,10 @@ export function registerEntityRoutes(
     isAllowed(policy, req.roles ?? [], entity.key, 'read')
       ? toItem(entity, row)
       : { id: encodeRecordId(entity, row) };
+
+  /** Whether config requires `action` on `entity` to give a reason, and none was given. */
+  const missingReason = (entity: Entity, action: WriteAction, body: WriteBody | null | undefined) =>
+    entity.requireReason?.includes(action) === true && !body?.reason?.trim();
 
   /** Records the write in the audit log, inside the write's transaction. */
   const audited = (req: FastifyRequest, body: WriteBody | null | undefined): WriteOptions => {
@@ -269,6 +275,7 @@ export function registerEntityRoutes(
       const found = lookup(req, req.params.entity);
       if (!found) return notFound(reply);
       const { entity, view } = found;
+      if (missingReason(entity, 'create', req.body)) return badRequest(reply, REASON_REQUIRED);
       const record = validateRecord(view, req.body.values, 'create');
       if (!record.ok) return badRequest(reply, 'invalid record', record.errors);
       let row;
@@ -288,6 +295,7 @@ export function registerEntityRoutes(
       const found = lookup(req, req.params.entity);
       if (!found) return notFound(reply);
       const { entity, view } = found;
+      if (missingReason(entity, 'update', req.body)) return badRequest(reply, REASON_REQUIRED);
       const decoded = decodeRecordId(view, req.params.id);
       if (!decoded.ok) return notFound(reply);
       const record = validateRecord(view, req.body.values, 'update');
@@ -315,6 +323,7 @@ export function registerEntityRoutes(
       const found = lookup(req, req.params.entity);
       if (!found) return notFound(reply);
       const { entity, view } = found;
+      if (missingReason(entity, 'delete', req.body)) return badRequest(reply, REASON_REQUIRED);
       const decoded = decodeRecordId(view, req.params.id);
       if (!decoded.ok) return notFound(reply);
       const version = req.body?.version;
