@@ -1,7 +1,11 @@
+import type { FieldError } from '@wardenhq/core';
+
 export class ApiError extends Error {
   constructor(
     readonly status: number,
     message: string,
+    /** Field errors from a rejected write (400 invalid record, 409 conflict). */
+    readonly details: FieldError[] = [],
   ) {
     super(message);
     this.name = 'ApiError';
@@ -15,9 +19,16 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
     headers: { Accept: 'application/json', ...init?.headers },
   });
   if (!res.ok) {
-    const body = (await res.json().catch(() => null)) as { message?: unknown } | null;
+    const body = (await res.json().catch(() => null)) as {
+      message?: unknown;
+      details?: unknown;
+    } | null;
     const message = typeof body?.message === 'string' ? body.message : res.statusText;
-    throw new ApiError(res.status, message || `Request failed (${res.status})`);
+    throw new ApiError(
+      res.status,
+      message || `Request failed (${res.status})`,
+      fieldErrors(body?.details),
+    );
   }
   // No Content (e.g. a delete) has no body to parse.
   if (res.status === 204) return undefined as T;
@@ -25,3 +36,14 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
 }
 
 export const isUnauthorized = (err: unknown) => err instanceof ApiError && err.status === 401;
+
+/** The `{ field?, message }` entries of an error body's details. */
+function fieldErrors(details: unknown): FieldError[] {
+  if (!Array.isArray(details)) return [];
+  return details.flatMap((d: unknown): FieldError[] => {
+    if (typeof d !== 'object' || d === null) return [];
+    const { field, message } = d as { field?: unknown; message?: unknown };
+    if (typeof message !== 'string') return [];
+    return [{ ...(typeof field === 'string' ? { field } : {}), message }];
+  });
+}

@@ -1,6 +1,6 @@
 import { useState, type MouseEvent } from 'react';
 import type { Entity, Field, Relation } from '@wardenhq/core';
-import { Trash2 } from 'lucide-react';
+import { Pencil, Trash2 } from 'lucide-react';
 import { Link, useNavigate, useParams } from 'react-router';
 import { AuditEntryItem } from '@/components/audit-entry';
 import { displayText, FieldValue } from '@/components/field-value';
@@ -22,6 +22,7 @@ import { ApiError } from '@/lib/api';
 import { useRecordHistory } from '@/lib/audit';
 import { useCan } from '@/lib/capabilities';
 import {
+  editRecordPath,
   recordPath,
   useDeleteRecord,
   useChildRecords,
@@ -80,7 +81,10 @@ function RecordView({ entity, id, entities }: { entity: Entity; id: string; enti
             {displayText(row[entity.displayField])}
           </h1>
         </div>
-        <DeleteRecord entity={entity} record={{ ...record, id }} />
+        <div className="flex gap-2">
+          <EditRecord entity={entity} id={id} />
+          <DeleteRecord entity={entity} record={{ ...record, id }} />
+        </div>
       </div>
 
       <Tabs defaultValue="details">
@@ -163,6 +167,20 @@ function RecordHistory({ entity, id }: { entity: Entity; id: string }) {
         </Button>
       )}
     </div>
+  );
+}
+
+/** Shown only to users who may update; the server enforces the policy either way. */
+function EditRecord({ entity, id }: { entity: Entity; id: string }) {
+  const canUpdate = useCan(entity.key, 'update');
+  if (!canUpdate) return null;
+  return (
+    <Button variant="outline" asChild>
+      <Link to={editRecordPath(entity, id)}>
+        <Pencil />
+        Edit
+      </Link>
+    </Button>
   );
 }
 

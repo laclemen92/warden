@@ -26,6 +26,14 @@ export const routes: RouteObject[] = [
             element: page(async () => (await import('@/pages/entity-page')).EntityPage),
           },
           {
+            path: 'entities/:entity/-/new',
+            element: page(async () => (await import('@/pages/record-form-page')).CreateRecordPage),
+          },
+          {
+            path: 'entities/:entity/:id/edit',
+            element: page(async () => (await import('@/pages/record-form-page')).EditRecordPage),
+          },
+          {
             path: 'entities/:entity/:id',
             element: page(async () => (await import('@/pages/record-page')).RecordPage),
           },
