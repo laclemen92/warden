@@ -1,5 +1,5 @@
 import { relationFilter, type Entity, type Relation } from '@wardenhq/core';
-import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from './api';
 import { entityPath } from './schema';
 
@@ -30,6 +30,35 @@ export function useRecord(entity: Entity, id: string) {
   return useQuery({
     queryKey: ['record', entity.key, id],
     queryFn: () => apiFetch<RecordItem>(`${recordsUrl(entity.key)}/${encodeURIComponent(id)}`),
+  });
+}
+
+/**
+ * Delete a record, provided it is still at the version that was shown (a stale one fails with
+ * 409). Lists and related records that might include it are refetched.
+ */
+export function useDeleteRecord(entity: Entity) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (record: RecordItem & { id: string }) =>
+      apiFetch<void>(`${recordsUrl(entity.key)}/${encodeURIComponent(record.id)}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(record.version ? { version: record.version } : {}),
+      }),
+    onSuccess: (_, record) => {
+      // Other tables' rows can change too (cascades, set null), so refetch every list. The
+      // deleted record itself is left alone: refetching it would only 404 while the page leaves.
+      const deleted = JSON.stringify(['record', entity.key, record.id]);
+      void queryClient.invalidateQueries({
+        predicate: ({ queryKey }) =>
+          ['rows', 'children', 'parent', 'record'].includes(String(queryKey[0])) &&
+          JSON.stringify(queryKey) !== deleted,
+      });
+    },
+    // A conflict means the record changed (or another write raced); show its current state.
+    onError: (_, record) =>
+      queryClient.invalidateQueries({ queryKey: ['record', entity.key, record.id] }),
   });
 }
 

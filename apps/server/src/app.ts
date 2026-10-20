@@ -6,6 +6,7 @@ import type { EffectiveSchema, Policy } from '@wardenhq/core';
 import type { Database } from '@wardenhq/pg-adapter';
 import Fastify, { type FastifyServerOptions } from 'fastify';
 import { registerAuth, type AuthOptions } from './routes/auth.js';
+import { registerCapabilityRoutes } from './routes/capabilities.js';
 import { registerEntityRoutes } from './routes/entities.js';
 import { registerPolicy } from './routes/policy.js';
 import { registerSchemaDriftRoutes, type SchemaDriftOptions } from './routes/schema-drift.js';
@@ -62,6 +63,7 @@ export async function buildApp({
   if (schema && db && policy) {
     registerPolicy(app, schema, policy);
     registerEntityRoutes(app, schema, db, policy);
+    registerCapabilityRoutes(app, schema, policy);
   }
   if (drift && db) registerSchemaDriftRoutes(app, { ...drift, db });
 

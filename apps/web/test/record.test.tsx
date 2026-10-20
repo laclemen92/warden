@@ -102,6 +102,7 @@ const schema: EffectiveSchema = {
 
 const ada = {
   id: '42',
+  version: 'v1',
   values: {
     id: '42',
     company_id: '7',
@@ -115,13 +116,13 @@ const order = (id: number) => ({
   values: { id: String(id), user_id: '42', approved_by: null, status: 'paid' },
 });
 
-type Handler = (url: URL) => { status: number; body?: unknown } | undefined;
+type Handler = (url: URL, init?: RequestInit) => { status: number; body?: unknown } | undefined;
 
 function stubFetch(handler: Handler) {
-  const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input), 'http://warden.test');
     const res = (url.pathname === '/api/schema' ? { status: 200, body: schema } : undefined) ??
-      handler(url) ?? { status: 404, body: { message: 'Not Found' } };
+      handler(url, init) ?? { status: 404, body: { message: 'Not Found' } };
     return new Response(res.body === undefined ? null : JSON.stringify(res.body), {
       status: res.status,
       headers: { 'Content-Type': 'application/json' },
@@ -291,5 +292,110 @@ describe('record page', () => {
     renderAt(`/entities/users/${encodeURIComponent('a/b?c')}`);
     expect(await screen.findByRole('heading', { name: 'Not found' })).toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledWith('/api/entities/users/a%2Fb%3Fc', expect.anything());
+  });
+});
+
+describe('deleting a record', () => {
+  const capabilities = (actions: string[]) => ({
+    status: 200,
+    body: { entities: { users: { actions }, companies: { actions: ['read'] } } },
+  });
+  /** The backend, with the given capabilities and a DELETE handler for Ada. */
+  const withDelete =
+    (actions: string[], onDelete: (init: RequestInit) => { status: number; body?: unknown }) =>
+    (url: URL, init?: RequestInit) => {
+      if (url.pathname === '/api/capabilities') return capabilities(actions);
+      if (url.pathname === '/api/entities/users/42' && init?.method === 'DELETE') {
+        return onDelete(init);
+      }
+      if (url.pathname === '/api/entities/users') return list([]);
+      return backend(url);
+    };
+  const deleteButton = () => screen.queryByRole('button', { name: 'Delete' });
+  const openDialog = async () => {
+    await userEvent.click(await screen.findByRole('button', { name: 'Delete' }));
+    return screen.findByRole('alertdialog', { name: 'Delete ada@example.com?' });
+  };
+
+  /** Wait until capabilities have been fetched and the page has had a chance to use them. */
+  const capabilitiesSettled = async (fetchMock: ReturnType<typeof stubFetch>) => {
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.some(([input]) => input === '/api/capabilities')).toBe(true),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  };
+
+  it('hides the button from users who may not delete', async () => {
+    const fetchMock = stubFetch(withDelete(['read', 'update'], () => ({ status: 500 })));
+    renderAt('/entities/users/42');
+    await screen.findByRole('heading', { name: 'ada@example.com' });
+    await capabilitiesSettled(fetchMock);
+    expect(deleteButton()).not.toBeInTheDocument();
+  });
+
+  it('hides the button when capabilities fail to load', async () => {
+    const fetchMock = stubFetch((url) =>
+      url.pathname === '/api/capabilities' ? { status: 500 } : backend(url),
+    );
+    renderAt('/entities/users/42');
+    await screen.findByRole('heading', { name: 'ada@example.com' });
+    await capabilitiesSettled(fetchMock);
+    expect(deleteButton()).not.toBeInTheDocument();
+  });
+
+  it('deletes after confirming, sending the version shown, then returns to the list', async () => {
+    const deletes: RequestInit[] = [];
+    stubFetch(
+      withDelete(['read', 'delete'], (init) => {
+        deletes.push(init);
+        return { status: 204 };
+      }),
+    );
+    const router = renderAt('/entities/users/42');
+    const dialog = await openDialog();
+    expect(deletes).toHaveLength(0);
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Delete' }));
+    await waitFor(() => expect(router.state.location.pathname).toBe('/entities/users'));
+    expect(deletes).toHaveLength(1);
+    expect(JSON.parse(String(deletes[0]!.body))).toEqual({ version: 'v1' });
+  });
+
+  it('does nothing when cancelled', async () => {
+    const fetchMock = stubFetch(withDelete(['delete'], () => ({ status: 204 })));
+    renderAt('/entities/users/42');
+    const dialog = await openDialog();
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument());
+    expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'DELETE')).toBe(false);
+  });
+
+  it.each([
+    [
+      409,
+      'the record has changed since it was read',
+      'This record changed since you opened it. Review the current values and try again.',
+    ],
+    [
+      409,
+      'conflicts with existing records',
+      "This record can't be deleted while other records refer to it.",
+    ],
+    [403, 'Forbidden', "You don't have permission to delete this record."],
+    [500, 'Internal Server Error', "Couldn't delete this record."],
+  ])('explains a %i (%s) in the dialog', async (status, message, shown) => {
+    stubFetch(withDelete(['delete'], () => ({ status, body: { message } })));
+    const router = renderAt('/entities/users/42');
+    const dialog = await openDialog();
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Delete' }));
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent(shown);
+    expect(router.state.location.pathname).toBe('/entities/users/42');
+  });
+
+  it('returns to the list when the record was already deleted', async () => {
+    stubFetch(withDelete(['delete'], () => ({ status: 404, body: { message: 'Not Found' } })));
+    const router = renderAt('/entities/users/42');
+    const dialog = await openDialog();
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Delete' }));
+    await waitFor(() => expect(router.state.location.pathname).toBe('/entities/users'));
   });
 });

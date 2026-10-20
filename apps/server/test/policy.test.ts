@@ -191,3 +191,37 @@ describe('policy enforcement', () => {
     expect(res.statusCode).toBe(401);
   });
 });
+
+describe('GET /api/capabilities', () => {
+  it.each(USERS)('lists exactly the actions the routes allow %s', async (user) => {
+    const res = await send(user, 'GET', '/api/capabilities');
+    expect(res.statusCode).toBe(200);
+    const { entities } = res.json() as { entities: Record<string, { actions: Action[] }> };
+    for (const [entity, byUser] of Object.entries(ALLOWED)) {
+      expect(entities[entity]).toEqual({ actions: byUser[user] });
+    }
+    // The capabilities agree with what each route actually does.
+    for (const [entity, { actions }] of Object.entries(entities)) {
+      for (const action of ['read', 'create', 'update', 'delete'] as const) {
+        for (const [method, url, payload] of requests(entity, action)) {
+          const status = (await send(user, method, url, payload)).statusCode;
+          expect(status === 403, `${user} ${method} ${url}`).toBe(!actions.includes(action));
+        }
+      }
+    }
+  });
+
+  it('leaves out hidden entities', async () => {
+    const { entities } = (await send('admin', 'GET', '/api/capabilities')).json();
+    expect(entities).not.toHaveProperty('companies');
+    const schema = (await send('admin', 'GET', '/api/schema')).json() as {
+      entities: { key: string }[];
+    };
+    expect(Object.keys(entities).sort()).toEqual(schema.entities.map((e) => e.key).sort());
+  });
+
+  it('requires a session', async () => {
+    const res = await app.inject({ method: 'GET', url: '/api/capabilities' });
+    expect(res.statusCode).toBe(401);
+  });
+});
