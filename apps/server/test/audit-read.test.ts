@@ -446,7 +446,8 @@ describe('changes to restricted fields', () => {
         [null, ['updated_at']],
         ['name change', ['name', 'updated_at']],
       ]);
-      expect(JSON.stringify(page)).not.toMatch(/salary|raise|250/);
+      // Whole values only: timestamps and request ids can contain "250" by chance.
+      expect(JSON.stringify(page)).not.toMatch(/salary|raise|250000|260000/);
     }
   });
 });
