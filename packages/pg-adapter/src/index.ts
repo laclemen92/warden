@@ -25,6 +25,7 @@ export {
   deleteIn,
   deleteRow,
   insertIn,
+  lockKeyedRows,
   lockRow,
   lockRows,
   updateIn,

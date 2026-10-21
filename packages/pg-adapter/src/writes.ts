@@ -129,6 +129,24 @@ export async function lockRow(trx: Database, entity: Entity, filter: Filter) {
   return rows[0];
 }
 
+/**
+ * Lock the rows primary-key filters address, in primary-key order: transactions that lock
+ * overlapping rows then wait for each other instead of deadlocking.
+ */
+export async function lockKeyedRows(trx: Database, entity: Entity, filters: readonly Filter[]) {
+  if (filters.length === 0) return [];
+  const { rows } = await sql<Row>`
+    select ${selection(entity)} from ${entityRows(entity)}
+    where ${sql.join(
+      filters.map((f) => sql`(${compileFilter(f, ALIAS)})`),
+      sql` or `,
+    )}
+    order by ${sql.join(entity.primaryKey.map((key) => sql.id(ALIAS, key)))} for update`.execute(
+    trx,
+  );
+  return rows;
+}
+
 /** Lock every row matching a validated filter, at most `limit` of them. */
 export async function lockRows(trx: Database, entity: Entity, filter: Filter, limit: number) {
   const { rows } = await sql<Row>`
