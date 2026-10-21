@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from 'node:crypto';
+import { createCipheriv, createDecipheriv, createHash, hkdfSync, randomBytes } from 'node:crypto';
 import type { CookieSerializeOptions } from '@fastify/cookie';
 import {
   deleteExpiredSessions,
@@ -40,6 +40,42 @@ export interface Sessions {
 // The cookie holds a random token; the database only ever sees its hash.
 const hashToken = (token: string) => createHash('sha256').update(token).digest();
 
+// The ID token is only needed at logout, when the browser presents the session token, so it is
+// stored encrypted under a key derived from that token. A copy of the sessions table then holds
+// neither usable session tokens nor ID tokens.
+const SEALED = 'v1';
+const idTokenKey = (token: string) =>
+  Buffer.from(hkdfSync('sha256', token, '', 'warden session id_token', 32));
+
+export function sealIdToken(token: string, idToken: string): string {
+  const iv = randomBytes(12);
+  const cipher = createCipheriv('aes-256-gcm', idTokenKey(token), iv);
+  const data = Buffer.concat([cipher.update(idToken, 'utf8'), cipher.final()]);
+  return [SEALED, iv, data, cipher.getAuthTag()]
+    .map((part) => (typeof part === 'string' ? part : part.toString('base64url')))
+    .join('.');
+}
+
+/** The ID token sealed under `token`, or `undefined` if it wasn't (or was tampered with). */
+export function openIdToken(token: string, sealed: string): string | undefined {
+  const [version, iv, data, tag, ...rest] = sealed.split('.');
+  if (version !== SEALED || !iv || !data || !tag || rest.length > 0) return undefined;
+  try {
+    const decipher = createDecipheriv(
+      'aes-256-gcm',
+      idTokenKey(token),
+      Buffer.from(iv, 'base64url'),
+    );
+    decipher.setAuthTag(Buffer.from(tag, 'base64url'));
+    return Buffer.concat([
+      decipher.update(Buffer.from(data, 'base64url')),
+      decipher.final(),
+    ]).toString('utf8');
+  } catch {
+    return undefined;
+  }
+}
+
 export function createSessions(db: Database, settings: AuthSettings): Sessions {
   const secure = settings.publicUrl.protocol === 'https:';
   const timeouts: SessionTimeouts = {
@@ -77,7 +113,12 @@ export function createSessions(db: Database, settings: AuthSettings): Sessions {
       // Opportunistic cleanup; logins are rare enough that this stays cheap.
       await deleteExpiredSessions(db, timeouts);
       const token = randomBytes(32).toString('base64url');
-      await insertSession(db, { tokenHash: hashToken(token), ...user });
+      const { idToken, ...rest } = user;
+      await insertSession(db, {
+        tokenHash: hashToken(token),
+        ...rest,
+        ...(idToken ? { idToken: sealIdToken(token, idToken) } : {}),
+      });
       reply.setCookie(session.name, token, session.options);
     },
 
@@ -90,7 +131,7 @@ export function createSessions(db: Database, settings: AuthSettings): Sessions {
       const token = readToken(req);
       const ended = token ? await deleteSession(db, hashToken(token)) : undefined;
       reply.clearCookie(session.name, { ...session.options, maxAge: 0 });
-      return ended?.idToken ?? undefined;
+      return token && ended?.idToken ? openIdToken(token, ended.idToken) : undefined;
     },
   };
 }

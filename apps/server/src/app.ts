@@ -124,13 +124,15 @@ export async function buildApp({
   if (drift && db) registerSchemaDriftRoutes(app, { ...drift, db });
   if (roles && db) registerRoleRoutes(app, { ...roles, db });
 
-  if (webDir && existsSync(webDir)) {
-    await app.register(fastifyStatic, { root: webDir });
-    app.setNotFoundHandler((req, reply) => {
-      if (req.method === 'GET' && !req.url.startsWith('/api/')) return reply.sendFile('index.html');
-      return reply.code(404).send({ error: 'Not Found' });
-    });
-  }
+  const serveWeb = webDir !== undefined && existsSync(webDir);
+  if (serveWeb) await app.register(fastifyStatic, { root: webDir });
+  // Replaces Fastify's default, which logs and echoes the raw URL, query string and all.
+  app.setNotFoundHandler((req, reply) => {
+    if (serveWeb && req.method === 'GET' && !req.url.startsWith('/api/')) {
+      return reply.sendFile('index.html');
+    }
+    return reply.code(404).send({ statusCode: 404, error: 'Not Found', message: 'Not Found' });
+  });
 
   return app;
 }

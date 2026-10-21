@@ -76,9 +76,18 @@ export function registerAuditRoutes(
     );
   };
 
-  const page = async (query: AuditQuery) => {
+  const isAuditAdmin = (req: FastifyRequest) =>
+    adminAreas(roleConfig, req.roles ?? []).includes('audit');
+
+  const page = async (query: AuditQuery, { withRoles = true } = {}) => {
     const { entries, hasMore } = await listAuditEntries(db, query);
-    return { items: entries, nextCursor: hasMore ? (entries.at(-1)?.id ?? null) : null };
+    const items = withRoles
+      ? entries
+      : entries.map((entry) => ({
+          ...entry,
+          actor: { subject: entry.actor.subject, email: entry.actor.email },
+        }));
+    return { items, nextCursor: hasMore ? (entries.at(-1)?.id ?? null) : null };
   };
 
   // Under /api/entities/:entity, so the policy hook requires `read` on the entity first.
@@ -91,13 +100,18 @@ export function registerAuditRoutes(
       // Only a well-formed id can match an entry. The record itself may since have been deleted.
       if (!decodeRecordId(entity, req.params.id).ok) return notFound(reply);
       const { cursor, limit } = req.query;
-      return page({
-        visible: { [entity.key]: entity.fields.map((f) => f.name) },
-        entity: entity.key,
-        recordId: req.params.id,
-        limit,
-        ...(cursor !== undefined ? { before: cursor } : {}),
-      });
+      // Anyone who may read the record sees who changed it, but which roles people hold (who
+      // is an admin, who is in HR) is for audit admins.
+      return page(
+        {
+          visible: { [entity.key]: entity.fields.map((f) => f.name) },
+          entity: entity.key,
+          recordId: req.params.id,
+          limit,
+          ...(cursor !== undefined ? { before: cursor } : {}),
+        },
+        { withRoles: isAuditAdmin(req) },
+      );
     },
   );
 
@@ -107,7 +121,7 @@ export function registerAuditRoutes(
       schema: { querystring: searchQuerySchema },
       // Before the query is validated, so other users can't tell the route exists.
       onRequest: async (req, reply) => {
-        if (!adminAreas(roleConfig, req.roles ?? []).includes('audit')) {
+        if (!isAuditAdmin(req)) {
           reply.callNotFound();
           return reply;
         }

@@ -196,7 +196,7 @@ describe('record history', () => {
       entity: 'companies',
       recordId: company.id,
       reason: 'typo',
-      actor: { subject: 'editor', email: 'editor@example.com', roles: ['ops'] },
+      actor: { subject: 'editor', email: 'editor@example.com' },
       diff: { name: { from: 'Audited Co', to: 'Renamed Co' } },
       before: { name: 'Audited Co' },
       after: { name: 'Renamed Co' },
@@ -209,6 +209,19 @@ describe('record history', () => {
     expect(ids(page)).toEqual(
       await expectedIds(`entity = 'companies' and record_id = $1`, [company.id]),
     );
+  });
+
+  it("shows the actor's roles only to audit admins", async () => {
+    const [entry] = (await history('viewer', 'companies', company.id)).items;
+    expect(entry!.actor).toEqual({ subject: 'editor', email: 'editor@example.com' });
+    for (const user of ['editor', 'admin'] as const) {
+      const [own] = (await history(user, 'companies', company.id)).items;
+      expect(own!.actor).toEqual({
+        subject: 'editor',
+        email: 'editor@example.com',
+        roles: ['ops'],
+      });
+    }
   });
 
   it('pages with a cursor', async () => {

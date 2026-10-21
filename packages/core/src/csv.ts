@@ -1,8 +1,10 @@
 import type { Field } from './effective-schema.js';
 import { fieldCategory } from './filter.js';
 
-// Spreadsheets run a cell that starts with one of these as a formula (CSV injection).
-const FORMULA_START = /^[=+\-@\t\r]/;
+// Spreadsheets run a cell that starts with one of these as a formula (CSV injection). Some trim
+// leading whitespace first, some read full-width forms as ASCII, and some locales start formulas
+// (or DDE calls) with `|` or `;`, so all of those count.
+const FORMULA_START = /^[\t\r]|^[\s\p{Cc}\p{Cf}]*[=+\-@|;＝＋－＠｜；]/u;
 
 /**
  * One CSV cell (RFC 4180). Nulls are empty, JSON and arrays are serialized, and text that a

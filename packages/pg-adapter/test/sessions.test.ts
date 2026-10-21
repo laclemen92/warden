@@ -84,6 +84,22 @@ describe('migrate', () => {
     await sql`delete from warden.sessions where subject like 'm%'`.execute(handle.db);
   });
 
+  it('drops ID tokens stored in plaintext before 0010', async () => {
+    await insertSession(handle.db, {
+      tokenHash: newHash(),
+      subject: 'plain',
+      claims: { sub: 'plain' },
+      idToken: 'header.payload.signature',
+    });
+    await sql`delete from warden.schema_migrations
+              where version = '0010_session_sealed_id_token'`.execute(handle.db);
+    expect(await migrate(handle.db)).toEqual(['0010_session_sealed_id_token']);
+    const { rows } = await sql`
+      select id_token from warden.sessions where subject = 'plain'`.execute(handle.db);
+    expect(rows).toEqual([{ id_token: null }]);
+    await sql`delete from warden.sessions where subject = 'plain'`.execute(handle.db);
+  });
+
   it("keeps Warden's own tables out of introspection", async () => {
     const model = await introspect(handle.pool, { schemas: ['public', 'warden'] });
     expect(model.tables.map((t) => `${t.schema}.${t.name}`)).toEqual(['public.widgets']);

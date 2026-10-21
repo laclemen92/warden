@@ -8,6 +8,7 @@ import type { MockOidc } from '@wardenhq/mock-oidc';
 import { readExampleSql, startPostgres, type TestDatabase } from '@wardenhq/testing';
 import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { openIdToken, sealIdToken } from '../src/auth/session.js';
 import { parseAuthSettings, parseDuration } from '../src/auth/settings.js';
 import { safeReturnTo } from '../src/routes/auth.js';
 import { createWarden } from '../src/warden.js';
@@ -331,7 +332,12 @@ describe('sessions', () => {
 
   it('logout revokes the session server-side and clears the cookie', async () => {
     const cookie = await login(app, 'editor');
-    const res = await app.inject({ method: 'POST', url: '/auth/logout', headers: { cookie } });
+    const res = await app.inject({
+      method: 'POST',
+      url: '/auth/logout',
+      headers: { cookie },
+      payload: {},
+    });
     expect(res.statusCode).toBe(200);
     expect(String(res.headers['set-cookie'])).toMatch(/^warden_session=;.*Max-Age=0/);
     // Replaying the old cookie no longer works.
@@ -368,8 +374,29 @@ describe('sessions', () => {
   });
 
   it('logout without a session still succeeds', async () => {
-    const res = await app.inject({ method: 'POST', url: '/auth/logout' });
+    const res = await app.inject({ method: 'POST', url: '/auth/logout', payload: {} });
     expect(res.statusCode).toBe(200);
+  });
+
+  it('logout requires a JSON body, so a cross-site form without Sec-Fetch-Site cannot send it', async () => {
+    const cookie = await login(app, 'viewer');
+    for (const type of ['text/plain', 'application/x-www-form-urlencoded', 'multipart/form-data']) {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/auth/logout',
+        headers: { cookie, 'content-type': type },
+        payload: 'x=1',
+      });
+      expect(res.statusCode).toBe(415);
+    }
+    // Encoded paths reach the same route, and are refused the same way.
+    const encoded = await app.inject({
+      method: 'POST',
+      url: '/%61uth/logout',
+      headers: { cookie },
+    });
+    expect([404, 415]).toContain(encoded.statusCode);
+    expect((await get('/api/me', cookie)).statusCode).toBe(200);
   });
 
   it('logout is not available over GET', async () => {
@@ -488,7 +515,12 @@ describe('cross-site request forgery', () => {
 
 describe('IdP logout', () => {
   const logout = (cookie?: string) =>
-    app.inject({ method: 'POST', url: '/auth/logout', ...(cookie ? { headers: { cookie } } : {}) });
+    app.inject({
+      method: 'POST',
+      url: '/auth/logout',
+      payload: {},
+      ...(cookie ? { headers: { cookie } } : {}),
+    });
   const jwtPayload = (jwt: string) =>
     JSON.parse(Buffer.from(jwt.split('.')[1] ?? '', 'base64url').toString()) as Record<
       string,
@@ -534,6 +566,52 @@ describe('IdP logout', () => {
     expect(url.searchParams.has('id_token_hint')).toBe(false);
   });
 
+  it('stores the ID token only encrypted under the session token', async () => {
+    const jar = new Map<string, string>();
+    const { authorizeUrl, cookies } = await beginLogin(app);
+    const res = await callback(app, await signInAtIdp(authorizeUrl, 'editor', jar), cookies);
+    const [name, value] = [...cookiesFrom(res.headers['set-cookie'])].find(([k]) =>
+      k.includes('warden_session'),
+    )!;
+    const cookie = `${name}=${value}`;
+    const { rows } = await sqlPool.query<{ id_token: string }>(
+      `select id_token from warden.sessions order by created_at desc limit 1`,
+    );
+    const stored = rows[0]!.id_token;
+    expect(stored).toMatch(/^v1\./);
+    // A JWT's header and payload are base64url JSON, which always starts with "eyJ".
+    expect(stored).not.toContain('eyJ');
+
+    // Tampered with in the database, it is dropped from the logout URL rather than sent.
+    const [v, iv, data, tag] = stored.split('.');
+    const flipped = `${data!.slice(0, -2)}${data!.endsWith('AA') ? 'AB' : 'AA'}`;
+    await sqlPool.query(`update warden.sessions set id_token = $1 where id_token = $2`, [
+      [v, iv, flipped, tag].join('.'),
+      stored,
+    ]);
+    const out = await logout(cookie);
+    expect(out.statusCode).toBe(200);
+    expect(
+      new URL(out.json<{ redirectTo: string }>().redirectTo).searchParams.has('id_token_hint'),
+    ).toBe(false);
+  });
+
+  it('opens a sealed ID token only with the session token it was sealed under', () => {
+    const sealed = sealIdToken('token-a', 'header.payload.signature');
+    expect(openIdToken('token-a', sealed)).toBe('header.payload.signature');
+    expect(openIdToken('token-b', sealed)).toBeUndefined();
+    expect(sealIdToken('token-a', 'header.payload.signature')).not.toBe(sealed);
+    for (const bad of [
+      '',
+      'header.payload.signature',
+      'v1.a.b',
+      `${sealed}.x`,
+      `v2${sealed.slice(2)}`,
+    ]) {
+      expect(openIdToken('token-a', bad)).toBeUndefined();
+    }
+  });
+
   it("doesn't keep the ID token on a session after logout", async () => {
     const cookie = await login(app, 'viewer');
     const count = async () =>
@@ -557,6 +635,7 @@ describe('IdP logout', () => {
         method: 'POST',
         url: '/auth/logout',
         headers: { cookie },
+        payload: {},
       });
       expect(out.statusCode).toBe(204);
       expect(out.body).toBe('');
@@ -571,7 +650,7 @@ describe('IdP logout', () => {
   it('still logs out of Warden when the IdP is down', async () => {
     const downApp = await start({ OIDC_ISSUER: 'http://127.0.0.1:9' });
     try {
-      const out = await downApp.inject({ method: 'POST', url: '/auth/logout' });
+      const out = await downApp.inject({ method: 'POST', url: '/auth/logout', payload: {} });
       expect(out.statusCode).toBe(204);
       expect(String(out.headers['set-cookie'])).toMatch(/warden_session=;.*Max-Age=0/);
     } finally {
@@ -609,6 +688,38 @@ describe('logging', () => {
         expect(line).not.toContain(code);
         expect(line).not.toContain(state);
       }
+    } finally {
+      await loggedApp.close();
+    }
+  });
+
+  it('redacts the URL of unmatched routes too, and does not echo it', async () => {
+    const lines: string[] = [];
+    const stream = new Writable({
+      write(chunk: Buffer, _encoding, done) {
+        lines.push(chunk.toString());
+        done();
+      },
+    });
+    // No webDir, so Fastify's own not-found handler would otherwise answer.
+    const loggedApp = await createWarden({
+      env: { DATABASE_URL: db.connectionString, WARDEN_CONFIG: EXAMPLE_CONFIG, ...authEnv(idp) },
+      logger: { level: 'info', stream },
+    });
+    try {
+      for (const url of [
+        '/nope?code=secret-code-1',
+        '/auth/nope?returnTo=secret-code-2',
+        '/%61uth/nope?x=secret-code-3',
+      ]) {
+        for (const method of ['GET', 'POST'] as const) {
+          const res = await loggedApp.inject({ method, url });
+          expect(res.statusCode).toBe(404);
+          expect(res.json()).toEqual({ statusCode: 404, error: 'Not Found', message: 'Not Found' });
+        }
+      }
+      expect(lines.some((l) => l.includes('/nope'))).toBe(true);
+      expect(lines.join('')).not.toContain('secret-code');
     } finally {
       await loggedApp.close();
     }

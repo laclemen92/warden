@@ -158,6 +158,15 @@ export const MIGRATIONS: readonly Migration[] = [
         and claims->'email_verified' is distinct from '"true"'::jsonb;
     `,
   },
+  {
+    version: '0010_session_sealed_id_token',
+    sql: `
+      -- ID tokens are now stored encrypted under a key only the browser's session cookie can
+      -- derive. The plaintext ones stored before are dropped; those users just log out without
+      -- an id_token_hint.
+      update warden.sessions set id_token = null;
+    `,
+  },
 ];
 
 // Arbitrary constant shared by every Warden instance, so replicas don't migrate concurrently.
@@ -217,16 +226,21 @@ export async function pendingMigrations(
 }
 
 /**
- * Whether the connected role could switch off the audit log's append-only triggers: it owns
- * `warden.audit_log` (directly or through a role it belongs to) or is a superuser. False when the
- * table doesn't exist.
+ * Whether the connected role could switch off the audit log's append-only triggers: it is a
+ * superuser, or owns (directly or through a role it belongs to) `warden.audit_log` (so it can
+ * disable them), the `warden` schema (so it can drop the table), or the trigger function (so
+ * `create or replace` can make it a no-op). False when the table doesn't exist.
  */
 export async function canDisableAuditTriggers(db: Database): Promise<boolean> {
   const { rows } = await sql<{ can: boolean }>`
-    select r.rolsuper or pg_has_role(current_user, c.relowner, 'MEMBER') as can
-    from pg_class c, pg_roles r
-    where c.oid = to_regclass(${`${WARDEN_SCHEMA}.audit_log`}) and r.rolname = current_user`.execute(
-    db,
-  );
+    select r.rolsuper
+           or pg_has_role(current_user, c.relowner, 'MEMBER')
+           or pg_has_role(current_user, n.nspowner, 'MEMBER')
+           or coalesce(pg_has_role(current_user, p.proowner, 'MEMBER'), false) as can
+    from pg_class c
+    join pg_namespace n on n.oid = c.relnamespace
+    join pg_roles r on r.rolname = current_user
+    left join pg_proc p on p.oid = to_regprocedure(${`${WARDEN_SCHEMA}.audit_log_append_only()`})
+    where c.oid = to_regclass(${`${WARDEN_SCHEMA}.audit_log`})`.execute(db);
   return rows[0]?.can ?? false;
 }

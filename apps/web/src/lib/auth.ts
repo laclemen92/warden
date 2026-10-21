@@ -73,9 +73,13 @@ export function useCurrentUser() {
  */
 export async function logout(): Promise<string | undefined> {
   // Best effort: the session is gone either way once we land on the login page.
-  const res = await fetch(LOGOUT_URL, { method: 'POST', credentials: 'same-origin' }).catch(
-    () => undefined,
-  );
+  // JSON, like every other write, so a cross-site form can't log users out.
+  const res = await fetch(LOGOUT_URL, {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { 'content-type': 'application/json' },
+    body: '{}',
+  }).catch(() => undefined);
   if (res?.status !== 200) return undefined;
   const body = (await res.json().catch(() => undefined)) as { redirectTo?: unknown } | undefined;
   return typeof body?.redirectTo === 'string' ? body.redirectTo : undefined;
