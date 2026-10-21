@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Writable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
-import type { MockOidc } from '@wardenhq/mock-oidc';
+import { MOCK_USERS, type MockOidc } from '@wardenhq/mock-oidc';
 import { readExampleSql, startPostgres, type TestDatabase } from '@wardenhq/testing';
 import pg from 'pg';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -20,6 +20,7 @@ const EXAMPLE_CONFIG = fileURLToPath(
 );
 
 const CONFIG = `
+defaults: { read: granted }
 tables:
   users:
     columns:
@@ -32,11 +33,15 @@ roles:
   viewer: { grants: { '*': [read] } }
   ops:
     grants: { users: [read], companies: [read] }
-    actions: [move-user, fail-after-write, rename-companies, peek, purge-orders, switched-off]
+    actions:
+      [move-user, fail-after-write, rename-companies, peek, purge-orders, switched-off, stamp-login]
   admin:
     grants: { '*': [read, create, update, delete] }
     admin: [audit]
     actions: ['*']
+  auditor:
+    grants: { users: [read] }
+    admin: [audit]
 actions:
   switched-off: { disabled: true }
   rename-companies: { requireReason: true, label: Add a suffix }
@@ -45,6 +50,7 @@ access:
     warden-viewers: [viewer]
     warden-editors: [ops]
     warden-admins: [admin]
+    warden-auditors: [auditor]
 `;
 
 const NOT_FOUND = { statusCode: 404, error: 'Not Found', message: 'Not Found' };
@@ -61,6 +67,7 @@ let app: Awaited<ReturnType<typeof createWarden>>;
 let admin: string;
 let ops: string;
 let viewer: string;
+let auditor: string;
 const logLines: Record<string, unknown>[] = [];
 
 beforeAll(async () => {
@@ -72,7 +79,9 @@ beforeAll(async () => {
     ],
   });
   sqlPool = new pg.Pool({ connectionString: db.connectionString });
-  idp = await startTestIdp();
+  idp = await startTestIdp({
+    users: [...MOCK_USERS, { sub: 'auditor', name: 'Audrey Auditor', groups: ['warden-auditors'] }],
+  });
   const stream = new Writable({
     write(chunk, _encoding, done) {
       logLines.push(JSON.parse(String(chunk)));
@@ -91,6 +100,7 @@ beforeAll(async () => {
   admin = await login(app, 'admin');
   ops = await login(app, 'editor');
   viewer = await login(app, 'viewer');
+  auditor = await login(app, 'auditor');
 }, 120_000);
 
 afterAll(async () => {
@@ -136,7 +146,13 @@ describe('GET /api/actions', () => {
     const names = res.body.actions.map((a: { name: string }) => a.name);
     // Not ungranted (add-company), deny-covered (purge-orders), disabled in config
     // (switched-off), or on a hidden table (touch-secrets).
-    expect(names).toEqual(['fail-after-write', 'move-user', 'peek', 'rename-companies']);
+    expect(names).toEqual([
+      'fail-after-write',
+      'move-user',
+      'peek',
+      'rename-companies',
+      'stamp-login',
+    ]);
     const move = res.body.actions.find((a: { name: string }) => a.name === 'move-user');
     expect(move).toEqual({
       name: 'move-user',
@@ -175,7 +191,7 @@ describe('GET /api/actions', () => {
 
   it('names runnable actions per entity in capabilities', async () => {
     const caps = (await send('GET', '/api/capabilities', ops)).body;
-    expect(caps.entities.users.customActions).toEqual(['move-user', 'peek']);
+    expect(caps.entities.users.customActions).toEqual(['move-user', 'peek', 'stamp-login']);
     expect(caps.entities.companies.customActions).toEqual(['fail-after-write', 'rename-companies']);
     expect(
       (await send('GET', '/api/capabilities', viewer)).body.entities.users.customActions,
@@ -294,6 +310,7 @@ describe('POST /api/actions/:name/run', () => {
       details: {
         input: { company: '5', cancelPendingOrders: true, note: '[redacted]' },
         records: ['2'],
+        refs: { company: 'companies' },
       },
     });
     expect(children.map((c) => [c.action, c.entity, c.record_id])).toEqual([
@@ -334,6 +351,82 @@ describe('POST /api/actions/:name/run', () => {
     ]);
     const children = (await send('GET', `/api/audit?parent=${res.body.auditId}`, admin)).body.items;
     expect(children).toEqual([expect.objectContaining({ entity: 'users', recordId: '3' })]);
+  });
+
+  describe('who sees an action’s own entry', () => {
+    const history = async (cookie: string) =>
+      (await send('GET', '/api/entities/users/4/history', cookie)).body.items as {
+        id: string;
+        action: string;
+        reason: string | null;
+        details: unknown;
+        parent: unknown;
+      }[];
+    let stamp: string;
+    let move: string;
+
+    beforeAll(async () => {
+      await resetUser(4);
+      const stamped = await run('stamp-login', {
+        records: ['4'],
+        input: { at: '2020-01-02T03:04:05Z', company: '2', codes: ['a1', 'b2'] },
+        reason: 'secret reason re login',
+      });
+      expect(stamped.status, stamped.raw).toBe(200);
+      stamp = stamped.body.auditId;
+      const moved = await run('move-user', { records: ['4'], input: { company: '3' } });
+      expect(moved.status, moved.raw).toBe(200);
+      move = moved.body.auditId;
+    });
+
+    it('stores sensitive list items redacted', async () => {
+      const [entry] = await query('select details from warden.audit_log where id = $1', [stamp]);
+      expect(entry!.details).toMatchObject({ input: { codes: '[redacted]' } });
+    });
+
+    it('hides it, and its name, from readers not granted the action', async () => {
+      const entries = await history(viewer);
+      expect(entries.map((e) => e.id)).not.toContain(stamp);
+      expect(entries.map((e) => e.id)).not.toContain(move);
+      expect(JSON.stringify(entries)).not.toMatch(/secret reason|2020-01-02|stamp-login|move-user/);
+      // The row move-user changed is still listed, cut down as usual, without its link.
+      expect(entries[0]).toMatchObject({ action: 'update', parent: null });
+      expect(entries[0]!.details).toBeNull();
+    });
+
+    it('shows it to readers who could run the action', async () => {
+      const entries = await history(ops);
+      expect(entries.find((e) => e.id === stamp)).toMatchObject({
+        reason: 'secret reason re login',
+      });
+      // Exactly: the stored entity keys of picked records stay on the server.
+      expect(entries.find((e) => e.id === stamp)!.details).toEqual({
+        input: { at: '2020-01-02T03:04:05Z', company: '2', codes: '[redacted]' },
+        records: ['4'],
+      });
+      expect(entries[0]).toMatchObject({ parent: { id: move, action: 'move-user' } });
+    });
+
+    it('shows audit admins every action, without records picked from tables they can’t read', async () => {
+      const expected = {
+        reason: 'secret reason re login',
+        details: {
+          input: { at: '2020-01-02T03:04:05Z', codes: '[redacted]' },
+          records: ['4'],
+          redacted: true,
+        },
+      };
+      expect((await history(auditor)).find((e) => e.id === stamp)).toEqual(
+        expect.objectContaining(expected),
+      );
+      const search = (await send('GET', '/api/audit?action=stamp-login', auditor)).body.items;
+      expect(search.find((e: { id: string }) => e.id === stamp)).toEqual(
+        expect.objectContaining(expected),
+      );
+      expect((await history(admin)).find((e) => e.id === stamp)).toMatchObject({
+        details: { input: { company: '2' } },
+      });
+    });
   });
 
   it('runs against several records', async () => {

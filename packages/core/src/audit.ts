@@ -58,10 +58,24 @@ export interface AuditEntry {
  * pointing back at this one.
  */
 export interface ActionDetails {
-  /** The input as sent, with record ids for picked records and sensitive fields redacted. */
+  /**
+   * The input as sent, with record ids for picked records and sensitive fields redacted. Fields
+   * that pick records of an entity the caller can't read are left out.
+   */
   input: Record<string, unknown>;
   /** Ids of the records the action ran against. */
   records: string[];
+  /** Set when input fields were left out because the caller can't read what they picked. */
+  redacted?: true;
+}
+
+/** An action's details as the audit log stores them. */
+export interface StoredActionDetails extends ActionDetails {
+  /**
+   * Input field → entity key, for the fields that pick records. Absent on entries written before
+   * it was recorded.
+   */
+  refs?: Record<string, string>;
 }
 
 export const isActionDetails = (details: AuditEntry['details']): details is ActionDetails =>
@@ -109,7 +123,8 @@ const pick = <T>(values: Record<string, T>, fields: ReadonlySet<string>): Record
 /**
  * An entry cut down to `fields`, the ones the caller can read on its entity now. Entries record
  * every field exposed at the time, so fields since hidden, or restricted by role, are dropped
- * exactly as reads drop them.
+ * exactly as reads drop them. A custom action's input isn't made of the entity's fields; it loses
+ * the fields that pick records of entities not in `entities`, the ones the caller can read.
  *
  * `written` is the fields an update set, as recorded with it; the rest of its diff is what the
  * database changed itself (defaults, triggers, generated columns). The reason is kept only when
@@ -121,6 +136,7 @@ export function projectAuditEntry(
   entry: AuditEntry,
   fields: readonly string[],
   written: readonly string[] | null = null,
+  entities: ReadonlySet<string> = new Set(),
 ): AuditEntry {
   const visible = new Set(fields);
   return {
@@ -129,14 +145,34 @@ export function projectAuditEntry(
     before: entry.before && pick(entry.before, visible),
     after: entry.after && pick(entry.after, visible),
     diff: pick(entry.diff, visible),
-    // Entities' entries have export or custom action details. An action's input isn't made of
-    // the entity's fields, so there is nothing to cut down.
+    // Entities' entries have export or custom action details.
     details: isActionDetails(entry.details)
-      ? entry.details
+      ? projectActionDetails(entry.details, entities)
       : entry.details && 'columns' in entry.details
         ? projectDetails(entry.details, visible)
         : null,
   };
+}
+
+/**
+ * Action details without the input fields that pick records of entities not in `entities`. Entries
+ * from before the picked entities were recorded can't tell which fields those are, so they lose
+ * their whole input.
+ */
+function projectActionDetails(
+  details: StoredActionDetails,
+  entities: ReadonlySet<string>,
+): ActionDetails {
+  const { input, records, refs } = details;
+  const kept = refs
+    ? Object.fromEntries(
+        Object.entries(input).filter(
+          ([field]) => !Object.hasOwn(refs, field) || entities.has(refs[field]!),
+        ),
+      )
+    : {};
+  const redacted = Object.keys(kept).length < Object.keys(input).length;
+  return { input: kept, records, ...(redacted ? { redacted: true as const } : {}) };
 }
 
 // Creates and deletes change whether the row exists, which every reader of the entity can see.

@@ -1,6 +1,5 @@
 import {
   ACCESS_AUDIT_ACTIONS,
-  type ActionDetails,
   auditDiff,
   encodeRecordId,
   projectAuditEntry,
@@ -8,6 +7,7 @@ import {
   type Entity,
   type ExportDetails,
   type RevokeSessionsDetails,
+  type StoredActionDetails,
 } from '@wardenhq/core';
 import { sql, type Expression, type SqlBool } from 'kysely';
 import type { Database } from './database.js';
@@ -101,7 +101,7 @@ export async function insertActionEntry(
     entity: Entity;
     /** The target row, for `target: 'one'`. */
     record?: Record<string, unknown>;
-    details: ActionDetails;
+    details: StoredActionDetails;
   },
 ): Promise<string> {
   const primaryKey =
@@ -155,9 +155,16 @@ export interface AuditQuery {
    * Per entity key, the fields the caller can read. Only these entities' entries are returned,
    * cut down to these fields, and an update that wasn't asked to change any of these fields is
    * left out, so fields the caller can't see leave no trace. Fields the database changed itself
-   * (such as an `updated_at` trigger) don't count.
+   * (such as an `updated_at` trigger) don't count. Custom action inputs that pick records of
+   * entities not listed here are cut too.
    */
   visible: Record<string, readonly string[]>;
+  /**
+   * Custom actions whose own entries (what was asked for: the input and reason) are returned, by
+   * name. Other actions' entries are left out, and the rows they changed lose their link to them,
+   * so the action's name doesn't show either. Omit for every action.
+   */
+  actions?: readonly string[];
   /**
    * Also return role assignment and session revocation entries (`ACCESS_AUDIT_ACTIONS`), in
    * full. Only for callers with `admin: [audit]`.
@@ -198,7 +205,7 @@ interface AuditRow {
   before: Record<string, unknown> | null;
   after: Record<string, unknown> | null;
   diff: AuditEntry['diff'] | null;
-  details: ExportDetails | ActionDetails | { sessions: number; email?: string } | null;
+  details: ExportDetails | StoredActionDetails | { sessions: number; email?: string } | null;
   primary_key: Record<string, unknown> | null;
   written: string[] | null;
   parent_id: string | null;
@@ -219,9 +226,10 @@ const revokeDetails = (row: AuditRow): RevokeSessionsDetails => ({
 
 /** Audit entries matching `query`, newest first. */
 export async function listAuditEntries(db: Database, query: AuditQuery): Promise<AuditPage> {
-  const { visible, includeAccessEntries, entity, recordId, actor, action } = query;
+  const { visible, actions, includeAccessEntries, entity, recordId, actor, action } = query;
   const { from, to, parentId, before, limit } = query;
   const fields = sql`${JSON.stringify(visible)}::jsonb`;
+  const readable = new Set(Object.keys(visible));
   const entityEntry = sql<SqlBool>`(${fields} ? a.entity and
     -- The case keeps jsonb_object_keys away from diffs that aren't objects. An update counts only
     -- the fields it set; entries from before those were recorded count every changed field.
@@ -235,6 +243,12 @@ export async function listAuditEntries(db: Database, query: AuditQuery): Promise
   const conditions: Expression<SqlBool>[] = [
     includeAccessEntries ? sql<SqlBool>`(${entityEntry} or ${accessEntry})` : entityEntry,
   ];
+  if (actions !== undefined) {
+    // An action's own entry is the one without a parent that has input.
+    conditions.push(sql<SqlBool>`(a.parent_id is not null
+      or not coalesce(a.details ? 'input', false)
+      or a.action = any (${[...actions]}::text[]))`);
+  }
   if (entity !== undefined) conditions.push(sql<SqlBool>`a.entity = ${entity}`);
   if (recordId !== undefined) conditions.push(sql<SqlBool>`a.record_id = ${recordId}`);
   if (actor !== undefined) {
@@ -274,13 +288,16 @@ export async function listAuditEntries(db: Database, query: AuditQuery): Promise
         before: row.before,
         after: row.after,
         diff: row.diff ?? {},
-        details: row.details as ExportDetails | ActionDetails | null,
+        details: row.details as ExportDetails | StoredActionDetails | null,
         parent:
-          row.parent_id !== null ? { id: row.parent_id, action: row.parent_action ?? '' } : null,
+          row.parent_id !== null &&
+          (actions === undefined || actions.includes(row.parent_action ?? ''))
+            ? { id: row.parent_id, action: row.parent_action ?? '' }
+            : null,
       };
       // An entity's entry, or (only when asked for) an access entry, which is shown in full.
       if (Object.hasOwn(visible, row.entity)) {
-        return projectAuditEntry(entry, visible[row.entity]!, row.written);
+        return projectAuditEntry(entry, visible[row.entity]!, row.written, readable);
       }
       return row.action === 'revoke_sessions' ? { ...entry, details: revokeDetails(row) } : entry;
     }),

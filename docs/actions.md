@@ -147,7 +147,7 @@ The action's `input` is the form. Each field becomes a control:
 | `ref('companies')`, `z.array(ref(...))`              | a record picker for that table                              |
 | `.optional()`, `.nullable()`, `.default()`           | not required / prefilled                                    |
 | `.meta({ label, description, placeholder, widget })` | label, help text, placeholder                               |
-| `.meta({ sensitive: true })`                         | redacted in the audit log                                   |
+| `.meta({ sensitive: true })`                         | redacted in the audit log, also on a list's items           |
 
 Anything else at the top level (nested objects, unions, transforms) fails startup, because no form can be rendered for it. Refinements (`.refine`, `.superRefine`) are fine; they run on the server. Unknown input keys are rejected.
 
@@ -182,7 +182,7 @@ Await every `tx` call (`for ... of`, or `await Promise.all(...)`; not `records.f
 
 ## Audit log
 
-A run writes one entry for the action itself (its `action` is the action's name, with the input and target record ids, sensitive fields redacted, and the actor, roles, reason and request id) and one entry per changed row, exactly like a CRUD write, linked to it by `parent_id`. The action's entry is written before `run` and records what was asked; the log is append-only, so the result isn't added afterwards (it is in the response and the server log). A record's History shows its rows' entries "as part of" the action, and the action's own entry when the action targeted that record; on the audit log page, an action's entry links to the rows it changed (`/api/audit?parent=<id>`). Failed runs leave no entry, since they roll back; they are logged with the request id.
+A run writes one entry for the action itself (its `action` is the action's name, with the input and target record ids, sensitive fields redacted, and the actor, roles, reason and request id) and one entry per changed row, exactly like a CRUD write, linked to it by `parent_id`. The action's entry is written before `run` and records what was asked; the log is append-only, so the result isn't added afterwards (it is in the response and the server log). A record's History shows its rows' entries "as part of" the action, and the action's own entry when the action targeted that record; on the audit log page, an action's entry links to the rows it changed (`/api/audit?parent=<id>`). History shows the action's own entry (its input and reason) only to users who could run the action now and to audit admins; to everyone else it, and the action's name on the rows it changed, doesn't exist. Input that picks records from a table the user can't read is left out for everyone. See [Audit log](config.md#audit-log). Failed runs leave no entry, since they roll back; they are logged with the request id.
 
 ## HTTP API
 

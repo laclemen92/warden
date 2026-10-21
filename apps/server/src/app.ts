@@ -107,7 +107,13 @@ export async function buildApp({
     registerPolicy(app, policy, views);
     registerEntityRoutes(app, schema, db, policy, views);
     registerCapabilityRoutes(app, policy, views, actions?.actionPolicy);
-    registerAuditRoutes(app, { db, policy, views, roles: auth?.roles ?? {} });
+    registerAuditRoutes(app, {
+      db,
+      policy,
+      views,
+      roles: auth?.roles ?? {},
+      actionPolicy: actions?.actionPolicy,
+    });
     registerExportRoutes(app, { db, policy, views, ...exports });
     registerSavedViewRoutes(app, { db, policy, views, roles: auth?.roles ?? {} });
     if (actions && auth) {

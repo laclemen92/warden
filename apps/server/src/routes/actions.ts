@@ -381,7 +381,11 @@ export function registerActionRoutes(app: FastifyInstance, options: ActionRouteO
           action: action.name,
           entity,
           ...(action.target === 'one' ? { record: rows[0]! } : {}),
-          details: { input: redactInput(input, action.sensitive), records: ids },
+          details: {
+            input: redactInput(input, action.sensitive),
+            records: ids,
+            refs: Object.fromEntries(action.refs.map((r) => [r.field, r.entity])),
+          },
         });
         const audit = auditHook({
           actor,

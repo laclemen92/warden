@@ -99,6 +99,28 @@ describe('checkActionDefinitions', () => {
     });
   });
 
+  it('finds sensitive fields however the marker is nested', () => {
+    const secret = z.string().meta({ sensitive: true });
+    const input = z.object({
+      plain: z.string(),
+      list: z.array(secret),
+      nullableList: z.array(secret).nullable(),
+      optionalList: z.array(secret).optional(),
+      inner: secret.nullable().default(null),
+      outer: z.string().nullable().meta({ sensitive: true }),
+      wholeList: z.array(z.string()).meta({ sensitive: true }),
+    });
+    const [spec] = specs(definition({ input }));
+    expect(spec!.sensitive).toEqual([
+      'list',
+      'nullableList',
+      'optionalList',
+      'inner',
+      'outer',
+      'wholeList',
+    ]);
+  });
+
   it('accepts every field type a form can show', () => {
     const input = z.object({
       text: z.string().max(10).meta({ label: 'Text', widget: 'textarea' }),

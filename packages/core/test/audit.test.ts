@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { auditDiff, projectAuditEntry, type AuditEntry } from '../src/audit.js';
+import {
+  auditDiff,
+  projectAuditEntry,
+  type AuditEntry,
+  type StoredActionDetails,
+} from '../src/audit.js';
 
 describe('auditDiff', () => {
   it('lists only changed fields on update', () => {
@@ -100,6 +105,49 @@ describe('projectAuditEntry', () => {
     it('is kept on creates and deletes, which every reader sees happen', () => {
       expect(reason({ ...raise, action: 'create' }, ['id'], ['salary'])).toBe(raise.reason);
       expect(reason({ ...raise, action: 'delete' }, ['id'], null)).toBe(raise.reason);
+    });
+  });
+
+  describe('custom action details', () => {
+    const details: StoredActionDetails = {
+      input: { company: '5', owner: '2', note: 'hi' },
+      records: ['1'],
+      refs: { company: 'companies', owner: 'users' },
+    };
+    const run: AuditEntry = { ...entry, action: 'move-user', before: null, after: null, diff: {} };
+    const project = (d: StoredActionDetails, entities: string[]) =>
+      projectAuditEntry({ ...run, details: d }, ['id'], null, new Set(entities)).details;
+
+    it('keeps picked records of readable entities, and never returns the stored refs', () => {
+      expect(project(details, ['users', 'companies'])).toEqual({
+        input: { company: '5', owner: '2', note: 'hi' },
+        records: ['1'],
+      });
+    });
+
+    it('leaves out records picked from entities the caller can’t read', () => {
+      expect(project(details, ['users'])).toEqual({
+        input: { owner: '2', note: 'hi' },
+        records: ['1'],
+        redacted: true,
+      });
+    });
+
+    it('leaves out the whole input when the picked entities weren’t recorded', () => {
+      const legacy = { input: details.input, records: details.records };
+      expect(project(legacy, ['users', 'companies'])).toEqual({
+        input: {},
+        records: ['1'],
+        redacted: true,
+      });
+      expect(project({ ...legacy, input: {} }, [])).toEqual({ input: {}, records: ['1'] });
+    });
+
+    it('ignores inherited property names', () => {
+      expect(project({ ...details, input: { toString: 'x' }, refs: {} }, ['__proto__'])).toEqual({
+        input: { toString: 'x' },
+        records: ['1'],
+      });
     });
   });
 

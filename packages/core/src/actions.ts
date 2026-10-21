@@ -122,6 +122,19 @@ function unwrap(property: InputProperty): InputProperty {
   return (property.anyOf as InputProperty[]).find((o) => o.type !== 'null') ?? property;
 }
 
+// The keywords a field's schema nests others under: nullable unions and array items.
+const SUBSCHEMA_KEYWORDS = ['anyOf', 'oneOf', 'allOf', 'items', 'prefixItems'];
+
+/**
+ * Whether `.meta({ sensitive: true })` is anywhere in a field's schema: on the field, inside
+ * `.nullable()`, or on its array's items. Any of them redacts the whole field.
+ */
+function marksSensitive(schema: unknown): boolean {
+  if (Array.isArray(schema)) return schema.some(marksSensitive);
+  if (!isObject(schema)) return false;
+  return schema.sensitive === true || SUBSCHEMA_KEYWORDS.some((k) => marksSensitive(schema[k]));
+}
+
 function inputSchemaOf(input: z.ZodObject, problem: (message: string) => void) {
   let schema: Record<string, unknown>;
   try {
@@ -146,7 +159,7 @@ function inputSchemaOf(input: z.ZodObject, problem: (message: string) => void) {
     const items = p.type === 'array' && isObject(p.items) ? p.items : undefined;
     const ref = (items ?? p)[REF_KEYWORD];
     if (typeof ref === 'string') refs.push({ field, entity: ref, many: items !== undefined });
-    if (property.sensitive === true || p.sensitive === true) sensitive.push(field);
+    if (marksSensitive(property)) sensitive.push(field);
   }
   // The server rejects unknown keys rather than stripping them.
   const inputSchema = { ...schema, type: 'object', properties, additionalProperties: false };
