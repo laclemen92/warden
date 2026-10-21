@@ -136,6 +136,16 @@ describe('openExport', () => {
     expect(handle.pool.idleCount).toBe(handle.pool.totalCount);
   });
 
+  it('settles every close only once its connection is back', async () => {
+    const result = await openExport(handle.db, accounts, { sort: sortOf(accounts) });
+    const busy = handle.pool.totalCount - handle.pool.idleCount;
+    const first = result.close();
+    // A second caller, e.g. a timeout racing a disconnect, waits for the same rollback.
+    await result.close();
+    expect(handle.pool.totalCount - handle.pool.idleCount).toBe(busy - 1);
+    await first;
+  });
+
   it('stops counting past maxRows', async () => {
     const capped = await openExport(handle.db, accounts, { sort: sortOf(accounts), maxRows: 3 });
     await capped.close();
@@ -168,7 +178,8 @@ describe('openExport', () => {
     expect((await batches.next()).value).toHaveLength(1);
     await expect.poll(() => timeouts, { timeout: 2000 }).toEqual(['idle']);
     await expect.poll(transactionsOpen).toBe(0);
-    expect(handle.pool.idleCount).toBe(handle.pool.totalCount);
+    // Postgres sees the rollback before the client has handed the connection back.
+    await expect.poll(() => handle.pool.idleCount).toBe(handle.pool.totalCount);
     // A reader that comes back finds the export over, not a broken cursor.
     expect(await batches.next()).toEqual({ done: true, value: undefined });
   });

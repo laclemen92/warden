@@ -161,33 +161,50 @@ export function registerExportRoutes(
         : entity.fields;
 
       const session = req.session!;
+      // A client that left before now (e.g. during the session lookup) has already fired 'close'.
+      if (reply.raw.destroyed) return;
       const release = acquire(session.subject);
       if (!release) return tooMany(reply);
-      // Every way the request ends closes the response, including a client that goes away.
-      reply.raw.once('close', release);
+
+      const opening = openExport(exportDb, entity, {
+        sort: sort.sort,
+        ...(combined ? { filter: combined } : {}),
+        maxRows: MAX_EXPORT_ROWS,
+        deadlineMs,
+        idleTimeoutMs,
+        onTimeout: (reason) => {
+          req.log.warn({ entity: entity.key, reason }, 'export timed out');
+          // Abort rather than end the response, so the download fails instead of looking complete.
+          reply.raw.destroy();
+        },
+      });
+      // Every path out ends here, once. The slot is freed only after the export's connection is
+      // back in the pool, so a client that leaves mid-count can't free its slot early and pile
+      // exports up waiting for a connection: the export pool is sized to the slots.
+      let ended: Promise<void> | undefined;
+      const end = () =>
+        (ended ??= opening
+          .then(
+            (rows) => rows.close(),
+            () => {},
+          )
+          .catch((err: unknown) => req.log.warn({ err }, 'could not end export'))
+          .finally(release));
+      // Every way the response ends closes it, including a client that goes away.
+      reply.raw.once('close', () => void end());
 
       let rows: RowExport;
       try {
-        rows = await openExport(exportDb, entity, {
-          sort: sort.sort,
-          ...(combined ? { filter: combined } : {}),
-          maxRows: MAX_EXPORT_ROWS,
-          deadlineMs,
-          idleTimeoutMs,
-          onTimeout: (reason) => {
-            req.log.warn({ entity: entity.key, reason }, 'export timed out');
-            // Abort rather than end the response, so the download fails instead of looking complete.
-            reply.raw.destroy();
-          },
-        });
+        rows = await opening;
       } catch (err) {
-        release();
+        await end();
         throw err;
       }
+      // The client left while the export was opening; 'close' has already ended it.
+      if (reply.raw.destroyed) return;
       try {
         if (rows.total > MAX_EXPORT_ROWS) {
-          await rows.close();
-          release();
+          await end();
           return badRequest(
             reply,
             `exports are limited to ${MAX_EXPORT_ROWS.toLocaleString('en-US')} rows; ` +
@@ -213,15 +230,10 @@ export function registerExportRoutes(
           },
         });
       } catch (err) {
-        await rows.close();
-        release();
+        await end();
         throw err;
       }
 
-      // A client that goes away before the stream starts never runs the generator's cleanup.
-      reply.raw.once('close', () => {
-        rows.close().catch((err: unknown) => req.log.warn({ err }, 'could not end export'));
-      });
       async function* lines() {
         try {
           yield BOM + csvHeader(fields);
@@ -229,7 +241,7 @@ export function registerExportRoutes(
             yield batch.map((row) => csvRow(fields, row)).join('');
           }
         } finally {
-          await rows.close();
+          await end();
         }
       }
       const stamp = new Date().toISOString().slice(0, 19).replaceAll(':', '-');

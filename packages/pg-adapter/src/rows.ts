@@ -100,7 +100,10 @@ export interface RowExport {
   total: number;
   /** The rows in order, a batch at a time. Ends the export when done or abandoned. */
   batches(): AsyncGenerator<Row[]>;
-  /** End the export without reading it. Safe to call more than once. */
+  /**
+   * End the export without reading it. Safe to call more than once; each call settles once the
+   * connection has been returned.
+   */
   close(): Promise<void>;
 }
 
@@ -122,22 +125,27 @@ export async function openExport(
     .setAccessMode('read only')
     .execute();
   let open = true;
+  let closing: Promise<void> | undefined;
   let deadline: NodeJS.Timeout | undefined;
   let idle: NodeJS.Timeout | undefined;
-  const close = async () => {
-    if (!open) return;
-    open = false;
-    clearTimeout(deadline);
-    clearTimeout(idle);
-    await trx.rollback().execute();
+  // Every caller waits for the same rollback, so once any `close()` settles the connection is back
+  // in the pool (callers count connections by it).
+  const close = () => {
+    if (!closing) {
+      open = false;
+      clearTimeout(deadline);
+      clearTimeout(idle);
+      closing = trx.rollback().execute();
+    }
+    return closing;
   };
   // A reader that stops pulling (a stalled download) would otherwise leave the transaction idle,
   // holding a connection and pinning its snapshot, until the client goes away.
   const timeOut = (reason: ExportTimeout) => {
     if (!open) return;
-    const closing = close();
+    const ending = close();
     onTimeout?.(reason);
-    closing.catch(() => {});
+    ending.catch(() => {});
   };
   const armIdle = () => {
     if (idleTimeoutMs === undefined || !open) return;
