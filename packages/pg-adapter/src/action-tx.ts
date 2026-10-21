@@ -176,7 +176,11 @@ export function createActionTx(trx: Database, options: ActionTxOptions): ActionT
   const idOf = (entity: Entity, target: string | RecordRef) => {
     if (typeof target === 'object' && target !== null) {
       if (target.entity !== entity.key) {
-        throw new ActionValidationError(`a ${target.entity} record is not a ${entity.key} record`);
+        throw new ActionValidationError(
+          `a ${target.entity} record is not a ${entity.key} record`,
+          [],
+          { entity: entity.key },
+        );
       }
       return target.id;
     }
@@ -191,7 +195,11 @@ export function createActionTx(trx: Database, options: ActionTxOptions): ActionT
   };
   const values = (entity: Entity, input: unknown, mode: 'create' | 'update') => {
     const record = validateRecord(entity, input, mode);
-    if (!record.ok) throw new ActionValidationError(`invalid ${entity.key} values`, record.errors);
+    if (!record.ok) {
+      throw new ActionValidationError(`invalid ${entity.key} values`, record.errors, {
+        entity: entity.key,
+      });
+    }
     return record.values;
   };
   const filterOf = (entity: Entity, input: unknown) => {
@@ -200,15 +208,19 @@ export function createActionTx(trx: Database, options: ActionTxOptions): ActionT
       throw new ActionValidationError(
         `invalid ${entity.key} filter`,
         result.errors.map((e) => ({ message: e.message })),
+        { entity: entity.key },
       );
     }
     return result.filter;
   };
-  const notFound = (entity: Entity) => new ActionValidationError(`${entity.key} record not found`);
+  const notFound = (entity: Entity) =>
+    new ActionValidationError(`${entity.key} record not found`, [], { entity: entity.key });
   const requireKey = (entity: Entity) => {
     if (entity.primaryKey.length === 0) {
       throw new ActionValidationError(
         `${entity.key} has no primary key, so its rows can't be addressed`,
+        [],
+        { entity: entity.key },
       );
     }
   };
@@ -229,7 +241,12 @@ export function createActionTx(trx: Database, options: ActionTxOptions): ActionT
         throw new ActionValidationError(`limit must be between 1 and ${MAX_TX_LIST_LIMIT}`);
       }
       const sort = resolveSort(entity, opts.sort);
-      if (!sort.ok) throw new ActionValidationError(sort.message);
+      // The message can name a field, so it goes with the details.
+      if (!sort.ok) {
+        throw new ActionValidationError(`invalid ${entity.key} sort`, [{ message: sort.message }], {
+          entity: entity.key,
+        });
+      }
       const filter = opts.filter === undefined ? undefined : filterOf(entity, opts.filter);
       const { rows } = await listRows(trx, entity, {
         sort: sort.sort,

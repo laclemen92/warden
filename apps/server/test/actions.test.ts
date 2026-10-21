@@ -543,6 +543,7 @@ describe('rollback', () => {
   it.each([
     ['the author’s ActionError', 'action-error', 400, { message: 'the author says no' }],
     ['an unexpected error', 'crash', 500, SERVER_ERROR],
+    ['an error with a 4xx statusCode', 'upstream', 500, SERVER_ERROR],
     ['a write outside permissions', 'outside-permissions', 500, SERVER_ERROR],
     ['a filter on a hidden column', 'hidden-column', 400, { message: 'invalid users filter' }],
     ['a hidden table', 'hidden-table', 400, { message: 'unknown entity "secrets"' }],
@@ -567,7 +568,62 @@ describe('rollback', () => {
     expect(await auditCount()).toBe(before);
     expect(effectList()).toEqual([]);
     // Nothing internal leaks into the response.
-    expect(res.raw).not.toMatch(/internal details|companies_domain_key|sql/i);
+    expect(res.raw).not.toMatch(/internal details|companies_domain_key|sql|upstream|token/i);
+  });
+
+  it('sends a generic 500 for errors action code throws with a 4xx statusCode', async () => {
+    for (const res of [
+      await run('fail-after-write', { records: ['20'], input: { how: 'upstream' } }),
+      await preview('fail-after-write', { records: ['20'], input: { how: 'upstream' } }),
+      await send('GET', '/api/actions/fail-after-write/defaults?record=1', ops),
+      await send('GET', '/api/actions/fail-after-write/defaults', ops),
+    ]) {
+      expect(res.status, res.raw).toBe(500);
+      expect(res.body).toEqual(SERVER_ERROR);
+    }
+    expect(logLines).toContainEqual(
+      expect.objectContaining({
+        action: 'fail-after-write',
+        err: expect.objectContaining({ message: expect.stringMatching(/^upstream said/) }),
+      }),
+    );
+    // The author's own error still reaches the user.
+    const own = await send('GET', '/api/actions/fail-after-write/defaults?record=20', ops);
+    expect(own).toMatchObject({ status: 400, body: { message: 'no defaults for this one' } });
+  });
+
+  it('names only fields the caller can read in invalid tx calls', async () => {
+    const fail = (how: string, cookie = ops) =>
+      run('fail-after-write', { records: ['20'], input: { how } }, cookie);
+    // ops can't read users.last_login_at.
+    const unreadable = await fail('unreadable-field');
+    expect(unreadable).toMatchObject({ status: 400, body: { message: 'invalid users values' } });
+    expect(unreadable.body.details).toBeUndefined();
+    expect(unreadable.raw).not.toMatch(/last_login_at/);
+    expect((await fail('unreadable-field', admin)).body.details).toEqual([
+      { message: expect.stringMatching(/^last_login_at: /) },
+    ]);
+    expect((await fail('readable-field')).body).toMatchObject({
+      message: 'invalid users values',
+      details: [{ message: expect.stringMatching(/^full_name: /) }],
+    });
+    // A filter's problems don't say which field they're about, so only those who can read every
+    // field get them.
+    const filter = await fail('missing-column');
+    expect(filter).toMatchObject({ status: 400, body: { message: 'invalid users filter' } });
+    expect(filter.body.details).toBeUndefined();
+    // ops can't read orders at all, so it isn't named.
+    const entity = await fail('unreadable-entity');
+    expect(entity).toMatchObject({
+      status: 400,
+      body: { message: 'the action made an invalid change' },
+    });
+    expect(entity.body.details).toBeUndefined();
+    expect(entity.raw).not.toMatch(/orders|status:/);
+    expect((await fail('unreadable-entity', admin)).body).toMatchObject({
+      message: 'invalid orders values',
+      details: [{ message: expect.stringMatching(/^status: /) }],
+    });
   });
 
   it('previews a caught constraint violation as the error, not as the result', async () => {

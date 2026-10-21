@@ -3,6 +3,12 @@
 /** Calls made by `afterCommit` callbacks, for the test to inspect. */
 export const effects = (globalThis.__wardenActionEffects ??= []);
 
+/** An error an SDK might throw: a 4xx `statusCode`, and a message not written for users. */
+const upstreamError = () =>
+  Object.assign(new Error('upstream said: select * from secrets where token=abc'), {
+    statusCode: 400,
+  });
+
 /** @type {import('@wardenhq/actions').ActionsModule} */
 export default ({ defineAction, z, ref, ActionError }) => [
   defineAction({
@@ -81,11 +87,15 @@ export default ({ defineAction, z, ref, ActionError }) => [
     name: 'fail-after-write',
     label: 'Fail',
     on: 'companies',
-    permissions: { companies: ['update', 'create'], orders: ['update'] },
+    permissions: { companies: ['update', 'create'], orders: ['update'], users: ['update'] },
     input: z.object({
       how: z.enum([
         'action-error',
         'crash',
+        'upstream',
+        'unreadable-field',
+        'readable-field',
+        'unreadable-entity',
         'outside-permissions',
         'hidden-column',
         'missing-column',
@@ -100,6 +110,11 @@ export default ({ defineAction, z, ref, ActionError }) => [
       ]),
     }),
     maxAffectedRows: 3,
+    // Fails too: with the author's error for company 20, otherwise like an SDK's.
+    defaults: ({ record }) => {
+      if (record?.id === '20') throw new ActionError('no defaults for this one');
+      throw upstreamError();
+    },
     async run({ tx, record, input, afterCommit }) {
       afterCommit(async () => {
         effects.push('should not run');
@@ -110,6 +125,17 @@ export default ({ defineAction, z, ref, ActionError }) => [
           throw new ActionError('the author says no', { field: 'how' });
         case 'crash':
           throw new Error('internal details that must not leak');
+        case 'upstream':
+          throw upstreamError();
+        case 'unreadable-field':
+          await tx.update('users', '4', { last_login_at: 'yesterday' });
+          break;
+        case 'readable-field':
+          await tx.update('users', '4', { full_name: 5 });
+          break;
+        case 'unreadable-entity':
+          await tx.update('orders', '1', { status: 5 });
+          break;
         case 'outside-permissions':
           await tx.delete('companies', record);
           break;

@@ -183,12 +183,16 @@ export class ActionError extends Error {
 
 /** A `tx` call was given something the entity rejects: an unknown field, a bad value or filter. */
 export class ActionValidationError extends Error {
+  /** Key of the entity the call addressed, so Warden can tell which fields the user may see. */
+  readonly entity?: string;
   constructor(
     message: string,
     readonly errors: FieldError[] = [],
+    options: { entity?: string } = {},
   ) {
     super(message);
     this.name = 'ActionValidationError';
+    if (options.entity !== undefined) this.entity = options.entity;
   }
 }
 
