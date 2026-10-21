@@ -1,5 +1,5 @@
 import type { WardenConfig, WriteAction } from '@wardenhq/config';
-import { ACTION_NAME, WRITE_ACTIONS } from '@wardenhq/config/schema';
+import { ACTION_NAME, RESERVED_ACTION_NAMES, WRITE_ACTIONS } from '@wardenhq/config/schema';
 import { z } from 'zod';
 import type { AuditDiff } from './audit.js';
 import type { EffectiveSchema, SchemaWarning } from './effective-schema.js';
@@ -222,6 +222,8 @@ export function checkActionDefinitions(definitions: unknown): ActionDefinitionCh
 
     if (typeof name !== 'string' || !ACTION_NAME.test(name)) {
       problem('name must match ^[a-z][a-z0-9-]*$');
+    } else if (RESERVED_ACTION_NAMES.includes(name)) {
+      problem(`name "${name}" is reserved for Warden's own audit entries`);
     } else if (names.has(name)) {
       problem('name is used by another action');
     } else {

@@ -65,7 +65,7 @@ export async function listRows(
   return result;
 }
 
-const orderBy = (sort: SortTerm[]) =>
+export const orderBy = (sort: SortTerm[]) =>
   sort.length
     ? sql`order by ${sql.join(
         sort.map(

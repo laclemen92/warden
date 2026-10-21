@@ -195,6 +195,29 @@ export default ({ defineAction, z, ref, ActionError }) => [
     },
   }),
 
+  // Read-modify-write: adds 10 to an order's total, reading it with or without a lock.
+  defineAction({
+    name: 'add-ten',
+    label: 'Add ten',
+    on: 'orders',
+    target: 'none',
+    permissions: { orders: ['update'] },
+    input: z.object({ order: z.string(), lock: z.boolean(), via: z.enum(['get', 'list']) }),
+    async run({ tx, input }) {
+      const order =
+        input.via === 'get'
+          ? await tx.get('orders', input.order, { lock: input.lock })
+          : (
+              await tx.list('orders', {
+                filter: { field: 'id', op: 'eq', value: input.order },
+                limit: 1,
+                lock: input.lock,
+              })
+            )[0];
+      await tx.update('orders', order, { total: Number(order.values.total) + 10 });
+    },
+  }),
+
   // Writes a field only admins can read, from free text, a picked record and a sensitive list.
   defineAction({
     name: 'stamp-login',

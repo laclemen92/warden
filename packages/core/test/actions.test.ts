@@ -165,6 +165,8 @@ describe('checkActionDefinitions', () => {
       }),
       definition({ name: 'y', input: z.string() }),
       definition({ name: 'z', input: z.object({ v: z.unknown() }), run: undefined }),
+      definition({ name: 'delete' }),
+      definition({ name: 'acknowledge' }),
       'not an object',
     ]);
     expect(result).toEqual({
@@ -180,7 +182,9 @@ describe('checkActionDefinitions', () => {
         'action "y": input must be a z.object() from the zod Warden passes in',
         'action "z": run must be a function',
         'action "z": input field "v": only strings, numbers, booleans, enums and dates are supported',
-        'action 5: expected an object from defineAction',
+        'action "delete": name "delete" is reserved for Warden\'s own audit entries',
+        'action "acknowledge": name "acknowledge" is reserved for Warden\'s own audit entries',
+        'action 7: expected an object from defineAction',
       ],
     });
   });
