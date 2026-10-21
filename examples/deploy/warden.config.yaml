@@ -1,0 +1,22 @@
+# Starter config: people from your email domain can sign in and read everything that
+# isn't hidden; nobody can write until a role is granted it. Reference: docs/config.md
+
+# Database schemas to show.
+schemas: [public]
+
+# Who may sign in, and with which roles. Anyone not matched is refused.
+access:
+  emailDomains:
+    example.com: [viewer]
+
+roles:
+  viewer:
+    grants:
+      '*': [read]
+
+# Hide anything people shouldn't see before inviting them, for example:
+# tables:
+#   api_keys: { hidden: true }
+#   users:
+#     columns:
+#       password_hash: { hidden: true }

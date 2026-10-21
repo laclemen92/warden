@@ -55,4 +55,4 @@ Pin a deployment by digest (from the Release notes) to be sure the image can't c
 docker pull ghcr.io/laclemen92/warden@sha256:<digest>
 ```
 
-The image listens on port 3000 and needs the environment variables in the [README](../README.md#authentication) plus `DATABASE_URL` and, usually, `WARDEN_CONFIG` pointing at a mounted config file. See [database setup](database.md) for migrations and database roles.
+To run it, see [deploying Warden](deployment.md). The image listens on port 3000 and needs the environment variables in the [README](../README.md#authentication) plus `DATABASE_URL` and, usually, `WARDEN_CONFIG` pointing at a mounted config file. See [database setup](database.md) for migrations and database roles.

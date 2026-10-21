@@ -1,0 +1,35 @@
+# Run Warden from a released image. See docs/deployment.md.
+#   cp .env.example .env   # then fill it in
+#   docker compose up -d
+services:
+  warden:
+    image: ${WARDEN_IMAGE:?set WARDEN_IMAGE in .env (see .env.example)}
+    env_file: .env
+    environment:
+      WARDEN_CONFIG: /config/warden.config.yaml
+    volumes:
+      - ./warden.config.yaml:/config/warden.config.yaml:ro
+    ports:
+      - '${WARDEN_PORT:-3000}:3000'
+    restart: unless-stopped
+
+  # Optional local Postgres for running against a copy of your database.
+  # Start it with: docker compose --profile local-db up -d --wait db
+  db:
+    profiles: [local-db]
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: warden
+      POSTGRES_PASSWORD: warden
+      POSTGRES_DB: app
+    ports:
+      - '${DB_PORT:-55432}:5432'
+    volumes:
+      - db-data:/var/lib/postgresql
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U warden -d app']
+      interval: 5s
+      retries: 10
+
+volumes:
+  db-data:
