@@ -312,7 +312,8 @@ function ErrorMessage({
 }) {
   const general = all ? Object.values(grouped).flat() : (grouped[''] ?? []);
   const message =
-    !(error instanceof ApiError) || error.status >= 500
+    // A 503 is Warden's own "took too long"; other 5xx carry nothing for the user.
+    !(error instanceof ApiError) || (error.status >= 500 && error.status !== 503)
       ? "Couldn't run this action."
       : error.status === 404
         ? 'This record no longer exists, or the action is no longer available to you.'

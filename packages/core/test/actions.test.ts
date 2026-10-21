@@ -2,8 +2,10 @@ import { wardenConfigSchema } from '@wardenhq/config';
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import {
+  DEFAULT_MAX_INPUT_ITEMS,
   canRunAction,
   checkActionDefinitions,
+  oversizedInputArrays,
   previewTokenPayload,
   redactInput,
   resolveActionPolicy,
@@ -153,7 +155,14 @@ describe('checkActionDefinitions', () => {
     const result = checkActionDefinitions([
       definition(),
       definition({ label: '' }),
-      definition({ name: 'x', target: 'all', confirm: 'never', maxAffectedRows: 0, timeoutMs: -1 }),
+      definition({
+        name: 'x',
+        target: 'all',
+        confirm: 'never',
+        maxAffectedRows: 0,
+        timeoutMs: -1,
+        deadlineMs: 1.5,
+      }),
       definition({ name: 'y', input: z.string() }),
       definition({ name: 'z', input: z.object({ v: z.unknown() }), run: undefined }),
       'not an object',
@@ -167,12 +176,46 @@ describe('checkActionDefinitions', () => {
         'action "x": confirm must be "preview" or "confirm"',
         'action "x": maxAffectedRows must be a positive integer',
         'action "x": timeoutMs must be a positive integer',
+        'action "x": deadlineMs must be a positive integer',
         'action "y": input must be a z.object() from the zod Warden passes in',
         'action "z": run must be a function',
         'action "z": input field "v": only strings, numbers, booleans, enums and dates are supported',
         'action 5: expected an object from defineAction',
       ],
     });
+  });
+
+  it('bounds every array field, keeping a bound the schema sets', () => {
+    const input = z.object({
+      tags: z.array(z.string()),
+      few: z.array(z.string()).max(3),
+      users: z.array(ref('users')).nullable(),
+    });
+    const [spec] = specs(definition({ input, deadlineMs: 5000 }));
+    expect(spec!.deadlineMs).toBe(5000);
+    const { properties } = spec!.inputSchema;
+    expect(properties.tags!.maxItems).toBe(DEFAULT_MAX_INPUT_ITEMS);
+    expect(properties.few!.maxItems).toBe(3);
+    const users = (properties.users!.anyOf as Record<string, unknown>[] | undefined)?.find(
+      (p) => p.type === 'array',
+    );
+    expect(users?.maxItems ?? properties.users!.maxItems).toBe(DEFAULT_MAX_INPUT_ITEMS);
+
+    const long = (n: number) => Array.from({ length: n }, (_, i) => String(i));
+    expect(oversizedInputArrays(spec!.inputSchema, { tags: long(500), few: long(3) })).toEqual([]);
+    expect(
+      oversizedInputArrays(spec!.inputSchema, {
+        tags: long(501),
+        few: long(4),
+        users: long(501),
+        unknown: long(1000),
+        text: 'not an array',
+      }),
+    ).toEqual([
+      { field: 'tags', message: 'must hold at most 500 items' },
+      { field: 'few', message: 'must hold at most 3 items' },
+      { field: 'users', message: 'must hold at most 500 items' },
+    ]);
   });
 
   it('allows no input', () => {

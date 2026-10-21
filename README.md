@@ -85,7 +85,7 @@ Custom actions (multi-step, transactional, audited operations written in code) a
 
 Request bodies are limited to 1 MiB; larger ones get a `413`. Set `WARDEN_BODY_LIMIT` (bytes, or a size like `512kb` or `2mb`) to change it. JSON values written to `json`/`jsonb` columns may nest at most 100 levels deep.
 
-Database timeouts and CSV export limits (how many may run at once, and when a stalled download is ended) are set with the `WARDEN_DB_*` and `WARDEN_EXPORT_*` variables in [timeouts and exports](docs/database.md#timeouts-and-exports).
+Database timeouts and CSV export limits (how many may run at once, and when a stalled download is ended) and custom action limits are set with the `WARDEN_DB_*`, `WARDEN_EXPORT_*` and `WARDEN_ACTION_*` variables in [timeouts, exports and actions](docs/database.md#timeouts-exports-and-actions).
 
 ## Development
 

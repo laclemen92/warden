@@ -194,6 +194,33 @@ export default ({ defineAction, z, ref, ActionError }) => [
     },
   }),
 
+  // Picks many records; they are looked up together.
+  defineAction({
+    name: 'pick-users',
+    label: 'Pick users',
+    on: 'users',
+    target: 'none',
+    permissions: {},
+    input: z.object({ users: z.array(ref('users')) }),
+    async run({ input }) {
+      return { message: input.users.map((u) => u.id).join(',') };
+    },
+  }),
+
+  // Never finishes, like a run awaiting a webhook that never answers.
+  defineAction({
+    name: 'hang',
+    label: 'Hang',
+    on: 'companies',
+    target: 'none',
+    permissions: {},
+    deadlineMs: 1500,
+    async run({ tx }) {
+      await tx.get('companies', '1');
+      await new Promise(() => {});
+    },
+  }),
+
   // Disabled at startup: config denies deleting orders.
   defineAction({
     name: 'purge-orders',

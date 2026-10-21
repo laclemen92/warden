@@ -1,6 +1,7 @@
 import { wardenConfigSchema } from '@wardenhq/config';
 import {
   decodeRecordId,
+  encodeRecordId,
   resolveSchema,
   validateRecord,
   type Entity,
@@ -14,6 +15,7 @@ import {
   createRow,
   deleteRow,
   getRow,
+  getRows,
   introspect,
   rowVersion,
   updateRow,
@@ -356,5 +358,35 @@ describe('rowVersion', () => {
     expect(rowVersion(things, { doc: null, name: 'a', id: 1 })).toBe(version);
     expect(rowVersion(things, { ...row, name: 'b' })).not.toBe(version);
     expect(rowVersion(things, { ...row, doc: 'a' })).not.toBe(version);
+  });
+});
+
+describe('getRows', () => {
+  it('finds each addressed row in order, like getRow does one at a time', async () => {
+    await sql`insert into pairs values (2, 'y', 'two') on conflict do nothing`.execute(handle.db);
+    const ids = [
+      encodeRecordId(pairs, { a: 2, b: 'y' })!,
+      encodeRecordId(pairs, { a: 9, b: 'none' })!,
+      encodeRecordId(pairs, { a: 1, b: 'x' })!,
+      encodeRecordId(pairs, { a: 2, b: 'y' })!,
+    ];
+    const filters = ids.map((id) => byId(pairs, id));
+    const one = await Promise.all(filters.map((f) => getRow(handle.db, pairs, f)));
+    expect(await getRows(handle.db, pairs, filters)).toEqual(one);
+    expect(one.map((r) => r?.a)).toEqual([2, undefined, 1, 2]);
+    expect(await getRows(handle.db, pairs, [])).toEqual([]);
+  });
+
+  it('never selects hidden columns, across batches', async () => {
+    const created = await createRow(
+      handle.db,
+      things,
+      valid(things, { name: 'batched' }, 'create'),
+    );
+    const filters = Array.from({ length: 501 }, () => byId(things, String(created.id)));
+    const rows = await getRows(handle.db, things, filters);
+    expect(rows).toHaveLength(501);
+    expect(rows.every((r) => r?.name === 'batched' && !('secret' in r))).toBe(true);
+    expect(Object.keys(rows[500]!).sort()).toEqual(things.fields.map((f) => f.name).sort());
   });
 });

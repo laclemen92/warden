@@ -8,12 +8,14 @@ import {
   introspect,
   migrate,
   pendingMigrations,
+  startDetachedTransaction,
 } from '@wardenhq/pg-adapter';
 import { ActionsError, loadActions } from './actions.js';
 import { buildApp, type AppOptions } from './app.js';
 import { createOidcClient } from './auth/oidc.js';
 import { createSessions } from './auth/session.js';
 import { parseAuthSettings, parseDuration } from './auth/settings.js';
+import type { ActionLimits } from './routes/actions.js';
 import type { ExportLimits } from './routes/export.js';
 
 export interface WardenOptions {
@@ -46,10 +48,11 @@ export function parseBodyLimit(value: string | undefined): number {
 export interface DatabaseSettings {
   idleInTransactionTimeoutMs: number;
   exports: ExportLimits;
+  actions: ActionLimits;
 }
 
 /**
- * Database timeouts and export limits from the environment. Throws one error listing every
+ * Database timeouts and export and action limits from the environment. Throws one error listing every
  * problem.
  */
 export function parseDatabaseSettings(env: Record<string, string | undefined>): DatabaseSettings {
@@ -73,6 +76,11 @@ export function parseDatabaseSettings(env: Record<string, string | undefined>): 
     idleTimeoutMs: duration('WARDEN_EXPORT_IDLE_TIMEOUT', '30s'),
     deadlineMs: duration('WARDEN_EXPORT_DEADLINE', '15m'),
   };
+  const actions: ActionLimits = {
+    maxConcurrent: count('WARDEN_ACTION_MAX_CONCURRENT', 4),
+    maxPerUser: count('WARDEN_ACTION_MAX_PER_USER', 2),
+    deadlineMs: duration('WARDEN_ACTION_DEADLINE', '60s'),
+  };
   // Otherwise Postgres kills a stalled export's connection before Warden ends it cleanly.
   if (exports.idleTimeoutMs >= idleInTransactionTimeoutMs) {
     problems.push(
@@ -82,7 +90,7 @@ export function parseDatabaseSettings(env: Record<string, string | undefined>): 
   if (problems.length > 0) {
     throw new Error(`Invalid database settings:\n${problems.map((p) => `  - ${p}`).join('\n')}`);
   }
-  return { idleInTransactionTimeoutMs, exports };
+  return { idleInTransactionTimeoutMs, exports, actions };
 }
 
 /**
@@ -125,8 +133,17 @@ export async function createWarden({
     maxConnections: dbSettings.exports.maxConcurrent,
     onIdleError: (err) => logIdleError(err),
   });
+  // Actions too, so runs that hang (on a webhook, say) or pile up can't starve the main pool.
+  // Each holds its connection for its whole run, and never more run at once than it has.
+  const actionDb = createDatabase({
+    connectionString,
+    idleInTransactionTimeoutMs: dbSettings.idleInTransactionTimeoutMs,
+    maxConnections: dbSettings.actions.maxConcurrent,
+    connectionTimeoutMs: 10_000,
+    onIdleError: (err) => logIdleError(err),
+  });
   const close = async () => {
-    await Promise.all([closeMain(), exportDb.close()]);
+    await Promise.all([closeMain(), exportDb.close(), actionDb.close()]);
   };
 
   try {
@@ -164,6 +181,8 @@ export async function createWarden({
       actionPolicy,
       definitions: new Map(loadedActions.map((a) => [a.spec.name, a.definition])),
       defaultSchema: config.schemas[0] ?? 'public',
+      startTransaction: () => startDetachedTransaction(actionDb.pool),
+      limits: dbSettings.actions,
     };
     const warnings = [...schemaWarnings, ...policyWarnings, ...actionWarnings];
     // The first start records the schema drift baseline.

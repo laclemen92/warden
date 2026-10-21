@@ -202,6 +202,34 @@ export async function getRow(
   return rows[0];
 }
 
+/** Lookups per statement in `getRows`. */
+const GET_ROWS_BATCH = 500;
+// Never an identifier introspection hands out unquoted, and stripped before rows are returned.
+const LOOKUP_INDEX = 'warden lookup index';
+
+/**
+ * The row each primary-key filter (from `decodeRecordId`) addresses, in order: undefined where
+ * there is none. One statement per 500 filters rather than one per filter. Each filter is its own
+ * branch, so two ids for the same row both find it.
+ */
+export async function getRows(
+  db: Database,
+  entity: Entity,
+  filters: readonly Filter[],
+): Promise<(Row | undefined)[]> {
+  const found: (Row | undefined)[] = filters.map(() => undefined);
+  for (let start = 0; start < filters.length; start += GET_ROWS_BATCH) {
+    const branches = filters.slice(start, start + GET_ROWS_BATCH).map(
+      (filter, i) =>
+        sql`(select ${sql.lit(start + i)} as ${sql.id(LOOKUP_INDEX)}, ${selection(entity)}
+             from ${from(entity)} where ${compileFilter(filter, ALIAS)} limit 1)`,
+    );
+    const { rows } = await sql<Row>`${sql.join(branches, sql` union all `)}`.execute(db);
+    for (const { [LOOKUP_INDEX]: index, ...row } of rows) found[Number(index)] = row;
+  }
+  return found;
+}
+
 /**
  * Rows strictly after `values` in `sort` order, matching `order by ... nulls last`:
  *   after(i) = gt(i) or (eq(i) and after(i + 1))
