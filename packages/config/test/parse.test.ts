@@ -184,6 +184,19 @@ actions:
     ]);
   });
 
+  it("rejects the names of Warden's own audit actions as action names", () => {
+    const found = issues(`
+roles:
+  ops: { actions: [delete, move-user] }
+actions:
+  export: { label: Export }
+`);
+    expect(found.map((i) => [i.path, i.message])).toEqual([
+      ['roles.ops.actions.0', expect.stringMatching(/"delete" is reserved/)],
+      ['actions.export', expect.stringMatching(/"export" is reserved/)],
+    ]);
+  });
+
   it('parses requireReason, which only takes write actions', () => {
     const config = parseConfig('tables:\n  users: { requireReason: [update, delete] }\n', FILE);
     expect(config.tables.users?.requireReason).toEqual(['update', 'delete']);

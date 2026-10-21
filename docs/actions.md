@@ -6,6 +6,7 @@ A custom action is a typed, multi-step operation, such as "move this user to ano
 - [Loading it](#loading-it)
 - [`defineAction`](#defineaction)
 - [The `tx` API](#the-tx-api)
+- [Concurrency](#concurrency)
 - [Input forms](#input-forms)
 - [Preview](#preview)
 - [Errors](#errors)
@@ -83,23 +84,23 @@ As with config, mistakes in code fail startup and mismatches with the database o
 
 ## `defineAction`
 
-| Key               | Type                                       | Default      | Description                                                                                                  |
-| ----------------- | ------------------------------------------ | ------------ | ------------------------------------------------------------------------------------------------------------ |
-| `name`            | string, `^[a-z][a-z0-9-]*$`                | required     | Stable id. Config grants, URLs and the audit log use it.                                                     |
-| `label`           | string                                     | required     | Shown on buttons and the dialog. Config can override it.                                                     |
-| `description`     | string                                     | none         | Shown in the dialog.                                                                                         |
-| `on`              | table key (`users`, `billing.invoices`)    | required     | The entity whose pages offer the action.                                                                     |
-| `target`          | `one`, `many`, `none`                      | `one`        | What it runs against (below).                                                                                |
-| `permissions`     | map of table key to writes                 | required     | Everything `run` may write. Checked at startup and at every write, and shown to the user before they run it. |
-| `input`           | `z.object({...})`                          | no input     | The form. See [Input forms](#input-forms).                                                                   |
-| `defaults`        | `({ record, actor }) => values`            | none         | Prefills the form when the dialog opens.                                                                     |
-| `confirm`         | `preview`, `confirm`                       | `preview`    | `preview` shows the change set before running; `confirm` asks for a plain confirmation.                      |
-| `destructive`     | boolean                                    | `false`      | Styles the button and confirmation as destructive.                                                           |
-| `requireReason`   | boolean                                    | `false`      | Running it must say why. Config can also turn this on, and so does a table's `requireReason` (below).        |
-| `maxAffectedRows` | positive integer                           | `1000`       | Changing more rows than this fails the action.                                                               |
-| `timeoutMs`       | positive integer                           | the pool's   | Statement timeout for the action's transaction.                                                              |
-| `deadlineMs`      | positive integer                           | the server's | How long a run or preview may take in all. See [Limits](#limits).                                            |
-| `run`             | `async (ctx) => ({ message?, redirect? })` | required     | Does the work.                                                                                               |
+| Key               | Type                                       | Default      | Description                                                                                                                                                                               |
+| ----------------- | ------------------------------------------ | ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `name`            | string, `^[a-z][a-z0-9-]*$`                | required     | Stable id. Config grants, URLs and the audit log use it. Not `create`, `update`, `delete`, `export`, `assign`, `unassign` or `acknowledge`: the audit log uses those for its own entries. |
+| `label`           | string                                     | required     | Shown on buttons and the dialog. Config can override it.                                                                                                                                  |
+| `description`     | string                                     | none         | Shown in the dialog.                                                                                                                                                                      |
+| `on`              | table key (`users`, `billing.invoices`)    | required     | The entity whose pages offer the action.                                                                                                                                                  |
+| `target`          | `one`, `many`, `none`                      | `one`        | What it runs against (below).                                                                                                                                                             |
+| `permissions`     | map of table key to writes                 | required     | Everything `run` may write. Checked at startup and at every write, and shown to the user before they run it.                                                                              |
+| `input`           | `z.object({...})`                          | no input     | The form. See [Input forms](#input-forms).                                                                                                                                                |
+| `defaults`        | `({ record, actor }) => values`            | none         | Prefills the form when the dialog opens.                                                                                                                                                  |
+| `confirm`         | `preview`, `confirm`                       | `preview`    | `preview` shows the change set before running; `confirm` asks for a plain confirmation.                                                                                                   |
+| `destructive`     | boolean                                    | `false`      | Styles the button and confirmation as destructive.                                                                                                                                        |
+| `requireReason`   | boolean                                    | `false`      | Running it must say why. Config can also turn this on, and so does a table's `requireReason` (below).                                                                                     |
+| `maxAffectedRows` | positive integer                           | `1000`       | Changing more rows than this fails the action.                                                                                                                                            |
+| `timeoutMs`       | positive integer                           | the pool's   | Statement timeout for the action's transaction.                                                                                                                                           |
+| `deadlineMs`      | positive integer                           | the server's | How long a run or preview may take in all. See [Limits](#limits).                                                                                                                         |
+| `run`             | `async (ctx) => ({ message?, redirect? })` | required     | Does the work.                                                                                                                                                                            |
 
 | `target` | Offered on                               | `run` gets              | The request carries |
 | -------- | ---------------------------------------- | ----------------------- | ------------------- |
@@ -118,8 +119,8 @@ A run must also say why when any table in `permissions` has [`requireReason`](co
 `run` reads and writes data only through `tx`, which goes through the same validation and write path as the CRUD routes:
 
 ```ts
-tx.get(entity, id | record)                     // RecordRef | null
-tx.list(entity, { filter?, sort?, limit? })     // RecordRef[], limit 1 to 1000 (default 100)
+tx.get(entity, id | record, { lock? })                  // RecordRef | null
+tx.list(entity, { filter?, sort?, limit?, lock? })     // RecordRef[], limit 1 to 1000 (default 100)
 tx.create(entity, values)                       // RecordRef
 tx.update(entity, id | record, values)          // RecordRef
 tx.delete(entity, id | record)
@@ -134,6 +135,26 @@ tx.deleteMany(entity, filter)                   // number of rows deleted
 - Rows that Postgres changes through `on delete cascade` or triggers aren't recorded, as with the CRUD routes. Delete dependent rows explicitly first if they should be audited.
 
 There is no raw SQL: it would bypass the audit entries, preview, the permissions check and hidden columns all at once.
+
+## Concurrency
+
+A run is one transaction at Postgres's default isolation, read committed. What Warden locks for you (`select ... for update`, held until the run commits or rolls back):
+
+- the target records (`record`, `records`), before `run` starts;
+- every row a write changes, including each row `updateMany` and `deleteMany` match;
+- what `tx.get` and `tx.list` return, when you pass `lock: true`.
+
+Plain reads, and picked records in `input`, aren't locked. So a run that reads a row, computes from it, and writes it back can lose an update: two runs both read a total of 100, both write 110, and one +10 is gone. Lock what you read when you'll write it back from what you read:
+
+```js
+async run({ tx, input }) {
+  // Another run adding to the same account waits here until this one commits, then reads 110.
+  const account = await tx.get('accounts', input.account.id, { lock: true });
+  await tx.update('accounts', account, { balance: Number(account.values.balance) + input.amount });
+}
+```
+
+The target records are already locked, so read-modify-write on `record` itself is safe. Locked rows block other runs, and CRUD writes, to the same rows until the run ends, so lock only what you'll write, and keep runs short (see [Limits](#limits)). When two runs lock the same rows in different orders, Postgres aborts one to break the deadlock and the user gets a `503` to try again (see [Errors](#errors)); `tx.list` with a `sort` locks in that order, which helps keep orders consistent.
 
 ## Input forms
 

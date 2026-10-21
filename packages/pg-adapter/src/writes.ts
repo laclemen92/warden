@@ -1,9 +1,9 @@
 import { createHash } from 'node:crypto';
-import { entityFor, type Entity, type Field, type Filter } from '@wardenhq/core';
+import { entityFor, type Entity, type Field, type Filter, type SortTerm } from '@wardenhq/core';
 import { sql } from 'kysely';
 import type { Database } from './database.js';
 import { compileFilter } from './filter.js';
-import { entityTable, type Row } from './rows.js';
+import { entityTable, orderBy, type Row } from './rows.js';
 
 export type WriteAction = 'create' | 'update' | 'delete';
 
@@ -147,11 +147,21 @@ export async function lockKeyedRows(trx: Database, entity: Entity, filters: read
   return rows;
 }
 
-/** Lock every row matching a validated filter, at most `limit` of them. */
-export async function lockRows(trx: Database, entity: Entity, filter: Filter, limit: number) {
+/**
+ * Lock every row matching a validated filter (every row without one), at most `limit` of them,
+ * the first in `sort` order (resolved against the entity) when it is given.
+ */
+export async function lockRows(
+  trx: Database,
+  entity: Entity,
+  filter: Filter | undefined,
+  limit: number,
+  sort: SortTerm[] = [],
+) {
   const { rows } = await sql<Row>`
     select ${selection(entity)} from ${entityRows(entity)}
-    where ${compileFilter(filter, ALIAS)} limit ${limit} for update`.execute(trx);
+    ${filter ? sql`where ${compileFilter(filter, ALIAS)}` : sql``}
+    ${orderBy(sort)} limit ${limit} for update`.execute(trx);
   return rows;
 }
 

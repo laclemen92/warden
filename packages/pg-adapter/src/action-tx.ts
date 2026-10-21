@@ -226,11 +226,13 @@ export function createActionTx(trx: Database, options: ActionTxOptions): ActionT
   };
 
   const tx: ActionTx = {
-    async get(table, id) {
+    async get(table, id, opts = {}) {
       const entity = entityOf(table);
       const filter = addressed(entity, id);
       if (!filter) return null;
-      const row = await getRow(trx, entity, filter);
+      const row = opts.lock
+        ? await lockRow(trx, entity, filter)
+        : await getRow(trx, entity, filter);
       return row ? toRecordRef(entity, row) : null;
     },
 
@@ -248,6 +250,10 @@ export function createActionTx(trx: Database, options: ActionTxOptions): ActionT
         });
       }
       const filter = opts.filter === undefined ? undefined : filterOf(entity, opts.filter);
+      if (opts.lock) {
+        const rows = await lockRows(trx, entity, filter, limit, sort.sort);
+        return rows.map((row) => toRecordRef(entity, row));
+      }
       const { rows } = await listRows(trx, entity, {
         sort: sort.sort,
         limit,

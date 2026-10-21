@@ -820,6 +820,36 @@ describe('concurrent runs', () => {
     ]);
   });
 
+  it.each([
+    ['get', false, 10],
+    ['get', true, 20],
+    ['list', false, 10],
+    ['list', true, 20],
+  ])('with tx.%s lock: %s, two concurrent read-modify-writes add %d', async (via, lock, added) => {
+    const [order] = await query(
+      `insert into orders (company_id, total) values (1, 100) returning id`,
+    );
+    const id = String(order!.id);
+    // Holding the order makes both runs read it before either writes, unless they lock it.
+    const blocker = await sqlPool.connect();
+    try {
+      await blocker.query('begin');
+      await blocker.query('select id from orders where id = $1 for update', [id]);
+      const body = { input: { order: id, lock, via } };
+      const first = run('add-ten', body, admin);
+      await lockWaiters(1);
+      const second = run('add-ten', body, admin);
+      await lockWaiters(2);
+      await blocker.query('commit');
+      const results = await Promise.all([first, second]);
+      expect(results.map((r) => r.status)).toEqual([200, 200]);
+    } finally {
+      blocker.release();
+    }
+    const [after] = await query('select total from orders where id = $1', [id]);
+    expect(Number(after!.total)).toBe(100 + added);
+  });
+
   it('answers a deadlock with a retryable 503 and rolls back', async () => {
     await resetUser(13);
     const [order] = await query(

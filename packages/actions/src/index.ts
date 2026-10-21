@@ -51,12 +51,19 @@ export interface ActionResult {
  * has aborted the transaction, so later calls throw it again and nothing commits.
  */
 export interface ActionTx {
-  /** The row with this id, or null when there is none. */
-  get(entity: string, id: string | RecordRef): Promise<RecordRef | null>;
-  /** Up to `limit` (default 100, at most 1000) matching rows. `sort` is as in the list API. */
+  /**
+   * The row with this id, or null when there is none. With `lock`, the row is locked
+   * (`select ... for update`) until the action ends, so another run can't change it between
+   * reading it here and writing it back.
+   */
+  get(entity: string, id: string | RecordRef, opts?: { lock?: boolean }): Promise<RecordRef | null>;
+  /**
+   * Up to `limit` (default 100, at most 1000) matching rows. `sort` is as in the list API. With
+   * `lock`, the rows returned are locked until the action ends, as for `get`.
+   */
   list(
     entity: string,
-    opts?: { filter?: Filter; sort?: string; limit?: number },
+    opts?: { filter?: Filter; sort?: string; limit?: number; lock?: boolean },
   ): Promise<RecordRef[]>;
   create(entity: string, values: Record<string, unknown>): Promise<RecordRef>;
   update(

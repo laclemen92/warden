@@ -19,7 +19,23 @@ export const ADMIN_AREAS = ['schema', 'audit', 'roles', 'views'] as const;
 
 /** Custom action names, as `defineAction({ name })` gives them. */
 export const ACTION_NAME = /^[a-z][a-z0-9-]*$/;
-const actionName = z.string().regex(ACTION_NAME, 'Expected an action name such as "move-user"');
+/**
+ * Audit log actions Warden writes itself. A custom action's entry records its name as the action,
+ * so one with these names would read as a built-in entry (an action named `delete` as a row delete).
+ */
+export const RESERVED_ACTION_NAMES: readonly string[] = [
+  ...WRITE_ACTIONS,
+  'export',
+  'assign',
+  'unassign',
+  'acknowledge',
+];
+const actionName = z
+  .string()
+  .regex(ACTION_NAME, 'Expected an action name such as "move-user"')
+  .refine((name) => !RESERVED_ACTION_NAMES.includes(name), {
+    error: (issue) => `"${String(issue.input)}" is reserved for Warden's own audit entries`,
+  });
 
 const roleConfigSchema = z.strictObject({
   /** Actions this role may perform, keyed by table, or `*` for every exposed table. */

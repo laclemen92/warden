@@ -276,6 +276,8 @@ Custom actions are multi-step operations, written in code, that run in one trans
 | `actions.<action>.requireReason` | boolean | The action's own setting |
 | `actions.<action>.label`         | string  | The action's own label   |
 
+Action names are those the action module gives (`^[a-z][a-z0-9-]*$`), except `create`, `update`, `delete`, `export`, `assign`, `unassign` and `acknowledge`, which the audit log uses for Warden's own entries. Naming one of those here or in a role's `actions` fails startup.
+
 Running an action is a write, so it is denied unless a role lists it in [`roles.<role>.actions`](#roles). A user may run an action when all of these hold:
 
 1. It loaded, isn't `disabled` here, and wasn't disabled by a warning at startup (below).
