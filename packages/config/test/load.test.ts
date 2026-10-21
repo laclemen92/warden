@@ -52,6 +52,14 @@ describe('loadConfig', () => {
     const { config } = await loadConfig({ path: example, env: {} });
     expect(config.tables.users?.columns.password_hash?.hidden).toBe(true);
   });
+
+  it('accepts the deployment starter config', async () => {
+    const starter = fileURLToPath(
+      new URL('../../../examples/deploy/warden.config.yaml', import.meta.url),
+    );
+    const { config } = await loadConfig({ path: starter, env: {} });
+    expect(config.access?.emailDomains).toEqual({ 'example.com': ['viewer'] });
+  });
 });
 
 describe('requireAccess', () => {

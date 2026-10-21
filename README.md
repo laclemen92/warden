@@ -49,7 +49,7 @@ docker compose up --build
 
 This starts Postgres seeded with the example schema in [`examples/basic`](examples/basic), a mock OIDC provider at http://localhost:9400, and Warden at http://localhost:3000. Override host ports with `POSTGRES_PORT`, `OIDC_PORT` and `WARDEN_PORT` if 5432, 9400 or 3000 are taken.
 
-To run a released image instead of building from source, see [releasing](docs/releasing.md#pulling-the-image).
+To run a released image against your own database and identity provider, see [deploying Warden](docs/deployment.md).
 
 The mock provider replaces a real IdP for local use: its sign-in page lists test users and needs no password. It is for development and E2E only.
 
@@ -113,9 +113,10 @@ pnpm typecheck
 | `packages/actions`    | Types and errors for writing custom actions                     |
 | `packages/mock-oidc`  | Development-only OIDC provider with test users                  |
 | `examples/basic`      | Example schema, seed, config, and actions used by compose/tests |
+| `examples/deploy`     | Compose file, `.env.example`, and starter config for deploying  |
 | `e2e`                 | Playwright end-to-end tests against the compose stack           |
 | `docker`              | Production Dockerfile                                           |
-| `docs`                | Configuration reference, database setup, and releasing          |
+| `docs`                | Configuration, database setup, deployment, and releasing        |
 
 ## License
 
