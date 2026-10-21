@@ -378,9 +378,12 @@ export function resolveActionPolicy(
     }
     const on = entityOf(spec.on)!;
     const permissions: Record<string, WriteAction[]> = {};
+    // A table's `requireReason` covers what an action may write to it, too.
+    let tableRequiresReason = false;
     for (const [table, writes] of Object.entries(spec.permissions)) {
-      const key = entityOf(table)!.key;
-      permissions[key] = [...new Set([...(permissions[key] ?? []), ...writes])];
+      const entity = entityOf(table)!;
+      permissions[entity.key] = [...new Set([...(permissions[entity.key] ?? []), ...writes])];
+      if (writes.some((w) => entity.requireReason?.includes(w))) tableRequiresReason = true;
     }
     const denied = Object.entries(permissions).flatMap(([key, writes]) =>
       writes.filter((w) => policy.denied.get(key)?.has(w)).map((w) => `${w} on "${key}"`),
@@ -398,7 +401,7 @@ export function resolveActionPolicy(
     actions.set(spec.name, {
       ...spec,
       label: settings?.label ?? spec.label,
-      requireReason: spec.requireReason || settings?.requireReason === true,
+      requireReason: spec.requireReason || settings?.requireReason === true || tableRequiresReason,
       on: on.key,
       permissions,
       refs: spec.refs.map((r) => ({ ...r, entity: entityOf(r.entity)!.key })),

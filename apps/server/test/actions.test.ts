@@ -26,6 +26,8 @@ tables:
     columns:
       password_hash: { hidden: true }
       last_login_at: { readableBy: [admin] }
+  companies:
+    requireReason: [delete]
   orders:
     deny: [create, delete]
   secrets: { hidden: true }
@@ -461,6 +463,39 @@ describe('POST /api/actions/:name/run', () => {
       status: 400,
       body: { message: 'a reason is required for this change' },
     });
+  });
+
+  it('requires a reason when a table it may write requires one, though the action doesn’t', async () => {
+    const [company] = await query(`insert into companies (name) values ('Doomed') returning id`);
+    const id = String(company!.id);
+    const actions = (await send('GET', '/api/actions', admin)).body.actions;
+    expect(actions.find((a: { name: string }) => a.name === 'drop-company')).toMatchObject({
+      requireReason: true,
+    });
+    const before = await auditCount();
+    for (const reason of [undefined, '  ']) {
+      const body = { records: [id], ...(reason !== undefined ? { reason } : {}) };
+      for (const res of [
+        await run('drop-company', body, admin),
+        await preview('drop-company', body, admin),
+      ]) {
+        expect(res).toMatchObject({
+          status: 400,
+          body: { message: 'a reason is required for this change' },
+        });
+      }
+    }
+    expect(await query('select id from companies where id = $1', [id])).toHaveLength(1);
+    expect(await auditCount()).toBe(before);
+
+    const res = await run('drop-company', { records: [id], reason: 'duplicate' }, admin);
+    expect(res.status, res.raw).toBe(200);
+    expect(await query('select id from companies where id = $1', [id])).toHaveLength(0);
+    const entries = await query(
+      'select reason from warden.audit_log where id = $1 or parent_id = $1',
+      [res.body.auditId],
+    );
+    expect(entries.map((e) => e.reason)).toEqual(['duplicate', 'duplicate']);
   });
 
   it.each([
