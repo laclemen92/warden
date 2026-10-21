@@ -1,5 +1,5 @@
 import { loadConfig, requireAccess } from '@wardenhq/config';
-import { resolveActionPolicy, resolvePolicy, resolveSchema } from '@wardenhq/core';
+import { resolveActionPolicy, resolvePolicy, resolveSchema, sessionEmail } from '@wardenhq/core';
 import {
   assignedRoles,
   canDisableAuditTriggers,
@@ -8,6 +8,7 @@ import {
   introspect,
   migrate,
   pendingMigrations,
+  refreshSessionEmails,
   startDetachedTransaction,
 } from '@wardenhq/pg-adapter';
 import { ActionsError, loadActions } from './actions.js';
@@ -160,6 +161,8 @@ export async function createWarden({
       }
     }
     const auditTamperable = await canDisableAuditTriggers(db);
+    // Sessions store the email sign-in gave them; config may have changed the rule since.
+    await refreshSessionEmails(db, (claims) => sessionEmail(config.access, claims));
     const model = await introspect(pool, { schemas: config.schemas });
     const { schema, warnings: schemaWarnings } = resolveSchema(model, config);
     const { policy, warnings: policyWarnings } = resolvePolicy(schema, config);

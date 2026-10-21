@@ -162,6 +162,12 @@ export async function mapWriteError(
           : [{ message: 'violates a check constraint' }],
       };
     }
+    case '54000':
+      // program_limit_exceeded: a value too big for an index on its column ("index row size
+      // exceeds maximum") or for the row. The client's value, so a 400.
+      return { status: 400, errors: [{ message: 'a value is too large' }] };
+    // A trigger's `raise exception` (P0001) stays a 500: it can't be told apart from a broken
+    // trigger, and its message is the database author's, not written for users.
     default:
       return undefined;
   }

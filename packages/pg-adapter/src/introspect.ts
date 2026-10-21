@@ -53,6 +53,7 @@ interface ColumnRow {
   is_array: boolean;
   nullable: boolean;
   has_default: boolean;
+  sequence_default: boolean;
   identity: '' | 'a' | 'd';
   generated: boolean;
   enum_oid: string | null;
@@ -110,6 +111,13 @@ const COLUMNS_SQL = `
          et.oid is not null as is_array,
          not a.attnotnull as nullable,
          (a.atthasdef or a.attidentity <> '' or a.attgenerated <> '') as has_default,
+         exists (
+           select 1 from pg_attrdef d
+           join pg_depend dep on dep.classid = 'pg_attrdef'::regclass and dep.objid = d.oid
+             and dep.refclassid = 'pg_class'::regclass
+           join pg_class s on s.oid = dep.refobjid and s.relkind = 'S'
+           where d.adrelid = a.attrelid and d.adnum = a.attnum
+         ) as sequence_default,
          a.attidentity::text as identity,
          a.attgenerated <> '' as generated,
          case when coalesce(et.typtype, t.typtype) = 'e'
@@ -241,6 +249,7 @@ function toColumn(
     hasDefault: row.has_default,
     generated: row.generated,
   };
+  if (row.sequence_default) column.sequenceDefault = true;
   if (row.identity === 'a') column.identity = 'always';
   if (row.identity === 'd') column.identity = 'byDefault';
   if (row.max_length !== null) column.maxLength = row.max_length;

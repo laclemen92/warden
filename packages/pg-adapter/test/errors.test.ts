@@ -268,6 +268,29 @@ describe('mapWriteError', () => {
     }
   });
 
+  it('maps a value too large for its index to a 400 without echoing it', async () => {
+    // 32 KB that doesn't compress, more than a btree index row can hold.
+    const big = sql`(select string_agg(md5(g::text), '') from generate_series(1, 1000) g)`;
+    expect(await failingWrite('teams', sql`insert into teams values (3, ${big})`)).toEqual({
+      status: 400,
+      errors: [{ message: 'a value is too large' }],
+    });
+  });
+
+  it('leaves a trigger’s raise exception unmapped', async () => {
+    await sql`create function refuse() returns trigger language plpgsql as $$
+      begin raise exception 'internal rule 42'; end; $$`.execute(handle.db);
+    await sql`create trigger refuse before insert on teams for each row execute function refuse()`.execute(
+      handle.db,
+    );
+    try {
+      const err = await failingWrite('teams', sql`insert into teams values (4, 'Blue')`);
+      expect(err).toMatchObject({ code: 'P0001' });
+    } finally {
+      await sql`drop trigger refuse on teams; drop function refuse()`.execute(handle.db);
+    }
+  });
+
   it('recognizes data errors, including inside a failed audit write', () => {
     const pgError = (code: string) => Object.assign(new Error('x'), { code });
     expect(isDataError(pgError('22021'))).toBe(true);
