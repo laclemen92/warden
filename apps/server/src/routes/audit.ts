@@ -1,5 +1,13 @@
 import type { WardenConfig } from '@wardenhq/config';
-import { adminAreas, checkTimestamp, decodeRecordId, isAllowed, type Policy } from '@wardenhq/core';
+import {
+  adminAreas,
+  checkTimestamp,
+  decodeRecordId,
+  isAllowed,
+  runnableActions,
+  type ActionPolicy,
+  type Policy,
+} from '@wardenhq/core';
 import { listAuditEntries, type AuditQuery, type Database } from '@wardenhq/pg-adapter';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { Views } from '../views.js';
@@ -14,6 +22,8 @@ export interface AuditRouteOptions {
   views: Views;
   /** Config `roles`, for the `audit` admin area. */
   roles: WardenConfig['roles'];
+  /** Custom actions, if any; a record's History shows an action's own entry to who may run it. */
+  actionPolicy?: ActionPolicy | undefined;
 }
 
 interface PageQuery {
@@ -64,7 +74,7 @@ const notFound = (reply: FastifyReply) =>
  */
 export function registerAuditRoutes(
   app: FastifyInstance,
-  { db, policy, views, roles: roleConfig }: AuditRouteOptions,
+  { db, policy, views, roles: roleConfig, actionPolicy }: AuditRouteOptions,
 ) {
   /** Entity key → fields the caller can read, for every entity they may read. */
   const visibleTo = (req: FastifyRequest): AuditQuery['visible'] => {
@@ -100,17 +110,30 @@ export function registerAuditRoutes(
       // Only a well-formed id can match an entry. The record itself may since have been deleted.
       if (!decodeRecordId(entity, req.params.id).ok) return notFound(reply);
       const { cursor, limit } = req.query;
+      const auditAdmin = isAuditAdmin(req);
+      const roles = req.roles ?? [];
       // Anyone who may read the record sees who changed it, but which roles people hold (who
-      // is an admin, who is in HR) is for audit admins.
+      // is an admin, who is in HR) is for audit admins. A custom action's own entry (its input
+      // and reason) is for those who could run it; to anyone else an action they aren't granted
+      // doesn't exist, and its input may name fields and records they can't read.
       return page(
         {
-          visible: { [entity.key]: entity.fields.map((f) => f.name) },
+          // Every readable entity, for action inputs that pick their records; the entity filter
+          // keeps the entries to this one.
+          visible: visibleTo(req),
+          ...(auditAdmin
+            ? {}
+            : {
+                actions: actionPolicy
+                  ? runnableActions(actionPolicy, policy, roles).map((a) => a.name)
+                  : [],
+              }),
           entity: entity.key,
           recordId: req.params.id,
           limit,
           ...(cursor !== undefined ? { before: cursor } : {}),
         },
-        { withRoles: isAuditAdmin(req) },
+        { withRoles: auditAdmin },
       );
     },
   );

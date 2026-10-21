@@ -136,6 +136,11 @@ function ActionSummary({ entry, details }: { entry: AuditEntry; details: ActionD
           ))}
         </dl>
       )}
+      {details.redacted && (
+        <p className="text-muted-foreground">
+          Input that picked records from tables you can't see isn't shown.
+        </p>
+      )}
       {details.records.length > 1 && (
         <p className="text-muted-foreground">
           Ran on {numberFormat.format(details.records.length)} records.

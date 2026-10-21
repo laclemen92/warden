@@ -139,6 +139,22 @@ export default ({ defineAction, z, ref, ActionError }) => [
     },
   }),
 
+  // Writes a field only admins can read, from free text, a picked record and a sensitive list.
+  defineAction({
+    name: 'stamp-login',
+    label: 'Stamp login',
+    on: 'users',
+    permissions: { users: ['update'] },
+    input: z.object({
+      at: z.iso.datetime(),
+      company: ref('companies').optional(),
+      codes: z.array(z.string().meta({ sensitive: true })).optional(),
+    }),
+    async run({ tx, record, input }) {
+      await tx.update('users', record, { last_login_at: input.at });
+    },
+  }),
+
   // Reads a hidden column through `tx.get`: it must simply be absent.
   defineAction({
     name: 'peek',
