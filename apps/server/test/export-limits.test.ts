@@ -1,5 +1,6 @@
 import { get, type IncomingMessage } from 'node:http';
-import type { AddressInfo } from 'node:net';
+import { connect, type AddressInfo } from 'node:net';
+import { setTimeout as sleep } from 'node:timers/promises';
 import type { MockOidc } from '@wardenhq/mock-oidc';
 import { startPostgres, type TestDatabase } from '@wardenhq/testing';
 import pg from 'pg';
@@ -80,6 +81,20 @@ const finish = (res: IncomingMessage) =>
     res.resume();
   });
 
+/** Send an export request over a raw socket and hang up `afterMs` later, without reading. */
+const hangUp = (user: User, afterMs: number, query = '') =>
+  new Promise<void>((resolve, reject) => {
+    const { port } = app.server.address() as AddressInfo;
+    const socket = connect(port, '127.0.0.1', () => {
+      socket.write(
+        `GET /api/export/wide${query} HTTP/1.1\r\nHost: 127.0.0.1\r\nCookie: ${cookies[user]}\r\n\r\n`,
+      );
+      setTimeout(() => socket.destroy(), afterMs);
+    });
+    socket.on('close', () => resolve());
+    socket.on('error', reject);
+  });
+
 const exportWide = (user: User, query: Record<string, string> = {}) =>
   app.inject({
     method: 'GET',
@@ -143,6 +158,30 @@ describe('export limits', () => {
     });
     expect(after.statusCode).toBe(200);
     expect(after.body).toBe('﻿id\r\n1\r\n2\r\n');
+  }, 30_000);
+
+  it('frees every slot when clients hang up early, once their connections are back', async () => {
+    // Hang up at every stage: before the session loads, while the export opens and counts, and
+    // once it streams; some exports are small enough to finish, some too big to be allowed.
+    const queries = ['', `?filter=${encodeURIComponent('{"field":"id","op":"lte","value":3}')}`];
+    for (let round = 0; round < 4; round++) {
+      await Promise.all(
+        Array.from({ length: 10 }, (_, i) =>
+          hangUp(i % 2 ? 'admin' : 'editor', i * 3, queries[i % queries.length]),
+        ),
+      );
+    }
+    await expect.poll(openTransactions, { timeout: 5000 }).toBe(0);
+    // Let any response still being torn down finish.
+    await sleep(100);
+
+    // Every slot is free: admin may run its two, and editor the last of the three.
+    const stalled = [await stall('admin'), await stall('admin'), await stall('editor')];
+    expect(stalled.map((res) => res.statusCode)).toEqual([200, 200, 200]);
+    expect(await openTransactions()).toBe(3);
+    for (const res of stalled) res.destroy();
+    await expect.poll(openTransactions, { timeout: 5000 }).toBe(0);
+    expect((await exportWide('editor', { columns: 'id', q: '1' })).statusCode).toBe(200);
   }, 30_000);
 
   it('frees the slot of an export refused for size or finished normally', async () => {
