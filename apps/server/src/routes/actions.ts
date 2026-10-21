@@ -34,6 +34,7 @@ import {
   getRow,
   getRows,
   insertActionEntry,
+  isDataError,
   lockRow,
   mapWriteError,
   setStatementTimeout,
@@ -155,6 +156,13 @@ const badRequest = (reply: FastifyReply, message: string, details: FieldError[] 
     error: 'Bad Request',
     message,
     ...(details.length > 0 ? { details } : {}),
+  });
+
+const serverError = (reply: FastifyReply) =>
+  reply.code(500).send({
+    statusCode: 500,
+    error: 'Internal Server Error',
+    message: 'Internal Server Error',
   });
 
 const tooMany = (reply: FastifyReply) =>
@@ -301,11 +309,16 @@ export function registerActionRoutes(app: FastifyInstance, options: ActionRouteO
         if (!row) return notFound(reply);
         record = toRecordRef(entity, row);
       }
-      const values = definition.defaults
-        ? await definition.defaults({ actor: actorOf(req), ...(record ? { record } : {}) })
-        : {};
-      if (typeof values !== 'object' || values === null || Array.isArray(values)) {
-        throw new Error(`defaults of action "${action.name}" must return an object`);
+      let values: unknown;
+      try {
+        values = definition.defaults
+          ? await definition.defaults({ actor: actorOf(req), ...(record ? { record } : {}) })
+          : {};
+        if (typeof values !== 'object' || values === null || Array.isArray(values)) {
+          throw new Error(`defaults of action "${action.name}" must return an object`);
+        }
+      } catch (err) {
+        return failed(req, reply, err);
       }
       return { values };
     },
@@ -566,9 +579,37 @@ export function registerActionRoutes(app: FastifyInstance, options: ActionRouteO
   });
 
   /**
+   * An invalid `tx` call's problems as the caller may see them. Only fields they can read are
+   * named, and problems that don't say which field they're about (a filter's) only go to
+   * callers who can read every field. An entity they can't read isn't named at all.
+   */
+  const invalidCall = (
+    reply: FastifyReply,
+    roles: readonly string[],
+    err: ActionValidationError,
+  ) => {
+    const details = (errors: FieldError[]) =>
+      errors.map((e) => ({ message: e.field ? `${e.field}: ${e.message}` : e.message }));
+    if (err.entity === undefined) return badRequest(reply, err.message, details(err.errors));
+    const view = views(roles).entities.get(err.entity);
+    if (!view || !isAllowed(policy, roles, err.entity, 'read')) {
+      return badRequest(reply, 'the action made an invalid change');
+    }
+    const fields = entities.get(err.entity)?.fields ?? [];
+    const readable = new Set(view.fields.map((f) => f.name));
+    const unreadable = new Set(fields.filter((f) => !readable.has(f.name)).map((f) => f.name));
+    // An unknown field (hidden ones included) isn't the entity's, so it's named for everyone.
+    const shown = err.errors.filter((e) =>
+      e.field !== undefined ? !unreadable.has(e.field) : unreadable.size === 0,
+    );
+    return badRequest(reply, err.message, details(shown));
+  };
+
+  /**
    * The author's own errors and invalid `tx` calls are 400s; constraint violations are mapped
    * like CRUD writes. Anything else, including writes outside `permissions` and exceeding
-   * `maxAffectedRows` (bugs in the action), is a generic 500.
+   * `maxAffectedRows` (bugs in the action), is a generic 500: action code can throw errors with
+   * a 4xx `statusCode` (an SDK's), whose messages weren't written for users.
    */
   const failed = async (req: FastifyRequest, reply: FastifyReply, err: unknown) => {
     if (err instanceof Answer) return err.send(reply);
@@ -582,11 +623,7 @@ export function registerActionRoutes(app: FastifyInstance, options: ActionRouteO
     if (err instanceof ActionValidationError) {
       req.log.info({ err }, 'action made an invalid write');
       // The fields belong to whatever entity `run` wrote, not to the action's form.
-      return badRequest(
-        reply,
-        err.message,
-        err.errors.map((e) => ({ message: e.field ? `${e.field}: ${e.message}` : e.message })),
-      );
+      return invalidCall(reply, req.roles ?? [], err);
     }
     if (err instanceof ActionWriteError) {
       const roles = req.roles ?? [];
@@ -612,7 +649,10 @@ export function registerActionRoutes(app: FastifyInstance, options: ActionRouteO
       }
       throw err.cause;
     }
-    throw err;
+    // Warden's own reads can still hit a value Postgres rejects; the app maps those to a 400.
+    if (isDataError(err)) throw err;
+    req.log.error({ err, action: req.action?.name }, 'action failed');
+    return serverError(reply);
   };
 
   app.post<{ Params: ActionParams; Body: ActionBody }>(

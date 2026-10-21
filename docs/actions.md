@@ -171,13 +171,15 @@ Every error rolls the whole action back, its audit entries included.
 | Thrown in `run`                                          | Response                                               |
 | -------------------------------------------------------- | ------------------------------------------------------ |
 | `new ActionError(message, { field? })`                   | `400` with the message, attached to the field if given |
-| An invalid `tx` call (unknown table or field, bad value) | `400` with the problems                                |
+| An invalid `tx` call (unknown table or field, bad value) | `400` with the problems the user may see (below)       |
 | A constraint violation                                   | `400` or `409`, as for CRUD writes                     |
 | A `tx` call `run` didn't await                           | `500`, details in the log: a bug in the action         |
 | A write outside `permissions`, too many rows             | `500`, details in the log: bugs in the action          |
 | Anything else                                            | `500`, details in the log                              |
 
-Only `ActionError` messages are written for users, so only they and Warden's own validation messages are sent.
+Only `ActionError` messages are written for users, so only they and Warden's own validation messages are sent. Any other error is a `500`, even one carrying a `4xx` `statusCode` (as some SDKs' errors do), whether it's thrown in `run`, during a preview, or in `defaults`.
+
+Since `tx` reads and writes with the action's view, not the user's, an invalid `tx` call's problems are trimmed to what the user may read: problems with fields they can't read are left out, a filter's or sort's problems are only sent to users who can read every field of the table, and a table they can't read isn't named (`the action made an invalid change`). Everything is in the log.
 
 A database error can't be caught and recovered from. Postgres aborts the transaction on any error, and there are no savepoints, so once a `tx` call fails in the database (a constraint violation, a statement timeout), every later `tx` call throws the same error and the action fails with it, even if `run` catches it and returns: nothing commits, `afterCommit` doesn't run, and preview reports the error. Check what you can first (`tx.get`, `tx.list`) instead of trying a write and catching. Invalid `tx` calls (an unknown field, a write outside `permissions`) are rejected before any SQL, so they don't fail the transaction.
 
