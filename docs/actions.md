@@ -95,7 +95,7 @@ As with config, mistakes in code fail startup and mismatches with the database o
 | `defaults`        | `({ record, actor }) => values`            | none         | Prefills the form when the dialog opens.                                                                     |
 | `confirm`         | `preview`, `confirm`                       | `preview`    | `preview` shows the change set before running; `confirm` asks for a plain confirmation.                      |
 | `destructive`     | boolean                                    | `false`      | Styles the button and confirmation as destructive.                                                           |
-| `requireReason`   | boolean                                    | `false`      | Running it must say why. Config can also turn this on.                                                       |
+| `requireReason`   | boolean                                    | `false`      | Running it must say why. Config can also turn this on, and so does a table's `requireReason` (below).        |
 | `maxAffectedRows` | positive integer                           | `1000`       | Changing more rows than this fails the action.                                                               |
 | `timeoutMs`       | positive integer                           | the pool's   | Statement timeout for the action's transaction.                                                              |
 | `deadlineMs`      | positive integer                           | the server's | How long a run or preview may take in all. See [Limits](#limits).                                            |
@@ -106,6 +106,8 @@ As with config, mistakes in code fail startup and mismatches with the database o
 | `one`    | the detail page and each grid row's menu | `record`                | one record id       |
 | `many`   | the grid's bar for selected rows         | `records` (at most 500) | 1 to 500 record ids |
 | `none`   | the grid's toolbar                       | neither                 | no record ids       |
+
+A run must also say why when any table in `permissions` has [`requireReason`](config.md#tables) for a write the action may make there, whether or not `run` makes it: the requirement can't depend on what `run` decides to do. `GET /api/actions` reports the result as `requireReason`, so the UI asks for it.
 
 `run` also gets `input` (validated, with picked records loaded), `tx`, `actor` (`{ subject, email, name, roles }`), `reason`, `log` (a logger for the request), and `afterCommit(fn)`. The target records are loaded and locked (`select ... for update`) before `run` starts. A record is a `RecordRef`: `{ entity, id, label, values }`, where `label` is its display field and `values` holds its exposed fields.
 

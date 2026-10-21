@@ -184,6 +184,17 @@ export default ({ defineAction, z, ref, ActionError }) => [
     },
   }),
 
+  // Sets no requireReason of its own, but config requires a reason to delete companies.
+  defineAction({
+    name: 'drop-company',
+    label: 'Drop company',
+    on: 'companies',
+    permissions: { companies: ['delete'] },
+    async run({ tx, record }) {
+      await tx.delete('companies', record);
+    },
+  }),
+
   // Writes a field only admins can read, from free text, a picked record and a sensitive list.
   defineAction({
     name: 'stamp-login',

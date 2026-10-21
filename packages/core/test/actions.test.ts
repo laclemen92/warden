@@ -245,6 +245,16 @@ describe('resolveActionPolicy', () => {
     });
   });
 
+  it('requires a reason when a table requires one for a write the action may make', () => {
+    const required = (config: unknown) =>
+      resolve(specs(definition()), config).actionPolicy.actions.get('move-user')!.requireReason;
+    expect(required({})).toBe(false);
+    expect(required({ tables: { orders: { requireReason: ['update'] } } })).toBe(true);
+    // Writes the action can't make don't count.
+    expect(required({ tables: { orders: { requireReason: ['delete'] } } })).toBe(false);
+    expect(required({ tables: { companies: { requireReason: ['update'] } } })).toBe(false);
+  });
+
   it.each([
     ['its entity', { on: 'secrets' }, 'table "secrets" is not exposed'],
     [
