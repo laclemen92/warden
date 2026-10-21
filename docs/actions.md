@@ -109,7 +109,7 @@ As with config, mistakes in code fail startup and mismatches with the database o
 
 A run must also say why when any table in `permissions` has [`requireReason`](config.md#tables) for a write the action may make there, whether or not `run` makes it: the requirement can't depend on what `run` decides to do. `GET /api/actions` reports the result as `requireReason`, so the UI asks for it.
 
-`run` also gets `input` (validated, with picked records loaded), `tx`, `actor` (`{ subject, email, name, roles }`), `reason`, `log` (a logger for the request), and `afterCommit(fn)`. The target records are loaded and locked (`select ... for update`) before `run` starts. A record is a `RecordRef`: `{ entity, id, label, values }`, where `label` is its display field and `values` holds its exposed fields.
+`run` also gets `input` (validated, with picked records loaded), `tx`, `actor` (`{ subject, email, name, roles }`), `reason`, `log` (a logger for the request), and `afterCommit(fn)`. The target records are loaded and locked (`select ... for update`) before `run` starts, in primary-key order, so runs on overlapping records wait for each other instead of deadlocking. Ids that name the same row (`1` and `01`, a UUID in either case) are the same record: repeated target records, or repeated items in a `ref` array, are a `400`, and the audit log stores each record's canonical id. A record is a `RecordRef`: `{ entity, id, label, values }`, where `label` is its display field and `values` holds its exposed fields.
 
 `run` may return `{ message }`, shown when it finishes, and `{ redirect: { entity, id } }`, a record the UI offers to open.
 
@@ -177,6 +177,7 @@ Every error rolls the whole action back, its audit entries included.
 | A constraint violation                                   | `400` or `409`, as for CRUD writes                     |
 | A `tx` call `run` didn't await                           | `500`, details in the log: a bug in the action         |
 | A write outside `permissions`, too many rows             | `500`, details in the log: bugs in the action          |
+| A deadlock or serialization failure with another change  | `503`; nothing was changed, so running again can work  |
 | Anything else                                            | `500`, details in the log                              |
 
 Only `ActionError` messages are written for users, so only they and Warden's own validation messages are sent. Any other error is a `500`, even one carrying a `4xx` `statusCode` (as some SDKs' errors do), whether it's thrown in `run`, during a preview, or in `defaults`.

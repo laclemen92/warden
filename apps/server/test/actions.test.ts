@@ -517,6 +517,33 @@ describe('POST /api/actions/:name/run', () => {
     expect(repeated.status).toBe(400);
   });
 
+  it('treats ids naming the same row as repeats, and audits canonical ids', async () => {
+    const before = await auditCount();
+    for (const records of [
+      ['12', '012'],
+      ['12', '13', '0013'],
+    ]) {
+      const res = await send('POST', '/api/actions/rename-companies/run', admin, {
+        records,
+        input: { suffix: 'x' },
+        reason: 'r',
+      });
+      expect(res).toMatchObject({ status: 400, body: { message: 'records must not repeat' } });
+    }
+    expect(await auditCount()).toBe(before);
+    expect(await query('select name from companies where id in (12, 13) order by id')).toEqual([
+      { name: 'Company 12' },
+      { name: 'Company 13' },
+    ]);
+
+    const res = await run('move-user', { records: ['0009'], input: { company: '3' } }, admin);
+    expect(res.status, res.raw).toBe(200);
+    const [entry] = await query('select details from warden.audit_log where id = $1', [
+      res.body.auditId,
+    ]);
+    expect(entry!.details).toMatchObject({ records: ['9'] });
+  });
+
   it('gives a missing and a malformed target record the same 404', async () => {
     const missing = await run('move-user', { records: ['999999'], input: { company: '2' } });
     const malformed = await run('move-user', { records: ['abc'], input: { company: '2' } });
@@ -722,15 +749,28 @@ describe('rollback', () => {
 });
 
 describe('picked records', () => {
-  it('looks them up together, in order, repeats included', async () => {
-    const res = await run('pick-users', { input: { users: ['3', '2', '3'] } }, admin);
+  it('looks them up together, in order', async () => {
+    const res = await run('pick-users', { input: { users: ['3', '2', '4'] } }, admin);
     expect(res.status, res.raw).toBe(200);
-    expect(res.body.result.message).toBe('3,2,3');
+    expect(res.body.result.message).toBe('3,2,4');
     const missing = await run('pick-users', { input: { users: ['3', '999999', 'x'] } }, admin);
     expect(missing.body.details).toEqual([
       { field: 'users', message: 'item 1: references a record that does not exist' },
       { field: 'users', message: 'item 2: references a record that does not exist' },
     ]);
+  });
+
+  it('refuses repeats, including ids naming the same row', async () => {
+    const res = await run('pick-users', { input: { users: ['3', '2', '3', '03'] } }, admin);
+    expect(res).toMatchObject({
+      status: 400,
+      body: {
+        details: [
+          { field: 'users', message: 'item 2: repeats an earlier record' },
+          { field: 'users', message: 'item 3: repeats an earlier record' },
+        ],
+      },
+    });
   });
 
   it('refuses more than an array field takes, before looking any up', async () => {
@@ -740,6 +780,77 @@ describe('picked records', () => {
       status: 400,
       body: { details: [{ field: 'users', message: 'must hold at most 500 items' }] },
     });
+  });
+});
+
+describe('concurrent runs', () => {
+  /** Wait until `n` backends are waiting for a lock. */
+  async function lockWaiters(n: number) {
+    for (let i = 0; i < 250; i++) {
+      const [row] = await query(
+        `select count(*)::int as n from pg_stat_activity
+         where wait_event_type = 'Lock' and datname = current_database()`,
+      );
+      if (Number(row!.n) >= n) return;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    throw new Error(`fewer than ${n} backends waiting for a lock`);
+  }
+
+  it('lock overlapping targets in the same order, so they wait instead of deadlocking', async () => {
+    // Holding company 14 makes both runs queue up behind it with whatever they've locked so far.
+    const blocker = await sqlPool.connect();
+    try {
+      await blocker.query('begin');
+      await blocker.query('select id from companies where id = 14 for update');
+      const body = (records: string[]) => ({ records, input: { suffix: '!' }, reason: 'r' });
+      const first = send('POST', '/api/actions/rename-companies/run', admin, body(['14', '15']));
+      await lockWaiters(1);
+      const second = send('POST', '/api/actions/rename-companies/run', admin, body(['15', '14']));
+      await lockWaiters(2);
+      await blocker.query('commit');
+      const results = await Promise.all([first, second]);
+      expect(results.map((r) => r.status)).toEqual([200, 200]);
+    } finally {
+      blocker.release();
+    }
+    expect(await query('select name from companies where id in (14, 15) order by id')).toEqual([
+      { name: 'Company 14!!' },
+      { name: 'Company 15!!' },
+    ]);
+  });
+
+  it('answers a deadlock with a retryable 503 and rolls back', async () => {
+    await resetUser(13);
+    const [order] = await query(
+      `insert into orders (company_id, user_id, status, total) values (1, 13, 'pending', 1)
+       returning id`,
+    );
+    const other = await sqlPool.connect();
+    try {
+      await other.query('begin');
+      await other.query('select id from orders where id = $1 for update', [order!.id]);
+      // The run locks user 13, then waits for the order; the other transaction then waits for
+      // user 13. Postgres aborts the run, which started waiting first.
+      const res = run('move-user', {
+        records: ['13'],
+        input: { company: '2', cancelPendingOrders: true },
+      });
+      await lockWaiters(1);
+      const otherLock = other.query('select id from users where id = 13 for update');
+      const result = await res;
+      await otherLock;
+      await other.query('commit');
+      expect(result).toMatchObject({
+        status: 503,
+        body: { message: expect.stringMatching(/try again/) },
+      });
+    } finally {
+      other.release();
+    }
+    expect(await query('select company_id from users where id = 13')).toEqual([
+      { company_id: '1' },
+    ]);
   });
 });
 

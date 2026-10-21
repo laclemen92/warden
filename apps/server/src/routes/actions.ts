@@ -13,6 +13,7 @@ import {
   auditDiff,
   canRunAction,
   decodeRecordId,
+  encodeRecordId,
   isAllowed,
   oversizedInputArrays,
   previewTokenPayload,
@@ -35,7 +36,7 @@ import {
   getRows,
   insertActionEntry,
   isDataError,
-  lockRow,
+  lockKeyedRows,
   mapWriteError,
   setStatementTimeout,
   toRecordRef,
@@ -53,6 +54,7 @@ import { MAX_REASON_LENGTH, REASON_REQUIRED } from './entities.js';
 export const MAX_PREVIEW_CHANGES = 200;
 const MAX_RECORD_ID_LENGTH = 10_000;
 const MAX_TOKEN_LENGTH = 200;
+const RECORDS_REPEAT = 'records must not repeat';
 
 export interface ActionLimits {
   /** Runs and previews at once on this server, across all users: the action pool's size. */
@@ -171,6 +173,20 @@ const tooMany = (reply: FastifyReply) =>
     error: 'Too Many Requests',
     message: 'too many actions are running; try again when one finishes',
   });
+
+/**
+ * Postgres rolled the transaction back to break a deadlock or a serialization conflict with
+ * another one; running again can succeed. Looks through wrapping errors (a failed `tx` write).
+ */
+function isRetryable(err: unknown): boolean {
+  let e = err;
+  for (let depth = 0; depth < 5 && typeof e === 'object' && e !== null; depth++) {
+    const { code, cause } = e as { code?: unknown; cause?: unknown };
+    if (code === '40P01' || code === '40001') return true;
+    e = cause;
+  }
+  return false;
+}
 
 /** The run's deadline passed. */
 class TookTooLong extends Error {}
@@ -358,7 +374,7 @@ export function registerActionRoutes(app: FastifyInstance, options: ActionRouteO
             : 'this action takes no records',
       );
     }
-    if (new Set(ids).size !== ids.length) return badRequest(reply, 'records must not repeat');
+    if (new Set(ids).size !== ids.length) return badRequest(reply, RECORDS_REPEAT);
     if (action.requireReason && !reason) return badRequest(reply, REASON_REQUIRED);
 
     // Unknown keys are rejected rather than stripped, as for record writes.
@@ -382,8 +398,11 @@ export function registerActionRoutes(app: FastifyInstance, options: ActionRouteO
     }
 
     // A malformed id is a missing record, as on the entity routes.
-    const targets = ids.map((id) => decodeRecordId(entity, id));
-    if (targets.some((t) => !t.ok)) return notFound(reply);
+    const targets = ids.flatMap((id) => {
+      const decoded = decodeRecordId(entity, id);
+      return decoded.ok ? [decoded.filter] : [];
+    });
+    if (targets.length !== ids.length) return notFound(reply);
 
     const actor = actorOf(req);
     const roles = req.roles ?? [];
@@ -394,9 +413,28 @@ export function registerActionRoutes(app: FastifyInstance, options: ActionRouteO
     /** Everything the run does in its transaction; the caller commits or rolls back. */
     const work = async (trx: Database): Promise<Outcome> => {
       if (action.timeoutMs !== undefined) await setStatementTimeout(trx, action.timeoutMs);
+      // Several ids can name one row ("1" and "01", a UUID in either case), so the targets are
+      // looked up first and compared by their canonical ids. Then they're locked in one query in
+      // primary-key order, so runs on overlapping records wait for each other, not deadlock.
+      const found = await getRows(trx, entity, targets);
+      if (found.some((row) => !row)) throw new Answer(notFound);
+      const records = found.map((row) => encodeRecordId(entity, row!)!);
+      if (new Set(records).size !== records.length) {
+        throw new Answer((r) => badRequest(r, RECORDS_REPEAT));
+      }
+      const locked = await lockKeyedRows(
+        trx,
+        entity,
+        records.flatMap((id) => {
+          const decoded = decodeRecordId(entity, id);
+          return decoded.ok ? [decoded.filter] : [];
+        }),
+      );
+      const byId = new Map(locked.map((row) => [encodeRecordId(entity, row), row]));
       const rows: Row[] = [];
-      for (const target of targets) {
-        const row = target.ok ? await lockRow(trx, entity, target.filter) : undefined;
+      for (const id of records) {
+        // Gone, or its key changed, since it was looked up.
+        const row = byId.get(id);
         if (!row) throw new Answer(notFound);
         rows.push(row);
       }
@@ -416,16 +454,22 @@ export function registerActionRoutes(app: FastifyInstance, options: ActionRouteO
         const filters = decoded.flatMap((d) => (d?.ok ? [d.filter] : []));
         const found = await getRows(trx, target, filters);
         const loaded: RecordRef[] = [];
+        const seen = new Set<string>();
         let next = 0;
         for (const [i, d] of decoded.entries()) {
           const row = d?.ok ? found[next++] : undefined;
-          if (!row) {
+          const loadedRef = row && toRecordRef(target, row);
+          if (!loadedRef) {
             refErrors.push({
               field: ref.field,
               message: `${ref.many ? `item ${i}: ` : ''}references a record that does not exist`,
             });
+          } else if (seen.has(loadedRef.id)) {
+            // By canonical id, so "1" and "01" are the same record.
+            refErrors.push({ field: ref.field, message: `item ${i}: repeats an earlier record` });
           } else {
-            loaded.push(toRecordRef(target, row));
+            seen.add(loadedRef.id);
+            loaded.push(loadedRef);
           }
         }
         resolved[ref.field] = ref.many ? loaded : loaded[0];
@@ -441,7 +485,7 @@ export function registerActionRoutes(app: FastifyInstance, options: ActionRouteO
         ...(action.target === 'one' ? { record: rows[0]! } : {}),
         details: {
           input: redactInput(input, action.sensitive),
-          records: ids,
+          records,
           refs: Object.fromEntries(action.refs.map((r) => [r.field, r.entity])),
         },
       });
@@ -507,7 +551,7 @@ export function registerActionRoutes(app: FastifyInstance, options: ActionRouteO
       }
       const result = cleanResult(returned);
       const token = sign(
-        previewTokenPayload({ name: action.name, input: rawInput, records: ids, changes }),
+        previewTokenPayload({ name: action.name, input: rawInput, records, changes }),
       );
       const outcome = { auditId, result, changes, token, afterCommit };
       if (mode === 'preview') throw new Answer((r) => r.send(previewResponse(roles, outcome)));
@@ -613,6 +657,14 @@ export function registerActionRoutes(app: FastifyInstance, options: ActionRouteO
    */
   const failed = async (req: FastifyRequest, reply: FastifyReply, err: unknown) => {
     if (err instanceof Answer) return err.send(reply);
+    if (isRetryable(err)) {
+      req.log.warn({ err, action: req.action?.name }, 'action conflicted with another transaction');
+      return reply.code(503).send({
+        statusCode: 503,
+        error: 'Service Unavailable',
+        message: 'the action conflicted with another change and was rolled back; try again',
+      });
+    }
     if (err instanceof ActionError) {
       return badRequest(
         reply,
