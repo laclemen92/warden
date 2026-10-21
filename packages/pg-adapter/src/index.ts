@@ -1,13 +1,16 @@
 export {
   createDatabase,
+  startDetachedTransaction,
   type Database,
   type DatabaseHandle,
   type DatabaseOptions,
+  type DetachedTransaction,
 } from './database.js';
 export { compileFilter, escapeLike } from './filter.js';
 export { introspect, WARDEN_SCHEMA, type IntrospectOptions } from './introspect.js';
 export {
   getRow,
+  getRows,
   listRows,
   openExport,
   type ExportOptions,

@@ -13,6 +13,7 @@ import {
 } from '@wardenhq/core';
 import { openExport, recordExport, type Database, type RowExport } from '@wardenhq/pg-adapter';
 import type { FastifyInstance, FastifyReply } from 'fastify';
+import { createSlots } from '../slots.js';
 import type { Views } from '../views.js';
 
 /** Larger exports are refused rather than cut short, so a file is never silently incomplete. */
@@ -76,31 +77,6 @@ const tooMany = (reply: FastifyReply) =>
     message: 'too many exports are running; try again when one finishes',
   });
 
-/** Counts running exports, so they can never hold every database connection. */
-function exportSlots({
-  maxConcurrent,
-  maxPerUser,
-}: Pick<ExportLimits, 'maxConcurrent' | 'maxPerUser'>) {
-  let running = 0;
-  const perUser = new Map<string, number>();
-  /** A release function, or undefined when a limit is reached. */
-  return (user: string): (() => void) | undefined => {
-    const mine = perUser.get(user) ?? 0;
-    if (running >= maxConcurrent || mine >= maxPerUser) return undefined;
-    running++;
-    perUser.set(user, mine + 1);
-    let held = true;
-    return () => {
-      if (!held) return;
-      held = false;
-      running--;
-      const left = (perUser.get(user) ?? 1) - 1;
-      if (left > 0) perUser.set(user, left);
-      else perUser.delete(user);
-    };
-  };
-}
-
 const badRequest = (reply: FastifyReply, message: string, details?: FilterError[]) =>
   reply
     .code(400)
@@ -116,7 +92,8 @@ export function registerExportRoutes(
   { db, policy, views, exportDb = db, limits }: ExportRouteOptions,
 ) {
   const { idleTimeoutMs, deadlineMs, ...caps } = { ...DEFAULT_EXPORT_LIMITS, ...limits };
-  const acquire = exportSlots(caps);
+  // Counts running exports, so they can never hold every database connection.
+  const acquire = createSlots(caps);
 
   app.get<{ Params: { entity: string }; Querystring: ExportQuery }>(
     '/api/export/:entity',

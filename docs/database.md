@@ -41,14 +41,17 @@ grant select, insert, update, delete on warden.saved_views to warden_app;
 
 The runtime role also needs whatever access your configuration grants on your application tables (at least `select`, plus `insert`/`update`/`delete` where roles may write).
 
-## Timeouts and exports
+## Timeouts, exports and actions
 
 Warden limits how long its database work can run or wait, so a slow query or a stalled client can't tie up connections or hold back vacuum on your database.
 
 - **Statements** time out after 15 seconds.
 - **Idle transactions:** every connection sets `idle_in_transaction_session_timeout`, so Postgres ends a session that has a transaction open but has run nothing for 60 seconds. Warden's own transactions don't wait on clients, so this is a backstop: an open transaction keeps a snapshot, and while it does, vacuum can't clean up rows deleted or updated after it began.
 - **Exports** read a consistent snapshot: each runs in a read-only, repeatable-read transaction with a cursor, so the row count in the audit entry and the rows in the file agree however the data changes meanwhile. That transaction stays open for the whole download, and the cursor fetches more rows only as the client reads them. Warden ends an export, rolls back its transaction, and aborts the download (so it fails instead of looking complete) when the client stops reading for 30 seconds, or 15 minutes after the export started, whichever comes first.
-- **Export connections** come from a pool of their own, sized to how many exports may run at once (4 by default; at most 2 per user). Further exports get a `429` until one finishes, and however many are running, the main pool (10 connections) stays free for every other request. So each Warden server opens at most 14 connections, and each replica counts its exports separately.
+- **Export connections** come from a pool of their own, sized to how many exports may run at once (4 by default; at most 2 per user). Further exports get a `429` until one finishes, and however many are running, the main pool (10 connections) stays free for every other request.
+- **Action connections** likewise come from a pool of their own (4 by default; at most 2 per user), and a run or preview is rolled back and its connection closed after 60 seconds. See [Actions: limits](actions.md#limits).
+
+So each Warden server opens at most 18 connections by default, and each replica counts its exports and actions separately.
 
 | Variable                                | Default | Description                                                                                                                                     |
 | --------------------------------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -57,6 +60,9 @@ Warden limits how long its database work can run or wait, so a slow query or a s
 | `WARDEN_EXPORT_DEADLINE`                | `15m`   | An export ends this long after it started, however it is going.                                                                                 |
 | `WARDEN_EXPORT_MAX_CONCURRENT`          | `4`     | Exports one server runs at once, and the size of the export pool (1 to 100).                                                                    |
 | `WARDEN_EXPORT_MAX_PER_USER`            | `2`     | Exports one user may run at once on a server.                                                                                                   |
+| `WARDEN_ACTION_DEADLINE`                | `60s`   | A custom action's run or preview is rolled back this long after it started, unless the action sets `deadlineMs`.                                |
+| `WARDEN_ACTION_MAX_CONCURRENT`          | `4`     | Action runs and previews one server runs at once, and the size of the action pool (1 to 100).                                                   |
+| `WARDEN_ACTION_MAX_PER_USER`            | `2`     | Action runs and previews one user may have going at once on a server.                                                                           |
 
 To refuse exports over the 100,000-row limit cheaply, Warden counts at most 100,001 matching rows.
 

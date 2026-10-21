@@ -135,6 +135,11 @@ export interface ActionDefinition<
   maxAffectedRows?: number;
   /** Statement timeout for the transaction. Default: the server's (15 s). */
   timeoutMs?: number;
+  /**
+   * How long a run or preview may take in all before it is rolled back, its connection closed and
+   * the user told it took too long. Default: the server's (`WARDEN_ACTION_DEADLINE`, 60 s).
+   */
+  deadlineMs?: number;
   run: (ctx: RunContext<InputOf<I>, T>) => Promise<ActionResult | void>;
 }
 

@@ -511,12 +511,8 @@ describe('POST /api/actions/:name/run', () => {
 
   it('gives tampered and nonexistent picked records the same error', async () => {
     const before = await auditCount();
-    const responses = await Promise.all(
-      ['999999', 'not-a-number', '1e3', "1' or '1'='1"].map((company) =>
-        run('move-user', { records: ['4'], input: { company } }),
-      ),
-    );
-    for (const res of responses) {
+    for (const company of ['999999', 'not-a-number', '1e3', "1' or '1'='1"]) {
+      const res = await run('move-user', { records: ['4'], input: { company } });
       expect(res).toMatchObject({
         status: 400,
         body: {
@@ -631,6 +627,70 @@ describe('rollback', () => {
     // The action reads with config's view, not the caller's field rules.
     expect(seen.keys).toContain('last_login_at');
     expect(seen).toMatchObject({ missing: null, tampered: null });
+  });
+});
+
+describe('picked records', () => {
+  it('looks them up together, in order, repeats included', async () => {
+    const res = await run('pick-users', { input: { users: ['3', '2', '3'] } }, admin);
+    expect(res.status, res.raw).toBe(200);
+    expect(res.body.result.message).toBe('3,2,3');
+    const missing = await run('pick-users', { input: { users: ['3', '999999', 'x'] } }, admin);
+    expect(missing.body.details).toEqual([
+      { field: 'users', message: 'item 1: references a record that does not exist' },
+      { field: 'users', message: 'item 2: references a record that does not exist' },
+    ]);
+  });
+
+  it('refuses more than an array field takes, before looking any up', async () => {
+    const users = Array.from({ length: 501 }, (_, i) => String(i + 1));
+    const res = await run('pick-users', { input: { users } }, admin);
+    expect(res).toMatchObject({
+      status: 400,
+      body: { details: [{ field: 'users', message: 'must hold at most 500 items' }] },
+    });
+  });
+});
+
+describe('limits', () => {
+  const idleInTransaction = async () =>
+    Number(
+      (
+        await query(
+          `select count(*) as n from pg_stat_activity
+           where datname = current_database() and state like 'idle in transaction%'`,
+        )
+      )[0]!.n,
+    );
+
+  it('rolls back a run past its deadline, frees its connection, and keeps others responsive', async () => {
+    let settled = false;
+    const hung = Promise.all([
+      preview('hang', {}, admin),
+      run('hang', {}, admin),
+      preview('hang', {}, admin),
+    ]).finally(() => (settled = true));
+    // Other requests don't wait for the hung ones.
+    expect((await send('GET', '/api/actions', ops)).status).toBe(200);
+    const peek = await run('peek', { records: ['8'] });
+    expect(peek.status, peek.raw).toBe(200);
+    expect(settled).toBe(false);
+
+    const responses = await hung;
+    // Two per user: whichever came third was refused.
+    const refused = responses.filter((r) => r.status === 429);
+    expect(refused).toHaveLength(1);
+    expect(refused[0]!.body.message).toMatch(/too many actions/);
+    for (const res of responses.filter((r) => r.status !== 429)) {
+      expect(res).toMatchObject({
+        status: 503,
+        body: { message: 'the action took too long and was rolled back' },
+      });
+    }
+    await expect.poll(idleInTransaction).toBe(0);
+    // The slots are free again.
+    const again = await Promise.all([preview('hang', {}, admin), preview('hang', {}, admin)]);
+    expect(again.map((r) => r.status)).toEqual([503, 503]);
   });
 });
 

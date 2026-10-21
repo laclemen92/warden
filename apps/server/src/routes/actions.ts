@@ -14,6 +14,7 @@ import {
   canRunAction,
   decodeRecordId,
   isAllowed,
+  oversizedInputArrays,
   previewTokenPayload,
   redactInput,
   runnableActions,
@@ -31,15 +32,19 @@ import {
   auditHook,
   createActionTx,
   getRow,
+  getRows,
   insertActionEntry,
   lockRow,
   mapWriteError,
   setStatementTimeout,
   toRecordRef,
+  type ActionTxHandle,
   type Database,
+  type DetachedTransaction,
   type Row,
 } from '@wardenhq/pg-adapter';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import { createSlots } from '../slots.js';
 import type { Views } from '../views.js';
 import { MAX_REASON_LENGTH, REASON_REQUIRED } from './entities.js';
 
@@ -48,8 +53,29 @@ export const MAX_PREVIEW_CHANGES = 200;
 const MAX_RECORD_ID_LENGTH = 10_000;
 const MAX_TOKEN_LENGTH = 200;
 
+export interface ActionLimits {
+  /** Runs and previews at once on this server, across all users: the action pool's size. */
+  maxConcurrent: number;
+  /** Runs and previews one user may have going at once. */
+  maxPerUser: number;
+  /** How long a run or preview may take, unless the action sets its own `deadlineMs`. */
+  deadlineMs: number;
+}
+
+export const DEFAULT_ACTION_LIMITS: ActionLimits = {
+  maxConcurrent: 4,
+  maxPerUser: 2,
+  deadlineMs: 60_000,
+};
+
 export interface ActionRouteOptions {
   db: Database;
+  /**
+   * Begin a run's transaction, on a pool of its own so runs can't starve other requests. The
+   * connection must not be shared, so a run past its deadline can be cut off.
+   */
+  startTransaction: () => Promise<DetachedTransaction>;
+  limits?: Partial<ActionLimits>;
   schema: EffectiveSchema;
   policy: Policy;
   views: Views;
@@ -131,6 +157,16 @@ const badRequest = (reply: FastifyReply, message: string, details: FieldError[] 
     ...(details.length > 0 ? { details } : {}),
   });
 
+const tooMany = (reply: FastifyReply) =>
+  reply.code(429).send({
+    statusCode: 429,
+    error: 'Too Many Requests',
+    message: 'too many actions are running; try again when one finishes',
+  });
+
+/** The run's deadline passed. */
+class TookTooLong extends Error {}
+
 /** Thrown inside the transaction to roll it back and answer with a response instead. */
 class Answer {
   constructor(readonly send: (reply: FastifyReply) => FastifyReply) {}
@@ -168,6 +204,9 @@ const pick = <T>(values: Record<string, T> | null, fields: ReadonlySet<string>) 
  */
 export function registerActionRoutes(app: FastifyInstance, options: ActionRouteOptions) {
   const { db, schema, policy, views, actionPolicy, definitions, defaultSchema } = options;
+  const { startTransaction } = options;
+  const { deadlineMs, ...caps } = { ...DEFAULT_ACTION_LIMITS, ...options.limits };
+  const acquire = createSlots(caps);
   const byTable = new Map(schema.entities.map((e) => [`${e.schema}.${e.name}`, e]));
   const entities = new Map(schema.entities.map((e) => [e.key, e]));
   // `tx` takes config-style table keys. Hidden tables aren't in the effective schema.
@@ -320,6 +359,8 @@ export function registerActionRoutes(app: FastifyInstance, options: ActionRouteO
         unknown.map((key) => ({ field: key, message: `unknown field "${key}"` })),
       );
     }
+    const oversized = oversizedInputArrays(action.inputSchema, rawInput);
+    if (oversized.length > 0) return badRequest(reply, 'invalid input', oversized);
     let input: Record<string, unknown> = {};
     if (definition.input) {
       const parsed = await definition.input.safeParseAsync(rawInput);
@@ -336,135 +377,170 @@ export function registerActionRoutes(app: FastifyInstance, options: ActionRouteO
     const requestId = req.id;
     const log = req.log.child({ action: action.name }) as unknown as Logger;
 
-    let outcome: Outcome;
-    try {
-      outcome = await db.transaction().execute(async (trx): Promise<Outcome> => {
-        if (action.timeoutMs !== undefined) await setStatementTimeout(trx, action.timeoutMs);
-        const rows: Row[] = [];
-        for (const target of targets) {
-          const row = target.ok ? await lockRow(trx, entity, target.filter) : undefined;
-          if (!row) throw new Answer(notFound);
-          rows.push(row);
-        }
+    let txHandle: ActionTxHandle | undefined;
+    /** Everything the run does in its transaction; the caller commits or rolls back. */
+    const work = async (trx: Database): Promise<Outcome> => {
+      if (action.timeoutMs !== undefined) await setStatementTimeout(trx, action.timeoutMs);
+      const rows: Row[] = [];
+      for (const target of targets) {
+        const row = target.ok ? await lockRow(trx, entity, target.filter) : undefined;
+        if (!row) throw new Answer(notFound);
+        rows.push(row);
+      }
 
-        // Picked records are loaded with the action's (full) view of their entity. Bad ids and
-        // missing rows get the same message.
-        const resolved: Record<string, unknown> = { ...input };
-        const refErrors: FieldError[] = [];
-        for (const ref of action.refs) {
-          const value = input[ref.field];
-          if (value === undefined || value === null) continue;
-          const target = entities.get(ref.entity)!;
-          const values = ref.many ? (value as unknown[]) : [value];
-          const loaded: RecordRef[] = [];
-          for (const [i, id] of values.entries()) {
-            const decoded = typeof id === 'string' ? decodeRecordId(target, id) : undefined;
-            const row = decoded?.ok ? await getRow(trx, target, decoded.filter) : undefined;
-            if (!row) {
-              refErrors.push({
-                field: ref.field,
-                message: `${ref.many ? `item ${i}: ` : ''}references a record that does not exist`,
-              });
-            } else {
-              loaded.push(toRecordRef(target, row));
-            }
-          }
-          resolved[ref.field] = ref.many ? loaded : loaded[0];
-        }
-        if (refErrors.length > 0)
-          throw new Answer((r) => badRequest(r, 'invalid input', refErrors));
-
-        const auditId = await insertActionEntry(trx, {
-          actor,
-          requestId,
-          ...(reason ? { reason } : {}),
-          action: action.name,
-          entity,
-          ...(action.target === 'one' ? { record: rows[0]! } : {}),
-          details: {
-            input: redactInput(input, action.sensitive),
-            records: ids,
-            refs: Object.fromEntries(action.refs.map((r) => [r.field, r.entity])),
-          },
-        });
-        const audit = auditHook({
-          actor,
-          requestId,
-          parentId: auditId,
-          ...(reason ? { reason } : {}),
-        });
-        const changes: ActionChange[] = [];
-        const handle = createActionTx(trx, {
-          action: action.name,
-          resolve: resolveTable,
-          permissions: action.permissions,
-          maxAffectedRows: action.maxAffectedRows,
-          onWrite: async (t, change) => {
-            await audit(t, change);
-            const row = (change.after ?? change.before)!;
-            changes.push({
-              operation: change.action,
-              entity: change.entity.key,
-              recordId: toRecordRef(change.entity, row).id || null,
-              before: change.before,
-              after: change.after,
-              diff: auditDiff(change.before, change.after),
-              ...(change.action === 'create' && change.written
-                ? { values: Object.fromEntries(change.written.map((f) => [f, row[f] ?? null])) }
-                : {}),
-            });
-          },
-        });
-        const refs = rows.map((row) => toRecordRef(entity, row));
-        const afterCommit: (() => Promise<void>)[] = [];
-        let returned: unknown;
-        let thrown: { error: unknown } | undefined;
-        try {
-          returned = await definition.run({
-            input: resolved,
-            record: action.target === 'one' ? refs[0] : undefined,
-            records: action.target === 'many' ? refs : undefined,
-            tx: handle.tx,
-            actor,
-            ...(reason ? { reason } : {}),
-            afterCommit: (fn: () => Promise<void>) => {
-              afterCommit.push(fn);
-            },
-            log,
-          });
-        } catch (err) {
-          thrown = { error: err };
-        }
-        // Calls `run` didn't await must not overlap the commit or rollback.
-        const unfinished = await handle.close();
-        if (thrown) throw thrown.error;
-        // A database error aborted the transaction, so Postgres would answer COMMIT with a
-        // silent ROLLBACK. Fail with it even if `run` caught it and returned.
-        if (handle.failure) throw handle.failure.error;
-        if (unfinished > 0) {
-          throw new Error(
-            `action "${action.name}" returned with ${unfinished} tx calls still running; await every tx call`,
-          );
-        }
-        const result = cleanResult(returned);
-        const token = sign(
-          previewTokenPayload({ name: action.name, input: rawInput, records: ids, changes }),
+      // Picked records are loaded with the action's (full) view of their entity. Bad ids and
+      // missing rows get the same message.
+      const resolved: Record<string, unknown> = { ...input };
+      const refErrors: FieldError[] = [];
+      for (const ref of action.refs) {
+        const value = input[ref.field];
+        if (value === undefined || value === null) continue;
+        const target = entities.get(ref.entity)!;
+        const values = ref.many ? (value as unknown[]) : [value];
+        const decoded = values.map((id) =>
+          typeof id === 'string' ? decodeRecordId(target, id) : undefined,
         );
-        const outcome = { auditId, result, changes, token, afterCommit };
-        if (mode === 'preview') throw new Answer((r) => r.send(previewResponse(roles, outcome)));
-        if (body.previewToken !== undefined && !sameToken(token, body.previewToken)) {
-          throw new Answer((r) =>
-            r.code(409).send({
-              statusCode: 409,
-              error: 'preview_stale',
-              message: 'what this action would change has changed since it was previewed',
-            }),
-          );
+        const filters = decoded.flatMap((d) => (d?.ok ? [d.filter] : []));
+        const found = await getRows(trx, target, filters);
+        const loaded: RecordRef[] = [];
+        let next = 0;
+        for (const [i, d] of decoded.entries()) {
+          const row = d?.ok ? found[next++] : undefined;
+          if (!row) {
+            refErrors.push({
+              field: ref.field,
+              message: `${ref.many ? `item ${i}: ` : ''}references a record that does not exist`,
+            });
+          } else {
+            loaded.push(toRecordRef(target, row));
+          }
         }
-        return outcome;
+        resolved[ref.field] = ref.many ? loaded : loaded[0];
+      }
+      if (refErrors.length > 0) throw new Answer((r) => badRequest(r, 'invalid input', refErrors));
+
+      const auditId = await insertActionEntry(trx, {
+        actor,
+        requestId,
+        ...(reason ? { reason } : {}),
+        action: action.name,
+        entity,
+        ...(action.target === 'one' ? { record: rows[0]! } : {}),
+        details: {
+          input: redactInput(input, action.sensitive),
+          records: ids,
+          refs: Object.fromEntries(action.refs.map((r) => [r.field, r.entity])),
+        },
       });
+      const audit = auditHook({
+        actor,
+        requestId,
+        parentId: auditId,
+        ...(reason ? { reason } : {}),
+      });
+      const changes: ActionChange[] = [];
+      const handle = createActionTx(trx, {
+        action: action.name,
+        resolve: resolveTable,
+        permissions: action.permissions,
+        maxAffectedRows: action.maxAffectedRows,
+        onWrite: async (t, change) => {
+          await audit(t, change);
+          const row = (change.after ?? change.before)!;
+          changes.push({
+            operation: change.action,
+            entity: change.entity.key,
+            recordId: toRecordRef(change.entity, row).id || null,
+            before: change.before,
+            after: change.after,
+            diff: auditDiff(change.before, change.after),
+            ...(change.action === 'create' && change.written
+              ? { values: Object.fromEntries(change.written.map((f) => [f, row[f] ?? null])) }
+              : {}),
+          });
+        },
+      });
+      txHandle = handle;
+      const refs = rows.map((row) => toRecordRef(entity, row));
+      const afterCommit: (() => Promise<void>)[] = [];
+      let returned: unknown;
+      let thrown: { error: unknown } | undefined;
+      try {
+        returned = await definition.run({
+          input: resolved,
+          record: action.target === 'one' ? refs[0] : undefined,
+          records: action.target === 'many' ? refs : undefined,
+          tx: handle.tx,
+          actor,
+          ...(reason ? { reason } : {}),
+          afterCommit: (fn: () => Promise<void>) => {
+            afterCommit.push(fn);
+          },
+          log,
+        });
+      } catch (err) {
+        thrown = { error: err };
+      }
+      // Calls `run` didn't await must not overlap the commit or rollback.
+      const unfinished = await handle.close();
+      if (thrown) throw thrown.error;
+      // A database error aborted the transaction, so Postgres would answer COMMIT with a
+      // silent ROLLBACK. Fail with it even if `run` caught it and returned.
+      if (handle.failure) throw handle.failure.error;
+      if (unfinished > 0) {
+        throw new Error(
+          `action "${action.name}" returned with ${unfinished} tx calls still running; await every tx call`,
+        );
+      }
+      const result = cleanResult(returned);
+      const token = sign(
+        previewTokenPayload({ name: action.name, input: rawInput, records: ids, changes }),
+      );
+      const outcome = { auditId, result, changes, token, afterCommit };
+      if (mode === 'preview') throw new Answer((r) => r.send(previewResponse(roles, outcome)));
+      if (body.previewToken !== undefined && !sameToken(token, body.previewToken)) {
+        throw new Answer((r) =>
+          r.code(409).send({
+            statusCode: 409,
+            error: 'preview_stale',
+            message: 'what this action would change has changed since it was previewed',
+          }),
+        );
+      }
+      return outcome;
+    };
+
+    const release = acquire(actor.subject);
+    if (!release) return tooMany(reply);
+    let outcome: Outcome;
+    let transaction: DetachedTransaction | undefined;
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      transaction = await startTransaction();
+      // A run that never settles (a webhook without a timeout) can't hold its connection: past the
+      // deadline the connection is closed, which rolls back, and `tx` refuses further calls.
+      const deadline = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new TookTooLong()), action.deadlineMs ?? deadlineMs);
+      });
+      outcome = await Promise.race([work(transaction.trx), deadline]);
+      clearTimeout(timer);
+      await transaction.commit();
     } catch (err) {
+      clearTimeout(timer);
+      if (err instanceof TookTooLong) {
+        void txHandle?.close();
+        transaction?.destroy();
+        req.log.warn({ action: action.name }, 'action took too long and was rolled back');
+        return reply.code(503).send({
+          statusCode: 503,
+          error: 'Service Unavailable',
+          message: 'the action took too long and was rolled back',
+        });
+      }
+      await transaction?.rollback().catch(() => {});
       return failed(req, reply, err);
+    } finally {
+      release();
     }
 
     for (const fn of outcome.afterCommit) {

@@ -83,22 +83,23 @@ As with config, mistakes in code fail startup and mismatches with the database o
 
 ## `defineAction`
 
-| Key               | Type                                       | Default    | Description                                                                                                  |
-| ----------------- | ------------------------------------------ | ---------- | ------------------------------------------------------------------------------------------------------------ |
-| `name`            | string, `^[a-z][a-z0-9-]*$`                | required   | Stable id. Config grants, URLs and the audit log use it.                                                     |
-| `label`           | string                                     | required   | Shown on buttons and the dialog. Config can override it.                                                     |
-| `description`     | string                                     | none       | Shown in the dialog.                                                                                         |
-| `on`              | table key (`users`, `billing.invoices`)    | required   | The entity whose pages offer the action.                                                                     |
-| `target`          | `one`, `many`, `none`                      | `one`      | What it runs against (below).                                                                                |
-| `permissions`     | map of table key to writes                 | required   | Everything `run` may write. Checked at startup and at every write, and shown to the user before they run it. |
-| `input`           | `z.object({...})`                          | no input   | The form. See [Input forms](#input-forms).                                                                   |
-| `defaults`        | `({ record, actor }) => values`            | none       | Prefills the form when the dialog opens.                                                                     |
-| `confirm`         | `preview`, `confirm`                       | `preview`  | `preview` shows the change set before running; `confirm` asks for a plain confirmation.                      |
-| `destructive`     | boolean                                    | `false`    | Styles the button and confirmation as destructive.                                                           |
-| `requireReason`   | boolean                                    | `false`    | Running it must say why. Config can also turn this on.                                                       |
-| `maxAffectedRows` | positive integer                           | `1000`     | Changing more rows than this fails the action.                                                               |
-| `timeoutMs`       | positive integer                           | the pool's | Statement timeout for the action's transaction.                                                              |
-| `run`             | `async (ctx) => ({ message?, redirect? })` | required   | Does the work.                                                                                               |
+| Key               | Type                                       | Default      | Description                                                                                                  |
+| ----------------- | ------------------------------------------ | ------------ | ------------------------------------------------------------------------------------------------------------ |
+| `name`            | string, `^[a-z][a-z0-9-]*$`                | required     | Stable id. Config grants, URLs and the audit log use it.                                                     |
+| `label`           | string                                     | required     | Shown on buttons and the dialog. Config can override it.                                                     |
+| `description`     | string                                     | none         | Shown in the dialog.                                                                                         |
+| `on`              | table key (`users`, `billing.invoices`)    | required     | The entity whose pages offer the action.                                                                     |
+| `target`          | `one`, `many`, `none`                      | `one`        | What it runs against (below).                                                                                |
+| `permissions`     | map of table key to writes                 | required     | Everything `run` may write. Checked at startup and at every write, and shown to the user before they run it. |
+| `input`           | `z.object({...})`                          | no input     | The form. See [Input forms](#input-forms).                                                                   |
+| `defaults`        | `({ record, actor }) => values`            | none         | Prefills the form when the dialog opens.                                                                     |
+| `confirm`         | `preview`, `confirm`                       | `preview`    | `preview` shows the change set before running; `confirm` asks for a plain confirmation.                      |
+| `destructive`     | boolean                                    | `false`      | Styles the button and confirmation as destructive.                                                           |
+| `requireReason`   | boolean                                    | `false`      | Running it must say why. Config can also turn this on.                                                       |
+| `maxAffectedRows` | positive integer                           | `1000`       | Changing more rows than this fails the action.                                                               |
+| `timeoutMs`       | positive integer                           | the pool's   | Statement timeout for the action's transaction.                                                              |
+| `deadlineMs`      | positive integer                           | the server's | How long a run or preview may take in all. See [Limits](#limits).                                            |
+| `run`             | `async (ctx) => ({ message?, redirect? })` | required     | Does the work.                                                                                               |
 
 | `target` | Offered on                               | `run` gets              | The request carries |
 | -------- | ---------------------------------------- | ----------------------- | ------------------- |
@@ -153,6 +154,8 @@ Anything else at the top level (nested objects, unions, transforms) fails startu
 
 A `ref` field is a record id on the wire, and `run` receives the loaded `RecordRef`. An id that doesn't decode and one that names no row get the same error. Because the picker lists rows, users need `read` on the picked table to run the action.
 
+Every array field takes at most 500 items unless its schema sets its own bound with `.max(n)`. Longer arrays are refused with a `400` before anything is parsed or looked up, and the bound is in the form's JSON Schema (`maxItems`). Picked records are looked up together, not one query per id.
+
 ## Preview
 
 Preview runs the action for real and rolls it back: it takes the same locks, writes the same rows and audit entries, and calls `run` with the same context, then reports every row that would change and undoes it all. `run` can't tell that it's being previewed, which is what makes the preview trustworthy, so **put side effects outside the database (emails, webhooks) in `afterCommit`**, which only runs after a real run commits. Its errors are logged, not returned.
@@ -179,6 +182,16 @@ Only `ActionError` messages are written for users, so only they and Warden's own
 A database error can't be caught and recovered from. Postgres aborts the transaction on any error, and there are no savepoints, so once a `tx` call fails in the database (a constraint violation, a statement timeout), every later `tx` call throws the same error and the action fails with it, even if `run` catches it and returns: nothing commits, `afterCommit` doesn't run, and preview reports the error. Check what you can first (`tx.get`, `tx.list`) instead of trying a write and catching. Invalid `tx` calls (an unknown field, a write outside `permissions`) are rejected before any SQL, so they don't fail the transaction.
 
 Await every `tx` call (`for ... of`, or `await Promise.all(...)`; not `records.forEach(async ...)`). If `run` returns while calls are still running, Warden waits for them, then rolls back with a `500`; calls made after `run` has returned throw. A promise rejection nobody handles is logged and doesn't stop the server.
+
+## Limits
+
+Actions run on a pool of their own, so however many are running, stalled or slow, the main pool stays free for sessions and every other request.
+
+- **Concurrency:** a server runs at most 4 runs and previews at once, 2 per user (`WARDEN_ACTION_MAX_CONCURRENT`, `WARDEN_ACTION_MAX_PER_USER`); the action pool has that many connections. Further requests get a `429` until one finishes.
+- **Deadline:** a run or preview that takes longer than 60 seconds (`WARDEN_ACTION_DEADLINE`, or the action's `deadlineMs`) is rolled back and answered with a `503`. Its connection is closed, so it frees its slot even if `run` never settles (say, awaiting a webhook with no timeout), and every later `tx` call throws. `run` itself can't be stopped: it is in-process code, so give your own calls timeouts too.
+- **Statements** time out as on every other connection (15 seconds), or after the action's `timeoutMs`.
+
+`run` runs in Warden's own process. A synchronous loop (heavy CPU work, a `while` that never yields) blocks the event loop, and with it every request to that server, and no deadline can interrupt it. Keep `run` asynchronous and its work proportionate; move heavy computation out of process.
 
 ## Audit log
 

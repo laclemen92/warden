@@ -4,6 +4,7 @@ import { z } from 'zod';
 import type { AuditDiff } from './audit.js';
 import type { EffectiveSchema, SchemaWarning } from './effective-schema.js';
 import { isAllowed, type Policy } from './policy.js';
+import type { FieldError } from './validation.js';
 
 export type ActionTarget = 'one' | 'many' | 'none';
 export const ACTION_TARGETS: readonly ActionTarget[] = ['one', 'many', 'none'];
@@ -13,6 +14,8 @@ export const REF_KEYWORD = 'x-warden-ref';
 
 /** Most records a `target: 'many'` action runs against. */
 export const MAX_ACTION_RECORDS = 500;
+/** Most items an array input field takes unless its schema says otherwise (`.max()`). */
+export const DEFAULT_MAX_INPUT_ITEMS = MAX_ACTION_RECORDS;
 export const DEFAULT_MAX_AFFECTED_ROWS = 1000;
 
 /** One input field's JSON Schema, as `z.toJSONSchema` gives it. */
@@ -50,6 +53,8 @@ export interface ActionSpec {
   requireReason: boolean;
   maxAffectedRows: number;
   timeoutMs?: number;
+  /** How long a run or preview may take in all; the server's default when absent. */
+  deadlineMs?: number;
   inputSchema: InputSchema;
   refs: InputRef[];
   /** Input fields marked `.meta({ sensitive: true })`, redacted in the audit log. */
@@ -70,6 +75,7 @@ const DEFINITION_KEYS = new Set([
   'requireReason',
   'maxAffectedRows',
   'timeoutMs',
+  'deadlineMs',
   'run',
 ]);
 
@@ -157,6 +163,9 @@ function inputSchemaOf(input: z.ZodObject, problem: (message: string) => void) {
     if (message) problem(`input field "${field}": ${message}`);
     const p = unwrap(property);
     const items = p.type === 'array' && isObject(p.items) ? p.items : undefined;
+    // Every array is bounded, so one request can't make `run` (or ref lookups) arbitrarily long.
+    // A nullable `type: [array, null]` is unwrapped into a copy, so the bound goes on the original.
+    if (items) (Array.isArray(property.type) ? property : p).maxItems ??= DEFAULT_MAX_INPUT_ITEMS;
     const ref = (items ?? p)[REF_KEYWORD];
     if (typeof ref === 'string') refs.push({ field, entity: ref, many: items !== undefined });
     if (marksSensitive(property)) sensitive.push(field);
@@ -164,6 +173,26 @@ function inputSchemaOf(input: z.ZodObject, problem: (message: string) => void) {
   // The server rejects unknown keys rather than stripping them.
   const inputSchema = { ...schema, type: 'object', properties, additionalProperties: false };
   return { inputSchema: inputSchema as InputSchema, refs, sensitive };
+}
+
+/**
+ * Array input fields holding more items than their schema's `maxItems`. Checked before the input
+ * is parsed, so an oversized request is turned away cheaply.
+ */
+export function oversizedInputArrays(
+  schema: InputSchema,
+  input: Readonly<Record<string, unknown>>,
+): FieldError[] {
+  const errors: FieldError[] = [];
+  for (const [field, value] of Object.entries(input)) {
+    const property = schema.properties[field];
+    if (!Array.isArray(value) || !property) continue;
+    const max = property.maxItems ?? unwrap(property).maxItems;
+    if (typeof max === 'number' && value.length > max) {
+      errors.push({ field, message: `must hold at most ${max} items` });
+    }
+  }
+  return errors;
 }
 
 export type ActionDefinitionCheck =
@@ -212,7 +241,7 @@ export function checkActionDefinitions(definitions: unknown): ActionDefinitionCh
       run,
     } = definition;
     const { confirm = 'preview', destructive = false, requireReason = false } = definition;
-    const { maxAffectedRows = DEFAULT_MAX_AFFECTED_ROWS, timeoutMs } = definition;
+    const { maxAffectedRows = DEFAULT_MAX_AFFECTED_ROWS, timeoutMs, deadlineMs } = definition;
     if (typeof label !== 'string' || !label.trim()) problem('label is required');
     if (description !== undefined && typeof description !== 'string') {
       problem('description must be a string');
@@ -246,6 +275,9 @@ export function checkActionDefinitions(definitions: unknown): ActionDefinitionCh
     if (timeoutMs !== undefined && !positiveInt(timeoutMs)) {
       problem('timeoutMs must be a positive integer');
     }
+    if (deadlineMs !== undefined && !positiveInt(deadlineMs)) {
+      problem('deadlineMs must be a positive integer');
+    }
     if (typeof run !== 'function') problem('run must be a function');
     if (defaults !== undefined && typeof defaults !== 'function') {
       problem('defaults must be a function');
@@ -276,6 +308,7 @@ export function checkActionDefinitions(definitions: unknown): ActionDefinitionCh
       requireReason: requireReason as boolean,
       maxAffectedRows: maxAffectedRows as number,
       ...(timeoutMs !== undefined ? { timeoutMs: timeoutMs as number } : {}),
+      ...(deadlineMs !== undefined ? { deadlineMs: deadlineMs as number } : {}),
       ...converted,
     });
   });

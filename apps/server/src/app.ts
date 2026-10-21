@@ -7,7 +7,7 @@ import type { ActionPolicy, EffectiveSchema, Policy } from '@wardenhq/core';
 import { isDataError, type Database } from '@wardenhq/pg-adapter';
 import Fastify, { type FastifyServerOptions } from 'fastify';
 import { redactingLogger } from './logging.js';
-import { registerActionRoutes } from './routes/actions.js';
+import { registerActionRoutes, type ActionRouteOptions } from './routes/actions.js';
 import { registerAuditRoutes } from './routes/audit.js';
 import { registerAuth, type AuthOptions } from './routes/auth.js';
 import { registerCapabilityRoutes } from './routes/capabilities.js';
@@ -32,7 +32,7 @@ export interface AppOptions {
     definitions: ReadonlyMap<string, AnyActionDefinition>;
     /** The first configured schema, which unqualified table keys in actions refer to. */
     defaultSchema: string;
-  };
+  } & Pick<ActionRouteOptions, 'startTransaction' | 'limits'>;
   /** Login routes and the session check on /api. Required whenever data routes are served. */
   auth?: AuthOptions;
   /** Introspected model and config for the schema drift page; registered when `db` is given. */

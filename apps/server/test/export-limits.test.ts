@@ -206,6 +206,7 @@ describe('parseDatabaseSettings', () => {
         idleTimeoutMs: 30_000,
         deadlineMs: 900_000,
       },
+      actions: { maxConcurrent: 4, maxPerUser: 2, deadlineMs: 60_000 },
     });
   });
 
@@ -217,10 +218,14 @@ describe('parseDatabaseSettings', () => {
         WARDEN_EXPORT_DEADLINE: '1h',
         WARDEN_EXPORT_MAX_CONCURRENT: '8',
         WARDEN_EXPORT_MAX_PER_USER: ' 1 ',
+        WARDEN_ACTION_MAX_CONCURRENT: '6',
+        WARDEN_ACTION_MAX_PER_USER: '3',
+        WARDEN_ACTION_DEADLINE: '2m',
       }),
     ).toEqual({
       idleInTransactionTimeoutMs: 300_000,
       exports: { maxConcurrent: 8, maxPerUser: 1, idleTimeoutMs: 90_000, deadlineMs: 3_600_000 },
+      actions: { maxConcurrent: 6, maxPerUser: 3, deadlineMs: 120_000 },
     });
   });
 
@@ -231,6 +236,9 @@ describe('parseDatabaseSettings', () => {
       ['WARDEN_EXPORT_MAX_CONCURRENT', '0'],
       ['WARDEN_EXPORT_MAX_PER_USER', '1.5'],
       ['WARDEN_EXPORT_MAX_CONCURRENT', '1000'],
+      ['WARDEN_ACTION_MAX_CONCURRENT', '0'],
+      ['WARDEN_ACTION_MAX_PER_USER', 'two'],
+      ['WARDEN_ACTION_DEADLINE', '0s'],
     ] as const) {
       expect(() => parseDatabaseSettings({ [name]: value }), `${name}=${value}`).toThrow(name);
     }

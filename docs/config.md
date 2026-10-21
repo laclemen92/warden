@@ -422,7 +422,7 @@ Users with the [`export`](#roles) action on a table see **Export CSV** above its
 - **Size:** an export may have at most 100,000 rows. A larger one is refused with a message to narrow the filter, rather than cut short.
 - **Format:** UTF-8 with a byte order mark (so Excel reads it correctly), comma-separated, CRLF line endings, a header row of column names, empty cells for nulls, and JSON for `json`/`jsonb` and array values. Text that a spreadsheet would run as a formula (starting with `=`, `+`, `-`, `@`, `|`, `;`, their full-width forms, tab, or carriage return, including after leading whitespace) is prefixed with `'`. Numbers and dates are written as is.
 - **Consistency:** the count and the rows come from one snapshot of the database, so concurrent writes don't make the file disagree with the audit entry.
-- **Limits:** each server runs at most 4 exports at once, and at most 2 per user; more get a `429` until one finishes. An export whose download stops reading for 30 seconds, or that is still running after 15 minutes, is ended and the download fails. See [timeouts and exports](database.md#timeouts-and-exports) to change these.
+- **Limits:** each server runs at most 4 exports at once, and at most 2 per user; more get a `429` until one finishes. An export whose download stops reading for 30 seconds, or that is still running after 15 minutes, is ended and the download fails. See [timeouts and exports](database.md#timeouts-exports-and-actions) to change these.
 
 ```yaml
 roles:

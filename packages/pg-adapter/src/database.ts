@@ -1,4 +1,4 @@
-import { Kysely, PostgresDialect } from 'kysely';
+import { Kysely, PostgresDialect, type PostgresPool, type PostgresPoolClient } from 'kysely';
 import pg from 'pg';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -14,6 +14,8 @@ export interface DatabaseOptions {
    */
   idleInTransactionTimeoutMs?: number;
   maxConnections?: number;
+  /** How long to wait for a free connection before failing; forever when unset. */
+  connectionTimeoutMs?: number;
   /**
    * Called when an idle pooled connection errors (e.g. the database restarts). Without a handler
    * these errors would crash the process; the pool replaces the connection on next use.
@@ -50,11 +52,13 @@ export function createDatabase({
   statementTimeoutMs = 15_000,
   idleInTransactionTimeoutMs = 60_000,
   maxConnections = 10,
+  connectionTimeoutMs,
   onIdleError = (err) => console.error('idle database connection error', err),
 }: DatabaseOptions): DatabaseHandle {
   const pool = new pg.Pool({
     connectionString,
     max: maxConnections,
+    ...(connectionTimeoutMs !== undefined ? { connectionTimeoutMillis: connectionTimeoutMs } : {}),
     statement_timeout: statementTimeoutMs,
     idle_in_transaction_session_timeout: idleInTransactionTimeoutMs,
     types: typeParsers,
@@ -72,4 +76,73 @@ export function createDatabase({
     if (!pool.ended) await pool.end();
   };
   return { pool, db, close };
+}
+
+/** A transaction on a connection of its own, which can be given up without waiting for it. */
+export interface DetachedTransaction {
+  trx: Database;
+  /** Commit, and return the connection to the pool. */
+  commit(): Promise<void>;
+  /** Roll back, and return the connection to the pool (or discard it if that fails). */
+  rollback(): Promise<void>;
+  /**
+   * Close the connection now, whatever is still running on it or waiting to: Postgres rolls the
+   * transaction back, pending queries fail, and the pool slot is free at once.
+   */
+  destroy(): void;
+}
+
+/**
+ * Begin a transaction on a connection taken from `pool` for it alone. Kysely's own transactions
+ * hold their connection until the callback settles, which code that never settles never does;
+ * this one is let go by `destroy()`.
+ */
+export async function startDetachedTransaction(pool: pg.Pool): Promise<DetachedTransaction> {
+  const client = await pool.connect();
+  let released = false;
+  const release = (discard: boolean) => {
+    if (released) return;
+    released = true;
+    client.release(discard);
+  };
+  // Kysely returns its connection after the transaction; this one is released here instead.
+  const single: PostgresPool = {
+    connect: async () =>
+      ({
+        query: (...args: Parameters<pg.PoolClient['query']>) => client.query(...args),
+        release: () => {},
+      }) as unknown as PostgresPoolClient,
+    end: async () => {},
+    options: pool.options,
+  };
+  const db: Database = new Kysely({ dialect: new PostgresDialect({ pool: single }) });
+  let trx;
+  try {
+    trx = await db.startTransaction().execute();
+  } catch (err) {
+    release(true);
+    throw err;
+  }
+  return {
+    trx,
+    async commit() {
+      try {
+        await trx.commit().execute();
+        release(false);
+      } catch (err) {
+        release(true);
+        throw err;
+      }
+    },
+    async rollback() {
+      try {
+        await trx.rollback().execute();
+        release(false);
+      } catch (err) {
+        release(true);
+        throw err;
+      }
+    },
+    destroy: () => release(true),
+  };
 }
