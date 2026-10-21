@@ -4,6 +4,7 @@ A custom action is a typed, multi-step operation, such as "move this user to ano
 
 - [Writing a module](#writing-a-module)
 - [Loading it](#loading-it)
+- [Trust model](#trust-model)
 - [`defineAction`](#defineaction)
 - [The `tx` API](#the-tx-api)
 - [Concurrency](#concurrency)
@@ -79,8 +80,29 @@ As with config, mistakes in code fail startup and mismatches with the database o
 | A definition is invalid: duplicate or malformed `name`, unknown key, unknown `permissions` write, unsupported input field                                | Startup fails, listing every problem |
 | `target: 'one'` or `'many'` on a table without a primary key                                                                                             | Startup fails                        |
 | `on`, `permissions` or a `ref()` names a table that is hidden or doesn't exist                                                                           | Warning; the action is disabled      |
-| `permissions` includes a write that a table `deny` forbids                                                                                               | Warning; the action is disabled      |
+| `permissions` includes a write that a table `deny` forbids, or a table whose `deny` includes `read`                                                      | Warning; the action is disabled      |
 | Config grants or configures an action the module doesn't define                                                                                          | Warning                              |
+
+## Trust model
+
+An actions module is server code, not a plugin in a sandbox. Warden `import()`s it into its own process, so it runs with everything the server has:
+
+- **Secrets.** It can read `process.env`, including `DATABASE_URL`, `WARDEN_SESSION_SECRET` and `OIDC_CLIENT_SECRET`. With the session secret it could forge sessions.
+- **The database.** It can open its own connections with Warden's role and run any SQL that role may, bypassing everything `tx` enforces: `permissions`, table `deny`, hidden columns, the audit log and preview.
+- **The network and filesystem**, like any Node code.
+
+`tx` keeps well-meaning code honest and makes what an action does reviewable; it doesn't contain hostile code. So:
+
+- **Review modules like server code.** Whoever can change the module can do anything Warden can. Keep it in version control, review changes, and deploy it like the server itself.
+- **Mount it read-only** (`-v ./actions:/actions:ro`), and don't let anything Warden runs alongside write to it.
+- **Give Warden a least-privilege database role** (see [Restricting the runtime role](database.md#restricting-the-runtime-role)): no DDL, not the owner of the `warden` schema or your tables, so neither Warden nor a module can alter the audit log, its grants or triggers, and only the table access your config actually needs.
+- **Treat secrets in the environment as visible to the module.** Pass a module its own credentials for the services it calls, scoped to what it needs.
+
+Within `tx`, a few things deliberately differ from what a user could do through the CRUD routes:
+
+- An action reads and writes with config's view of a table, not the user's: field-level rules (`readableBy`, `writableBy`) don't apply, and the user needs no table grants for what `permissions` declares. Granting an action is the escalation (see [config](config.md#actions)). Table `deny` still applies, including `deny: [read]`, which makes a table as absent to `tx` as a hidden one.
+- `defaults` and `run` see values the user may not be allowed to read, and what they return (`defaults` values, `run`'s `message`) is sent to the user as-is. Don't copy restricted fields into them.
+- `confirm: 'preview'` is how the UI asks before running; the API doesn't require a preview first. A run that sends the preview's token is checked against it (see [Preview](#preview)); one that doesn't simply runs. Who may run an action is decided by roles, not by the preview.
 
 ## `defineAction`
 
@@ -128,13 +150,13 @@ tx.updateMany(entity, filter, values)           // number of rows changed
 tx.deleteMany(entity, filter)                   // number of rows deleted
 ```
 
-- Entities are config-style table keys. Fields, values and [filters](../packages/core/src/filter.ts) are checked exactly as client input is, against the schema config exposes: a hidden table or column is indistinguishable from one that doesn't exist, and read-only fields can't be written.
+- Entities are config-style table keys. Fields, values and [filters](../packages/core/src/filter.ts) are checked exactly as client input is, against the schema config exposes: a hidden table or column, or a table config `deny`s reading, is indistinguishable from one that doesn't exist, and read-only fields can't be written.
 - Every write must be covered by `permissions`, or it throws and the action rolls back. That keeps the declaration honest, so whoever reviews or grants an action can trust it as the action's blast radius.
 - Every write locks the rows it changes, writes them, and records an audit entry for each. `updateMany` and `deleteMany` work row by row, so each row gets its own before and after.
-- Reads don't need a `read` grant: the action reads, not the user. They still see only exposed fields, and the user sees only what `run` returns. Field-level `readableBy` rules don't apply to actions.
+- Reads don't need a `read` grant: the action reads, not the user. They still see only exposed fields, and the user sees only what `run` returns. Field-level rules (`readableBy`, `writableBy`) don't apply to actions; `permissions` decides what they may write.
 - Rows that Postgres changes through `on delete cascade` or triggers aren't recorded, as with the CRUD routes. Delete dependent rows explicitly first if they should be audited.
 
-There is no raw SQL: it would bypass the audit entries, preview, the permissions check and hidden columns all at once.
+`tx` has no raw SQL: it would bypass the audit entries, preview, the permissions check and hidden columns all at once. That is a guardrail, not a sandbox: module code can still reach the database by other means (see [Trust model](#trust-model)).
 
 ## Concurrency
 
@@ -183,7 +205,7 @@ Every array field takes at most 500 items unless its schema sets its own bound w
 
 Preview runs the action for real and rolls it back: it takes the same locks, writes the same rows and audit entries, and calls `run` with the same context, then reports every row that would change and undoes it all. `run` can't tell that it's being previewed, which is what makes the preview trustworthy, so **put side effects outside the database (emails, webhooks) in `afterCommit`**, which only runs after a real run commits. Its errors are logged, not returned.
 
-A preview returns a token that signs what it would change. Running with the token checks that the run would change exactly the same thing; if the data changed in between, the run rolls back with `409` (`error: "preview_stale"`) and the UI asks to preview again. Creates are compared by the values `run` gave, since a rolled-back preview still uses up sequence values.
+Preview is the UI's step, not the API's: a run doesn't need one (see [Trust model](#trust-model)). A preview returns a token that signs what it would change. Running with the token checks that the run would change exactly the same thing; if the data changed in between, the run rolls back with `409` (`error: "preview_stale"`) and the UI asks to preview again. Creates are compared by the values `run` gave, since a rolled-back preview still uses up sequence values.
 
 The preview shows each user only what they may read: rows of tables they can't read appear without their record ids or values, and fields a [field-level rule](config.md#field-level-rules) keeps from them are left out.
 

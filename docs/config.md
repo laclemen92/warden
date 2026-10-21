@@ -303,7 +303,7 @@ actions:
     disabled: true
 ```
 
-Mismatches warn rather than fail, as for tables and columns: an action whose table, written tables, or picked tables are hidden or don't exist, or whose `permissions` include a write a table `deny` forbids, is disabled with a warning; and `roles.<role>.actions` or `actions` naming an action the module doesn't define is a warning. Mistakes in the module itself (a missing file, duplicate names, unsupported input fields) fail startup with an `ActionsError`.
+Mismatches warn rather than fail, as for tables and columns: an action whose table, written tables, or picked tables are hidden or don't exist, or whose `permissions` include a write a table `deny` forbids or a table that denies `read`, is disabled with a warning; and `roles.<role>.actions` or `actions` naming an action the module doesn't define is a warning. Mistakes in the module itself (a missing file, duplicate names, unsupported input fields) fail startup with an `ActionsError`.
 
 ## `access`
 
