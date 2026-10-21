@@ -39,6 +39,11 @@ export class ActionWriteError extends Error {
 const isPgError = (err: unknown) =>
   typeof err === 'object' && err !== null && typeof (err as { code?: unknown }).code === 'string';
 
+const isCheckError = (err: unknown) =>
+  err instanceof ActionValidationError ||
+  err instanceof ActionPermissionError ||
+  err instanceof ActionLimitError;
+
 /** Run a write, tagging a Postgres error with what was being written. */
 async function writing<T>(entity: Entity, operation: WriteAction, write: () => Promise<T>) {
   try {
@@ -93,15 +98,59 @@ export interface ActionTxOptions {
   onWrite: WriteHook;
 }
 
+export interface ActionTxHandle {
+  tx: ActionTx;
+  /**
+   * The first database error a `tx` call hit, or undefined. Postgres aborts the transaction on
+   * any error, so once there is one nothing can commit, even if `run` caught it.
+   */
+  readonly failure: { error: unknown } | undefined;
+  /**
+   * Refuse further `tx` calls and wait for the ones still running, so none overlaps the commit
+   * or rollback. Returns how many were still running (calls `run` didn't await).
+   */
+  close(): Promise<number>;
+}
+
 /**
  * The `tx` an action's `run` gets: reads and writes inside the action's transaction that go
  * through the same validation and write path as the CRUD routes. Every write must be covered by
  * the action's permissions, locks and audits each row it changes, and counts towards
  * `maxAffectedRows`.
  */
-export function createActionTx(trx: Database, options: ActionTxOptions): ActionTx {
+export function createActionTx(trx: Database, options: ActionTxOptions): ActionTxHandle {
   const { action, resolve, permissions, maxAffectedRows, onWrite } = options;
   let affected = 0;
+  let failure: { error: unknown } | undefined;
+  let closed = false;
+  const running = new Set<Promise<unknown>>();
+
+  // Every call is tracked, and the first database error fails the transaction for good: later
+  // calls rethrow it, so a `run` that catches one still can't carry on as if it hadn't happened.
+  const guard =
+    <A extends unknown[], R>(call: (...args: A) => Promise<R>) =>
+    (...args: A): Promise<R> => {
+      if (closed) {
+        return Promise.reject(
+          new Error(`action "${action}" used tx after run finished; await every tx call`),
+        );
+      }
+      if (failure) return Promise.reject(failure.error);
+      const result = (async () => {
+        try {
+          return await call(...args);
+        } catch (err) {
+          // Only Warden's own checks are known to fail before any SQL; anything else may have
+          // come from Postgres (wrapped, like a failed audit insert) and aborted the transaction.
+          if (!isCheckError(err)) failure ??= { error: err };
+          throw err;
+        }
+      })();
+      running.add(result);
+      const done = () => void running.delete(result);
+      result.then(done, done);
+      return result;
+    };
 
   // Hidden and nonexistent tables give the same error.
   const entityOf = (table: string) => {
@@ -164,7 +213,7 @@ export function createActionTx(trx: Database, options: ActionTxOptions): ActionT
     }
   };
 
-  return {
+  const tx: ActionTx = {
     async get(table, id) {
       const entity = entityOf(table);
       const filter = addressed(entity, id);
@@ -265,6 +314,27 @@ export function createActionTx(trx: Database, options: ActionTxOptions): ActionT
         );
       }
       return rows.length;
+    },
+  };
+
+  return {
+    tx: {
+      get: guard(tx.get),
+      list: guard(tx.list),
+      create: guard(tx.create),
+      update: guard(tx.update),
+      delete: guard(tx.delete),
+      updateMany: guard(tx.updateMany),
+      deleteMany: guard(tx.deleteMany),
+    },
+    get failure() {
+      return failure;
+    },
+    async close() {
+      closed = true;
+      const unfinished = running.size;
+      await Promise.allSettled([...running]);
+      return unfinished;
     },
   };
 }

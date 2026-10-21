@@ -460,6 +460,13 @@ describe('rollback', () => {
     ['a read-only field', 'read-only', 400, { message: 'invalid companies values' }],
     ['an invalid value', 'bad-value', 400, { message: 'invalid companies values' }],
     ['a constraint violation', 'duplicate', 409, { message: 'conflicts with existing records' }],
+    [
+      'a constraint violation run caught',
+      'swallowed-duplicate',
+      409,
+      { message: 'conflicts with existing records' },
+    ],
+    ['tx calls run did not await', 'unawaited', 500, SERVER_ERROR],
     ['exceeding maxAffectedRows', 'cap', 500, SERVER_ERROR],
   ])('undoes every write, audit entries included, on %s', async (_, how, status, body) => {
     const name = await company();
@@ -472,6 +479,28 @@ describe('rollback', () => {
     expect(effectList()).toEqual([]);
     // Nothing internal leaks into the response.
     expect(res.raw).not.toMatch(/internal details|companies_domain_key|sql/i);
+  });
+
+  it('previews a caught constraint violation as the error, not as the result', async () => {
+    const res = await preview(
+      'fail-after-write',
+      { records: ['20'], input: { how: 'swallowed-duplicate' } },
+      admin,
+    );
+    expect(res.status, res.raw).toBe(409);
+    expect(res.body).toMatchObject({ message: 'conflicts with existing records' });
+  });
+
+  it('logs tx calls run did not await, and keeps serving', async () => {
+    await run('fail-after-write', { records: ['20'], input: { how: 'unawaited' } }, admin);
+    expect(logLines).toContainEqual(
+      expect.objectContaining({
+        err: expect.objectContaining({
+          message: expect.stringMatching(/2 tx calls still running/),
+        }),
+      }),
+    );
+    expect((await send('GET', '/api/actions', ops)).status).toBe(200);
   });
 
   it('treats hidden columns and tables exactly like nonexistent ones', async () => {

@@ -17,6 +17,7 @@ import {
   insertActionEntry,
   introspect,
   migrate,
+  type ActionTxHandle,
   type ActionTxOptions,
   type DatabaseHandle,
   type WriteChange,
@@ -87,7 +88,7 @@ async function withTx<T>(
     });
     const audit = auditHook({ actor, parentId });
     const changes: WriteChange[] = [];
-    const tx = createActionTx(trx, {
+    const { tx } = createActionTx(trx, {
       action: 'test-action',
       resolve: (table) => entities.get(table),
       permissions: { things: ['create', 'update', 'delete'] },
@@ -241,5 +242,61 @@ describe('createActionTx', () => {
     expect(err).toEqual(new Error('audit insert failed'));
     expect((await rows()).map((r) => r.kind)).toEqual(['odd', 'odd', 'odd', 'plain', 'plain']);
     expect(await auditRows()).toEqual(before);
+  });
+});
+
+describe('a failed tx', () => {
+  /** Run `fn` with the whole handle in one transaction, which commits unless `fn` throws. */
+  const withHandle = (fn: (tx: ActionTxHandle) => Promise<void>) =>
+    handle.db.transaction().execute(async (trx) => {
+      const tx = createActionTx(trx, {
+        action: 'test-action',
+        resolve: (table) => entities.get(table),
+        permissions: { things: ['create', 'update', 'delete'] },
+        maxAffectedRows: 100,
+        onWrite: async () => {},
+      });
+      await fn(tx);
+    });
+
+  it('keeps the first database error, and rethrows it from every later call', async () => {
+    let first: unknown;
+    let failure: ActionTxHandle['failure'];
+    await withHandle(async (actionTx) => {
+      const { tx } = actionTx;
+      first = await tx.create('things', { name: 'thing 1' }).catch((e: unknown) => e);
+      await expect(tx.get('things', '1')).rejects.toBe(first);
+      await expect(tx.update('things', '2', { kind: 'x' })).rejects.toBe(first);
+      failure = actionTx.failure;
+      await actionTx.close();
+      // Postgres would refuse the commit anyway; the route checks `failure` and rolls back.
+      throw new Error('rolled back');
+    }).catch(() => {});
+    expect(first).toBeInstanceOf(ActionWriteError);
+    expect(failure).toEqual({ error: first });
+  });
+
+  it('is not failed by an invalid call, which never reaches Postgres', async () => {
+    await withHandle(async (actionTx) => {
+      await expect(actionTx.tx.create('things', { nope: 1 })).rejects.toBeInstanceOf(
+        ActionValidationError,
+      );
+      expect(actionTx.failure).toBeUndefined();
+      await actionTx.tx.update('things', '1', { kind: 'still works' });
+      await actionTx.close();
+    });
+    expect((await rows())[0]!.kind).toBe('still works');
+  });
+
+  it('waits for calls still running when closed, counts them, and refuses new ones', async () => {
+    let unfinished = 0;
+    await withHandle(async (actionTx) => {
+      void actionTx.tx.update('things', '1', { kind: 'unawaited' });
+      void actionTx.tx.update('things', '2', { kind: 'unawaited' });
+      unfinished = await actionTx.close();
+      await expect(actionTx.tx.get('things', '1')).rejects.toThrow(/after run finished/);
+    });
+    expect(unfinished).toBe(2);
+    expect((await rows()).map((r) => r.kind).slice(0, 2)).toEqual(['unawaited', 'unawaited']);
   });
 });
