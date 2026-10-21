@@ -82,6 +82,33 @@ export async function deleteExpiredSessions(
   return Number(result.numAffectedRows ?? 0);
 }
 
+/**
+ * Recompute each session's stored email from its claims with `emailOf`, which is how a session
+ * gets its email at sign-in. Config can change the rule (`requireVerifiedEmail`) between
+ * restarts, and the Roles page and session revocations read the stored email. Returns how many
+ * changed.
+ */
+export async function refreshSessionEmails(
+  db: Database,
+  emailOf: (claims: Record<string, unknown>) => string | undefined,
+): Promise<number> {
+  const { rows } = await sql<{
+    token_hash: Buffer;
+    email: string | null;
+    claims: Record<string, unknown>;
+  }>`select token_hash, email, claims from ${SESSIONS}`.execute(db);
+  let changed = 0;
+  for (const row of rows) {
+    const email = emailOf(row.claims) ?? null;
+    if (email === row.email) continue;
+    await sql`update ${SESSIONS} set email = ${email} where token_hash = ${row.token_hash}`.execute(
+      db,
+    );
+    changed++;
+  }
+  return changed;
+}
+
 /** Someone signed in, summarized over their live sessions (one per browser or device). */
 export interface SignedInUser {
   subject: string;

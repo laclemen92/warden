@@ -62,6 +62,7 @@ export {
   deleteSessionsForSubject,
   insertSession,
   listSignedInUsers,
+  refreshSessionEmails,
   touchSession,
   type NewSession,
   type Session,

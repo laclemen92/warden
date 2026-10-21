@@ -39,8 +39,9 @@ export interface Field {
   nullable: boolean;
   hasDefault: boolean;
   /**
-   * Never writable: configured read-only, identity `always`, generated, or a primary key with a
-   * default (unless the table sets `insertablePrimaryKey`).
+   * Never writable: configured read-only, identity `always`, generated, or a generated primary key
+   * (a single-column key with a default, or a sequence or identity column of a composite one)
+   * unless the table sets `insertablePrimaryKey`.
    */
   readOnly: boolean;
   /**
@@ -244,7 +245,13 @@ function resolveFields(
     if (isPrimaryKey && !field.readOnly) {
       // A key with a default (sequence, identity, uuid default) is generated. An explicit one
       // doesn't advance the sequence, so later inserts, Warden's or the application's, collide.
-      if (field.hasDefault && !tableConfig?.insertablePrimaryKey) field.readOnly = true;
+      // In a composite key, only a sequence or identity column is generated: a plain default
+      // (`created_at default now()` on a partitioned table) is part of what the caller sets.
+      const generated =
+        table.primaryKey.length === 1
+          ? field.hasDefault
+          : column.sequenceDefault === true || column.identity !== undefined;
+      if (generated && !tableConfig?.insertablePrimaryKey) field.readOnly = true;
       else if (!tableConfig?.updatablePrimaryKey) field.createOnly = true;
     }
     fields.push(field);

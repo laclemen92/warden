@@ -321,12 +321,27 @@ describe('primary keys', () => {
         { primaryKey: ['org', 'member'] },
       ),
       table('events', [id, col('name')]),
-      table('serials', [col('id', { dataType: 'int4', hasDefault: true }), col('name')]),
+      table('serials', [
+        col('id', { dataType: 'int4', hasDefault: true, sequenceDefault: true }),
+        col('name'),
+      ]),
       table('by_default', [col('id', { identity: 'byDefault', hasDefault: true })]),
       table('uuids', [col('id', { dataType: 'uuid', hasDefault: true })]),
-      table('tenant_docs', [col('tenant'), col('id', { hasDefault: true })], {
-        primaryKey: ['tenant', 'id'],
-      }),
+      table(
+        'tenant_docs',
+        [col('tenant'), col('id', { hasDefault: true, sequenceDefault: true })],
+        {
+          primaryKey: ['tenant', 'id'],
+        },
+      ),
+      table(
+        'readings',
+        [
+          col('id', { identity: 'byDefault', hasDefault: true }),
+          col('taken_at', { dataType: 'timestamptz', hasDefault: true }),
+        ],
+        { primaryKey: ['id', 'taken_at'] },
+      ),
     ],
   };
   const resolveKeyed = (config: unknown, key: string) => {
@@ -387,6 +402,14 @@ describe('primary keys', () => {
     ).toEqual([
       ['tenant', false, true],
       ['id', true, undefined],
+    ]);
+    // In a composite key, a plain default (`now()`) isn't a generated key: it's settable on
+    // create. Sequence and identity columns still aren't.
+    expect(
+      resolveKeyed({}, 'readings').fields.map((f) => [f.name, f.readOnly, f.createOnly]),
+    ).toEqual([
+      ['id', true, undefined],
+      ['taken_at', false, true],
     ]);
     // updatablePrimaryKey alone doesn't make them writable.
     expect(

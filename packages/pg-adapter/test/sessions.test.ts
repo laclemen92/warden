@@ -12,6 +12,7 @@ import {
   listSignedInUsers,
   migrate,
   MIGRATIONS,
+  refreshSessionEmails,
   touchSession,
   type DatabaseHandle,
 } from '../src/index.js';
@@ -189,6 +190,44 @@ describe('sessions', () => {
 
     expect(await deleteExpiredSessions(handle.db, TIMEOUTS)).toBe(2);
     expect(await touchSession(handle.db, keep, TIMEOUTS)).toBeDefined();
+  });
+
+  it('recomputes stored emails when the rule for them changes', async () => {
+    await sql`delete from warden.sessions`.execute(handle.db);
+    const [verified, unverified, none] = [newHash(), newHash(), newHash()];
+    // Signed in under requireVerifiedEmail: false, so every email was stored.
+    await insertSession(handle.db, {
+      tokenHash: verified,
+      subject: 'a',
+      email: 'a@example.com',
+      claims: { email: 'a@example.com', email_verified: true },
+    });
+    await insertSession(handle.db, {
+      tokenHash: unverified,
+      subject: 'b',
+      email: 'b@example.com',
+      claims: { email: 'b@example.com' },
+    });
+    await insertSession(handle.db, { tokenHash: none, subject: 'c', claims: {} });
+    const stored = async () =>
+      (await listSignedInUsers(handle.db, TIMEOUTS))
+        .map((u) => [u.subject, u.email])
+        .sort(([x], [y]) => String(x).localeCompare(String(y)));
+
+    const verifiedOnly = (claims: Record<string, unknown>) =>
+      claims.email_verified === true ? (claims.email as string) : undefined;
+    expect(await refreshSessionEmails(handle.db, verifiedOnly)).toBe(1);
+    expect(await stored()).toEqual([
+      ['a', 'a@example.com'],
+      ['b', null],
+      ['c', null],
+    ]);
+    expect(await refreshSessionEmails(handle.db, verifiedOnly)).toBe(0);
+
+    // And back again.
+    const any = (claims: Record<string, unknown>) => claims.email as string | undefined;
+    expect(await refreshSessionEmails(handle.db, any)).toBe(1);
+    expect((await stored())[1]).toEqual(['b', 'b@example.com']);
   });
 
   it('lists signed-in users with their live sessions, newest details first', async () => {

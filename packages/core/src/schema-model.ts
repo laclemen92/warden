@@ -32,6 +32,8 @@ export interface Column {
   nullable: boolean;
   /** True when inserts may omit the column (has a default, identity, or is generated). */
   hasDefault: boolean;
+  /** Set when the default draws from a sequence (`serial`, `nextval(...)`). */
+  sequenceDefault?: true;
   /** Identity column kind; `always` columns cannot be written. */
   identity?: 'always' | 'byDefault';
   /** Generated (computed) columns cannot be written. */
