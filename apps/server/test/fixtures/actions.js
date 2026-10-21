@@ -101,6 +101,7 @@ export default ({ defineAction, z, ref, ActionError }) => [
         'missing-column',
         'hidden-table',
         'missing-table',
+        'denied-table',
         'read-only',
         'bad-value',
         'duplicate',
@@ -150,6 +151,9 @@ export default ({ defineAction, z, ref, ActionError }) => [
           break;
         case 'missing-table':
           await tx.list('nonexistent');
+          break;
+        case 'denied-table':
+          await tx.get('vault', '1');
           break;
         case 'read-only':
           await tx.update('companies', record, { id: '1' });

@@ -31,6 +31,7 @@ tables:
   orders:
     deny: [create, delete]
   secrets: { hidden: true }
+  vault: { deny: [read] }
 roles:
   viewer: { grants: { '*': [read] } }
   ops:
@@ -78,6 +79,7 @@ beforeAll(async () => {
       await readExampleSql('basic/schema.sql'),
       await readExampleSql('basic/seed.sql'),
       'create table secrets (id serial primary key, value text)',
+      `create table vault (id serial primary key, note text); insert into vault (note) values ('x')`,
     ],
   });
   sqlPool = new pg.Pool({ connectionString: db.connectionString });
@@ -738,6 +740,13 @@ describe('rollback', () => {
     );
     expect(table.body.message).toBe('unknown entity "secrets"');
     expect(noTable.body).toEqual({ ...table.body, message: 'unknown entity "nonexistent"' });
+    // A table config denies reading is as absent to action code as a hidden one.
+    const denied = await run(
+      'fail-after-write',
+      { records: ['20'], input: { how: 'denied-table' } },
+      admin,
+    );
+    expect(denied.body).toEqual({ ...table.body, message: 'unknown entity "vault"' });
     const peek = await run('peek', { records: ['8'] });
     expect(peek.status, peek.raw).toBe(200);
     const seen = JSON.parse(peek.body.result.message);

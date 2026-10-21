@@ -387,6 +387,16 @@ export function resolveActionPolicy(
       permissions[entity.key] = [...new Set([...(permissions[entity.key] ?? []), ...writes])];
       if (writes.some((w) => entity.requireReason?.includes(w))) tableRequiresReason = true;
     }
+    // `tx` can't see tables config denies reading, so it couldn't write them either.
+    const unreadable = Object.keys(permissions).filter((key) =>
+      policy.denied.get(key)?.has('read'),
+    );
+    if (unreadable.length > 0) {
+      disable(
+        `it writes ${unreadable.map((key) => `"${key}"`).join(', ')}, which config denies reading`,
+      );
+      continue;
+    }
     const denied = Object.entries(permissions).flatMap(([key, writes]) =>
       writes.filter((w) => policy.denied.get(key)?.has(w)).map((w) => `${w} on "${key}"`),
     );

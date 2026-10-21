@@ -292,6 +292,16 @@ describe('resolveActionPolicy', () => {
     );
   });
 
+  it('disables an action that writes a table config denies reading', () => {
+    const { actionPolicy, warnings } = resolve(specs(definition()), {
+      tables: { orders: { deny: ['read'] } },
+    });
+    expect(actionPolicy.actions.size).toBe(0);
+    expect(warnings[0]?.message).toBe(
+      'it writes "orders", which config denies reading; the action is disabled',
+    );
+  });
+
   it('leaves out actions config disables, and warns about names nothing defines', () => {
     const { actionPolicy, warnings } = resolve(specs(definition()), {
       roles: { ops: { actions: ['move-user', 'ghost'] } },

@@ -233,9 +233,12 @@ export function registerActionRoutes(app: FastifyInstance, options: ActionRouteO
   const acquire = createSlots(caps);
   const byTable = new Map(schema.entities.map((e) => [`${e.schema}.${e.name}`, e]));
   const entities = new Map(schema.entities.map((e) => [e.key, e]));
-  // `tx` takes config-style table keys. Hidden tables aren't in the effective schema.
-  const resolveTable = (table: string) =>
-    byTable.get(table.includes('.') ? table : `${defaultSchema}.${table}`);
+  // `tx` takes config-style table keys. Hidden tables aren't in the effective schema, and tables
+  // config denies reading are just as absent: a table `deny` beats actions too.
+  const resolveTable = (table: string) => {
+    const entity = byTable.get(table.includes('.') ? table : `${defaultSchema}.${table}`);
+    return entity && !policy.denied.get(entity.key)?.has('read') ? entity : undefined;
+  };
 
   const sign = (payload: string) =>
     createHmac('sha256', options.sessionSecret)
