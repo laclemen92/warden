@@ -390,7 +390,7 @@ export function registerActionRoutes(app: FastifyInstance, options: ActionRouteO
           ...(reason ? { reason } : {}),
         });
         const changes: ActionChange[] = [];
-        const tx = createActionTx(trx, {
+        const handle = createActionTx(trx, {
           action: action.name,
           resolve: resolveTable,
           permissions: action.permissions,
@@ -413,20 +413,36 @@ export function registerActionRoutes(app: FastifyInstance, options: ActionRouteO
         });
         const refs = rows.map((row) => toRecordRef(entity, row));
         const afterCommit: (() => Promise<void>)[] = [];
-        const result = cleanResult(
-          await definition.run({
+        let returned: unknown;
+        let thrown: { error: unknown } | undefined;
+        try {
+          returned = await definition.run({
             input: resolved,
             record: action.target === 'one' ? refs[0] : undefined,
             records: action.target === 'many' ? refs : undefined,
-            tx,
+            tx: handle.tx,
             actor,
             ...(reason ? { reason } : {}),
             afterCommit: (fn: () => Promise<void>) => {
               afterCommit.push(fn);
             },
             log,
-          }),
-        );
+          });
+        } catch (err) {
+          thrown = { error: err };
+        }
+        // Calls `run` didn't await must not overlap the commit or rollback.
+        const unfinished = await handle.close();
+        if (thrown) throw thrown.error;
+        // A database error aborted the transaction, so Postgres would answer COMMIT with a
+        // silent ROLLBACK. Fail with it even if `run` caught it and returned.
+        if (handle.failure) throw handle.failure.error;
+        if (unfinished > 0) {
+          throw new Error(
+            `action "${action.name}" returned with ${unfinished} tx calls still running; await every tx call`,
+          );
+        }
+        const result = cleanResult(returned);
         const token = sign(
           previewTokenPayload({ name: action.name, input: rawInput, records: ids, changes }),
         );

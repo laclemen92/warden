@@ -1,5 +1,7 @@
-import { describe, expect, it } from 'vitest';
-import { redactUrl } from '../src/logging.js';
+import { EventEmitter } from 'node:events';
+import type { FastifyBaseLogger } from 'fastify';
+import { describe, expect, it, vi } from 'vitest';
+import { logUnhandledRejections, redactUrl } from '../src/logging.js';
 
 describe('redactUrl', () => {
   it('drops the whole query string of /auth routes', () => {
@@ -26,5 +28,18 @@ describe('redactUrl', () => {
       '/api/entities/users?q=ada&sort=-id',
     );
     expect(redactUrl('/auth/callback')).toBe('/auth/callback');
+  });
+});
+
+describe('logUnhandledRejections', () => {
+  it('logs a rejection instead of letting it end the process, until stopped', () => {
+    const target = new EventEmitter();
+    const log = { error: vi.fn() } as unknown as FastifyBaseLogger;
+    const stop = logUnhandledRejections(log, target as unknown as NodeJS.Process);
+    const err = new Error('Transaction is already committed');
+    target.emit('unhandledRejection', err, Promise.resolve());
+    expect(log.error).toHaveBeenCalledWith({ err }, 'unhandled promise rejection');
+    stop();
+    expect(target.listenerCount('unhandledRejection')).toBe(0);
   });
 });

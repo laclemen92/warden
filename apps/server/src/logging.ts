@@ -1,4 +1,4 @@
-import type { FastifyRequest, FastifyServerOptions } from 'fastify';
+import type { FastifyBaseLogger, FastifyRequest, FastifyServerOptions } from 'fastify';
 
 const REDACTED = '[redacted]';
 // OIDC callback parameters. Codes are single-use and need the client secret and PKCE verifier,
@@ -50,4 +50,18 @@ export function redactingLogger(logger: LoggerOption): LoggerOption {
   if (logger === false) return logger;
   const options = logger === true ? {} : logger;
   return { ...options, serializers: { ...options.serializers, req: serializeReq } };
+}
+
+/**
+ * Log unhandled promise rejections instead of letting Node exit on them. Custom action code runs
+ * in-process, and a promise it forgot to await (`records.forEach(async ...)`) must not take the
+ * server down. The run it belonged to has already failed. Returns a function that stops logging.
+ */
+export function logUnhandledRejections(
+  log: FastifyBaseLogger,
+  target: Pick<NodeJS.Process, 'on' | 'off'> = process,
+): () => void {
+  const listener = (err: unknown) => log.error({ err }, 'unhandled promise rejection');
+  target.on('unhandledRejection', listener);
+  return () => void target.off('unhandledRejection', listener);
 }

@@ -170,10 +170,15 @@ Every error rolls the whole action back, its audit entries included.
 | `new ActionError(message, { field? })`                   | `400` with the message, attached to the field if given |
 | An invalid `tx` call (unknown table or field, bad value) | `400` with the problems                                |
 | A constraint violation                                   | `400` or `409`, as for CRUD writes                     |
+| A `tx` call `run` didn't await                           | `500`, details in the log: a bug in the action         |
 | A write outside `permissions`, too many rows             | `500`, details in the log: bugs in the action          |
 | Anything else                                            | `500`, details in the log                              |
 
 Only `ActionError` messages are written for users, so only they and Warden's own validation messages are sent.
+
+A database error can't be caught and recovered from. Postgres aborts the transaction on any error, and there are no savepoints, so once a `tx` call fails in the database (a constraint violation, a statement timeout), every later `tx` call throws the same error and the action fails with it, even if `run` catches it and returns: nothing commits, `afterCommit` doesn't run, and preview reports the error. Check what you can first (`tx.get`, `tx.list`) instead of trying a write and catching. Invalid `tx` calls (an unknown field, a write outside `permissions`) are rejected before any SQL, so they don't fail the transaction.
+
+Await every `tx` call (`for ... of`, or `await Promise.all(...)`; not `records.forEach(async ...)`). If `run` returns while calls are still running, Warden waits for them, then rolls back with a `500`; calls made after `run` has returned throw. A promise rejection nobody handles is logged and doesn't stop the server.
 
 ## Audit log
 

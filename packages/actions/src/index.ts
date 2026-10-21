@@ -47,6 +47,8 @@ export interface ActionResult {
  * `billing.invoices`); fields, values and filters are checked exactly as for client input, so a
  * hidden table or column is indistinguishable from a nonexistent one. Every write must be covered
  * by the action's `permissions`, and each changed row is audited under the action's entry.
+ * Await every call. A database error fails the whole action, even if `run` catches it: Postgres
+ * has aborted the transaction, so later calls throw it again and nothing commits.
  */
 export interface ActionTx {
   /** The row with this id, or null when there is none. */

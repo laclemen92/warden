@@ -94,6 +94,8 @@ export default ({ defineAction, z, ref, ActionError }) => [
         'read-only',
         'bad-value',
         'duplicate',
+        'swallowed-duplicate',
+        'unawaited',
         'cap',
       ]),
     }),
@@ -132,6 +134,23 @@ export default ({ defineAction, z, ref, ActionError }) => [
         case 'duplicate':
           await tx.create('companies', { name: 'Dup', domain: record.values.domain });
           break;
+        case 'swallowed-duplicate':
+          // Postgres has aborted the transaction, so this must not commit or report success.
+          try {
+            await tx.create('companies', { name: 'Dup', domain: record.values.domain });
+          } catch {
+            try {
+              await tx.get('companies', record.id);
+            } catch {
+              return { message: 'all good' };
+            }
+          }
+          throw new Error('the failed transaction carried on');
+        case 'unawaited':
+          [1, 2].forEach(async (n) => {
+            await tx.update('companies', record, { name: `unawaited ${n}` });
+          });
+          return { message: 'all good' };
         case 'cap':
           await tx.updateMany('orders', { field: 'status', op: 'isNotNull' }, { notes: 'capped' });
           break;

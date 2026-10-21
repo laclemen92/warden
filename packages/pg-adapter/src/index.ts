@@ -98,5 +98,6 @@ export {
   MAX_TX_LIST_LIMIT,
   setStatementTimeout,
   toRecordRef,
+  type ActionTxHandle,
   type ActionTxOptions,
 } from './action-tx.js';
