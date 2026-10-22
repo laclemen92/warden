@@ -397,11 +397,26 @@ export function resolveActionPolicy(
       );
       continue;
     }
+    // Hard delete is off unless the table enables it, for actions as for roles.
+    const deleteOff = Object.entries(permissions)
+      .filter(([key, writes]) => writes.includes('delete') && policy.deleteOff.has(key))
+      .map(([key]) => key);
     const denied = Object.entries(permissions).flatMap(([key, writes]) =>
-      writes.filter((w) => policy.denied.get(key)?.has(w)).map((w) => `${w} on "${key}"`),
+      writes
+        .filter(
+          (w) => policy.denied.get(key)?.has(w) && !(w === 'delete' && deleteOff.includes(key)),
+        )
+        .map((w) => `${w} on "${key}"`),
     );
     if (denied.length > 0) {
       disable(`its permissions include ${denied.join(', ')}, which config denies`);
+      continue;
+    }
+    if (deleteOff.length > 0) {
+      disable(
+        `its permissions include delete on ${deleteOff.map((key) => `"${key}"`).join(', ')}, ` +
+          `where hard delete is off; set ${deleteOff.map((key) => `tables.${key}.allowDelete: true`).join(', ')} to allow it`,
+      );
       continue;
     }
     if (spec.target !== 'none' && on.primaryKey.length === 0) {

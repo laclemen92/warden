@@ -2,10 +2,12 @@ import { wardenConfigSchema } from '@wardenhq/config';
 import { describe, expect, it } from 'vitest';
 import {
   allowedActions,
+  deleteCascadeWarnings,
   isAllowed,
   resolvePolicy,
   resolveSchema,
   type Column,
+  type ForeignKey,
   type SchemaModel,
   type Table,
 } from '../src/index.js';
@@ -92,9 +94,9 @@ describe('policy grants', () => {
   });
 
   it('applies `*` grants to every entity', () => {
-    const policy = policyFor({ roles: { admin: { grants: { '*': ['update', 'delete'] } } } });
+    const policy = policyFor({ roles: { admin: { grants: { '*': ['create', 'update'] } } } });
     for (const entity of ['users', 'companies', 'orders', 'billing.invoices']) {
-      expect(allowedActions(policy, ['admin'], entity)).toEqual(['read', 'update', 'delete']);
+      expect(allowedActions(policy, ['admin'], entity)).toEqual(['read', 'create', 'update']);
     }
   });
 
@@ -104,6 +106,7 @@ describe('policy grants', () => {
         a: { grants: { users: ['create'] } },
         b: { grants: { users: ['delete'], '*': ['update'] } },
       },
+      tables: { users: { allowDelete: true } },
     });
     expect(allowedActions(policy, ['a'], 'users')).toEqual(['read', 'create']);
     expect(allowedActions(policy, ['a', 'b'], 'users')).toEqual([
@@ -125,6 +128,7 @@ describe('policy grants', () => {
           grants: { 'public.users': ['create', 'delete'], 'billing.invoices': ['update'] },
         },
       },
+      tables: { users: { allowDelete: true } },
     });
     expect(allowedActions(policy, ['r'], 'users')).toEqual(['read', 'create', 'delete']);
     expect(allowedActions(policy, ['r'], 'billing.invoices')).toEqual(['read', 'update']);
@@ -141,10 +145,13 @@ describe('policy deny', () => {
   it('beats every grant, including `*`', () => {
     const policy = policyFor({
       roles: {
-        admin: { grants: { '*': ['read', 'create', 'update', 'delete'] } },
+        admin: { grants: { '*': ['read', 'create', 'update'], users: ['delete'] } },
         ops: { grants: { orders: ['create', 'update', 'delete'] } },
       },
-      tables: { orders: { deny: ['create', 'delete'] } },
+      tables: {
+        users: { allowDelete: true },
+        orders: { deny: ['create', 'delete'], allowDelete: true },
+      },
     });
     expect(allowedActions(policy, ['admin', 'ops'], 'orders')).toEqual(['read', 'update']);
     expect(allowedActions(policy, ['admin'], 'users')).toEqual([
@@ -205,8 +212,8 @@ describe('policy for entities that are not exposed', () => {
   it('denies every action on hidden or nonexistent entities, whatever is granted', () => {
     const policy = policyFor({
       defaults: { expose: 'none' },
-      roles: { admin: { grants: { '*': ['read', 'create', 'update', 'delete'] } } },
-      tables: { users: {}, companies: { hidden: true } },
+      roles: { admin: { grants: { '*': ['read', 'create', 'update'], users: ['delete'] } } },
+      tables: { users: { allowDelete: true }, companies: { hidden: true, allowDelete: true } },
     });
     expect(allowedActions(policy, ['admin'], 'users')).toEqual([
       'read',
@@ -236,5 +243,212 @@ describe('policy for entities that are not exposed', () => {
 
   it('has no warnings for a config that matches the schema', () => {
     expect(resolve(ISSUE_EXAMPLE).warnings).toEqual([]);
+  });
+});
+
+describe('hard delete', () => {
+  const ENTITIES = ['users', 'companies', 'orders', 'billing.invoices'];
+
+  it('is off everywhere by default, whatever roles grant', () => {
+    const policy = policyFor({
+      roles: {
+        admin: { grants: { '*': ['read', 'create', 'update', 'delete'] } },
+        ops: { grants: { users: ['delete'], 'billing.invoices': ['delete'] } },
+      },
+    });
+    for (const entity of ENTITIES) {
+      expect(isAllowed(policy, ['admin', 'ops'], entity, 'delete')).toBe(false);
+    }
+    expect(allowedActions(policy, ['admin'], 'users')).toEqual(['read', 'create', 'update']);
+  });
+
+  it('never comes from a `*` grant, even where the table allows it', () => {
+    const optedIn = policyFor({
+      roles: { admin: { grants: { '*': ['delete'] } } },
+      tables: { users: { allowDelete: true } },
+    });
+    const granted = policyFor({
+      defaults: { delete: 'granted' },
+      roles: { admin: { grants: { '*': ['delete'] } } },
+    });
+    for (const entity of ENTITIES) {
+      expect(isAllowed(optedIn, ['admin'], entity, 'delete')).toBe(false);
+      expect(isAllowed(granted, ['admin'], entity, 'delete')).toBe(false);
+    }
+  });
+
+  it('opting one table in allows delete there and only there', () => {
+    const policy = policyFor({
+      roles: {
+        ops: {
+          grants: { users: ['delete'], companies: ['delete'], 'billing.invoices': ['delete'] },
+        },
+        viewer: { grants: { '*': ['read'] } },
+      },
+      tables: { users: { allowDelete: true } },
+    });
+    expect(isAllowed(policy, ['ops'], 'users', 'delete')).toBe(true);
+    expect(isAllowed(policy, ['ops'], 'companies', 'delete')).toBe(false);
+    expect(isAllowed(policy, ['ops'], 'billing.invoices', 'delete')).toBe(false);
+    expect(isAllowed(policy, ['ops'], 'orders', 'delete')).toBe(false);
+    // Opting in grants nothing by itself.
+    expect(isAllowed(policy, ['viewer'], 'users', 'delete')).toBe(false);
+    expect(isAllowed(policy, [], 'users', 'delete')).toBe(false);
+  });
+
+  it('matches allowDelete on `table` and `schema.table` keys', () => {
+    const policy = policyFor({
+      roles: { ops: { grants: { users: ['delete'], 'billing.invoices': ['delete'] } } },
+      tables: { 'public.users': { allowDelete: true }, 'billing.invoices': { allowDelete: true } },
+    });
+    expect(isAllowed(policy, ['ops'], 'users', 'delete')).toBe(true);
+    expect(isAllowed(policy, ['ops'], 'billing.invoices', 'delete')).toBe(true);
+  });
+
+  it('lets table deny beat the opt-in', () => {
+    const optedIn = policyFor({
+      roles: { ops: { grants: { users: ['delete'] } } },
+      tables: { users: { allowDelete: true, deny: ['delete'] } },
+    });
+    expect(isAllowed(optedIn, ['ops'], 'users', 'delete')).toBe(false);
+    const granted = policyFor({
+      defaults: { delete: 'granted' },
+      roles: { ops: { grants: { users: ['delete'] } } },
+      tables: { users: { deny: ['delete'] } },
+    });
+    expect(isAllowed(granted, ['ops'], 'users', 'delete')).toBe(false);
+  });
+
+  it('honors named grants with defaults.delete: granted, unless the table opts out', () => {
+    const policy = policyFor({
+      defaults: { delete: 'granted' },
+      roles: { ops: { grants: { users: ['delete'], companies: ['delete'] } } },
+      tables: { companies: { allowDelete: false } },
+    });
+    expect(isAllowed(policy, ['ops'], 'users', 'delete')).toBe(true);
+    expect(isAllowed(policy, ['ops'], 'companies', 'delete')).toBe(false);
+    expect(isAllowed(policy, ['ops'], 'orders', 'delete')).toBe(false);
+  });
+
+  it('hides a table from a role whose only grant there is an ignored delete', () => {
+    const policy = policyFor({
+      defaults: { read: 'granted' },
+      roles: { cleaner: { grants: { users: ['delete'] } } },
+    });
+    expect(allowedActions(policy, ['cleaner'], 'users')).toEqual([]);
+  });
+
+  it('warns about every delete grant it ignores, naming the key to add', () => {
+    const { warnings } = resolve({
+      roles: {
+        admin: { grants: { '*': ['read', 'delete'] } },
+        ops: { grants: { users: ['update', 'delete'], 'billing.invoices': ['delete'] } },
+        hr: { grants: { companies: ['delete'] } },
+      },
+      tables: {
+        companies: { allowDelete: true },
+        orders: { allowDelete: true, deny: ['delete'] },
+      },
+    });
+    expect(warnings).toEqual([
+      {
+        path: 'roles.admin.grants.*',
+        message:
+          '"*" never grants delete; grant it on each table that should allow it ' +
+          '(e.g. orders: [delete]) and set tables.<table>.allowDelete: true',
+      },
+      {
+        path: 'roles.ops.grants.users',
+        message:
+          'delete is ignored: hard delete is off for "users"; ' +
+          'set tables.users.allowDelete: true to allow it',
+      },
+      { path: 'tables.orders.allowDelete', message: 'has no effect: the table denies delete' },
+      {
+        path: 'roles.ops.grants.billing.invoices',
+        message:
+          'delete is ignored: hard delete is off for "billing.invoices"; ' +
+          'set tables.billing.invoices.allowDelete: true to allow it',
+      },
+    ]);
+  });
+});
+
+describe('deleteCascadeWarnings', () => {
+  const fk = (
+    name: string,
+    references: string,
+    onDelete?: 'cascade' | 'setNull' | 'setDefault',
+  ): ForeignKey => ({
+    name,
+    columns: ['ref_id'],
+    references: { schema: 'public', name: references, columns: ['id'] },
+    ...(onDelete ? { onDelete } : {}),
+  });
+  const withFks = (t: Table, foreignKeys: ForeignKey[]): Table => ({ ...t, foreignKeys });
+  const cascadeModel: SchemaModel = {
+    enums: [],
+    tables: [
+      table('users'),
+      withFks(table('companies'), [fk('companies_owner', 'users', 'setDefault')]),
+      withFks(table('orders'), [
+        fk('orders_user', 'users', 'setNull'),
+        fk('orders_company', 'companies', 'cascade'),
+      ]),
+      withFks(table('invoices', 'billing'), [fk('invoices_order', 'orders')]),
+      withFks(table('secrets'), [fk('secrets_user', 'users', 'cascade')]),
+    ],
+  };
+  const warningsFor = (config: unknown, actionDeletes?: Set<string>) => {
+    const parsed = wardenConfigSchema.parse({
+      schemas: ['public', 'billing'],
+      ...(config as object),
+    });
+    const { schema } = resolveSchema(cascadeModel, parsed);
+    const { policy } = resolvePolicy(schema, parsed);
+    return deleteCascadeWarnings(cascadeModel, schema, policy, actionDeletes);
+  };
+
+  it('names every table, hidden ones included, that deleting changes', () => {
+    expect(
+      warningsFor({
+        roles: { ops: { grants: { users: ['delete'] } } },
+        tables: { users: { allowDelete: true }, secrets: { hidden: true } },
+      }),
+    ).toEqual([
+      {
+        path: 'tables.users',
+        message:
+          'deleting a row here also changes rows in "public.companies" (on delete set default), ' +
+          '"public.orders" (on delete set null), "public.secrets" (on delete cascade), ' +
+          "outside Warden's policy and audit log",
+      },
+    ]);
+  });
+
+  it('says nothing where nobody may delete, or nothing cascades', () => {
+    // Off by default; opted in with no grant; denied; `no action` foreign keys only.
+    expect(warningsFor({ roles: { ops: { grants: { users: ['delete'] } } } })).toEqual([]);
+    expect(warningsFor({ tables: { users: { allowDelete: true } } })).toEqual([]);
+    expect(
+      warningsFor({
+        roles: { ops: { grants: { users: ['delete'] } } },
+        tables: { users: { allowDelete: true, deny: ['delete'] } },
+      }),
+    ).toEqual([]);
+    expect(
+      warningsFor({
+        roles: { ops: { grants: { orders: ['delete'] } } },
+        tables: { orders: { allowDelete: true } },
+      }),
+    ).toEqual([]);
+  });
+
+  it('counts tables custom actions may delete from', () => {
+    const warnings = warningsFor(
+      { tables: { companies: { allowDelete: true } } },
+      new Set(['companies']),
+    );
+    expect(warnings.map((w) => w.path)).toEqual(['tables.companies']);
   });
 });

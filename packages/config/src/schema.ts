@@ -123,6 +123,11 @@ const tableConfigSchema = z
     columns: z.record(name, columnConfigSchema).default({}),
     /** Actions nobody may perform on this table, whatever their roles grant. */
     deny: actions.optional(),
+    /**
+     * Let roles granted `delete` on this table hard-delete its rows. Overrides `defaults.delete`
+     * for this table either way; a `deny` that includes `delete` still wins.
+     */
+    allowDelete: z.boolean().optional(),
     /** Writes that must say why; the reason is stored in the audit log. */
     requireReason: z.array(z.enum(WRITE_ACTIONS)).optional(),
     /**
@@ -197,6 +202,12 @@ export const wardenConfigSchema = z
         newColumns: z.enum(['visible', 'hidden', 'readOnly']).default('visible'),
         /** `all`: anyone may read every exposed table. `granted`: reading requires a `read` grant. */
         read: z.enum(['all', 'granted']).default('all'),
+        /**
+         * Hard deletes. `none`: refused on every table unless it sets `allowDelete: true`.
+         * `granted`: a role's `delete` grant on a table is honored. A `*` grant never includes
+         * `delete` either way.
+         */
+        delete: z.enum(['none', 'granted']).default('none'),
       })
       .prefault({}),
     tables: z.record(tableKey, tableConfigSchema).default({}),

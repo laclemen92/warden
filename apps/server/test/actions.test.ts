@@ -28,6 +28,7 @@ tables:
       last_login_at: { readableBy: [admin] }
   companies:
     requireReason: [delete]
+    allowDelete: true
   orders:
     deny: [create, delete]
   secrets: { hidden: true }
@@ -39,7 +40,7 @@ roles:
     actions:
       [move-user, fail-after-write, rename-companies, peek, purge-orders, switched-off, stamp-login]
   admin:
-    grants: { '*': [read, create, update, delete] }
+    grants: { '*': [read, create, update] }
     admin: [audit]
     actions: ['*']
   auditor:
@@ -1041,7 +1042,7 @@ describe('GET /api/actions/:name/defaults', () => {
 });
 
 describe('the example actions', () => {
-  it('load with the example config without warnings', async () => {
+  it('load with the example config, warning only about the cascade it documents', async () => {
     const lines: Record<string, unknown>[] = [];
     const stream = new Writable({
       write(chunk, _encoding, done) {
@@ -1059,7 +1060,16 @@ describe('the example actions', () => {
       logger: { level: 'warn', stream },
     });
     try {
-      expect(lines.filter((l) => String(l.msg).startsWith('config: '))).toEqual([]);
+      // Deleting a user nulls orders.user_id; the example config allows it on purpose.
+      expect(
+        lines.filter((l) => String(l.msg).startsWith('config: ')).map((l) => [l.configPath, l.msg]),
+      ).toEqual([
+        [
+          'tables.users',
+          'config: deleting a row here also changes rows in "public.orders" (on delete set null), ' +
+            "outside Warden's policy and audit log",
+        ],
+      ]);
       const cookie = await login(example, 'editor');
       const res = await example.inject({ method: 'GET', url: '/api/actions', headers: { cookie } });
       expect(res.json().actions.map((a: { name: string }) => a.name)).toEqual([

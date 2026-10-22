@@ -9,7 +9,7 @@ Point Warden at a database and it introspects the schema and exposes every table
 ## How it works
 
 - **Runtime, not codegen.** Warden reads the live schema on startup, so schema changes never require regenerating anything. New columns are handled by a configurable drift policy.
-- **Config narrows the default.** Everything is readable unless config hides it; create, update and delete are denied unless config grants them to a role.
+- **Config narrows the default.** Everything is readable unless config hides it; create, update and delete are denied unless config grants them to a role, and hard delete stays off until config turns it on per table.
 - **SSO only.** Employees log in through your OIDC provider (Google Workspace, Okta, Entra, Keycloak, [Auth0](docs/auth0.md)). Roles map from email domain, IdP groups, or in-app assignment.
 - **Audit everything.** Each write runs in a transaction alongside an audit entry recording who, what, when, before/after, and why.
 - **Self-hosted.** One Docker image. Warden's own metadata lives in a separate `warden` schema.

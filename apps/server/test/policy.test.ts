@@ -12,11 +12,13 @@ const CONFIG = `
 defaults: { read: granted }
 tables:
   companies: { hidden: true }
-  orders: { deny: [create, delete] }
+  users: { allowDelete: true }
+  orders: { deny: [create, delete], allowDelete: true }
 roles:
   viewer: { grants: { users: [read] } }
   ops: { grants: { users: [read, update], orders: [update] } }
-  admin: { grants: { '*': [read, create, update, delete] } }
+  # The '*' delete grants nothing; users: [delete] does, on the one table that allows it.
+  admin: { grants: { '*': [read, create, update, delete], users: [delete] } }
   guest: { grants: {} }
 access:
   groups:
@@ -38,7 +40,7 @@ const ALLOWED: Record<string, Record<User, Action[]>> = {
     admin: ['read', 'create', 'update', 'delete'],
     outsider: [],
   },
-  // The table-level deny beats admin's `*` grant.
+  // The table-level deny beats admin's `*` grant and the table's allowDelete.
   orders: { viewer: [], editor: ['update'], admin: ['read', 'update'], outsider: [] },
 };
 

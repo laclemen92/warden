@@ -53,6 +53,11 @@ export interface ForeignKey {
   /** Local columns, positionally matched to `references.columns`. */
   columns: string[];
   references: QualifiedName & { columns: string[] };
+  /**
+   * What deleting a referenced row does to referencing rows, when it changes them (`on delete
+   * cascade`, `set null`, `set default`). Absent for `no action` and `restrict`.
+   */
+  onDelete?: 'cascade' | 'setNull' | 'setDefault';
 }
 
 export interface EnumType extends QualifiedName {

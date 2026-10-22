@@ -18,8 +18,10 @@ const SCHEMA = `
 `;
 
 const CONFIG = `
+tables:
+  events: { allowDelete: true }
 roles:
-  admin: { grants: { '*': [read, create, update, delete, export] }, admin: [audit] }
+  admin: { grants: { '*': [read, create, update, export], events: [delete] }, admin: [audit] }
 access:
   groups:
     warden-admins: [admin]

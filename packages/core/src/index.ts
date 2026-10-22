@@ -57,3 +57,4 @@ export {
   resolveActionPolicy,
   runnableActions,
 } from './actions.js';
+export { deleteCascadeWarnings } from './policy.js';

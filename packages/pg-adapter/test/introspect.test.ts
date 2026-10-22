@@ -114,6 +114,30 @@ describe('introspect', () => {
     });
   });
 
+  it('reports on delete actions that change referencing rows', async () => {
+    await pool.query(`
+      create schema deletes;
+      create table deletes.parent (id int primary key);
+      create table deletes.child (
+        a int references deletes.parent on delete cascade,
+        b int references deletes.parent on delete set null,
+        c int default 1 references deletes.parent on delete set default,
+        d int references deletes.parent on delete restrict,
+        e int references deletes.parent
+      );
+    `);
+    const model = await introspect(pool, { schemas: ['deletes'] });
+    expect(
+      table(model, 'child', 'deletes').foreignKeys.map((fk) => [fk.columns[0], fk.onDelete]),
+    ).toEqual([
+      ['a', 'cascade'],
+      ['b', 'setNull'],
+      ['c', 'setDefault'],
+      ['d', undefined],
+      ['e', undefined],
+    ]);
+  });
+
   it('includes only full, non-expression unique keys and excludes INCLUDE columns', async () => {
     const model = await introspect(pool, { schemas: ['billing'] });
     expect(table(model, 'invoices', 'billing').uniqueKeys).toEqual([['external_ref']]);
