@@ -92,6 +92,9 @@ const start = (audit: unknown, lines: Record<string, unknown>[]) =>
       DATABASE_URL: db.connectionString,
       WARDEN_CONFIG: exampleConfigWith((config) => {
         Object.assign(config, { audit });
+        // These tests are about where entries go, not about reasons.
+        config.defaults.requireReason = [];
+        config.actions['move-user'] = { ...config.actions['move-user'], requireReason: false };
         config.tables.companies = { ...config.tables.companies!, allowDelete: true };
         config.roles.admin!.grants.companies = ['delete'];
       }),
