@@ -35,7 +35,45 @@ Then set `OIDC_ISSUER`, `OIDC_CLIENT_ID`, and `OIDC_CLIENT_SECRET` in `.env`. Ge
 - The issuer is `https://login.microsoftonline.com/<tenant-id>/v2.0`.
 - Add the groups claim to the token if you want to map groups to roles.
 
-`WARDEN_PUBLIC_URL` must be `https` except on `localhost`. See [Authentication](../README.md#authentication) for every sign-in and session setting.
+`WARDEN_PUBLIC_URL` must be `https` except on `localhost`. If you change the host port with `WARDEN_PORT`, the public URL must use the same port, or the sign-in redirect lands nowhere. See [Authentication](../README.md#authentication) for every sign-in and session setting.
+
+### Trying it locally without an identity provider
+
+To try Warden on your machine before registering a client, run the development-only mock IdP from this repository next to it. It shows a login page with fixed test users (`viewer@`, `editor@`, and `admin@example.com`, plus `outsider@example.org`). **Never deploy it.**
+
+Add this to your `docker-compose.yml`, with `context` pointing at a checkout of this repository, and replace the `warden` service's `ports` with `network_mode` so both containers share `localhost`:
+
+```yaml
+services:
+  mock-oidc:
+    build:
+      context: ../warden
+      dockerfile: docker/mock-oidc.Dockerfile
+    environment:
+      MOCK_OIDC_ISSUER: http://localhost:9400
+      MOCK_OIDC_REDIRECT_URIS: http://localhost:${WARDEN_PORT:-3000}/auth/callback
+      MOCK_OIDC_POST_LOGOUT_REDIRECT_URIS: http://localhost:${WARDEN_PORT:-3000}/
+    ports:
+      - '9400:9400'
+      - '${WARDEN_PORT:-3000}:3000' # Warden's port, published here because it shares this network
+
+  warden:
+    network_mode: service:mock-oidc
+    depends_on:
+      mock-oidc: { condition: service_healthy }
+    # ...the rest of the service as before, without `ports`
+```
+
+Then set these in `.env`, and grant the test users a role in the config, e.g. `access.emailDomains: { example.com: [viewer] }`:
+
+```sh
+OIDC_ISSUER=http://localhost:9400
+OIDC_CLIENT_ID=warden
+OIDC_CLIENT_SECRET=warden-dev-secret
+WARDEN_SESSION_SECRET=local-only-not-a-real-secret
+```
+
+Sharing the network matters: the browser and Warden must both reach the IdP at the same issuer URL. To reach a database on your machine from there, use `host.docker.internal` (see [below](#reaching-the-database-from-the-container)).
 
 ## 2. Choose a database
 
@@ -83,6 +121,37 @@ WARDEN_MIGRATE=false
 ```
 
 Before each upgrade, re-run the migrations and the runtime grants. If roles may write to some tables, grant `warden_app` `insert`/`update`/`delete` on those too.
+
+### Reaching the database from the container
+
+`DATABASE_URL` is resolved inside the Warden container, so `localhost` there means the container itself, not your machine.
+
+- **Postgres on your machine, or published by another compose project** (e.g. `ports: ["5455:5432"]`): use `host.docker.internal` and the published port, e.g. `postgres://user:pass@host.docker.internal:5455/dbname`. Docker Desktop provides that name; on Linux, add it to the `warden` service:
+
+  ```yaml
+  extra_hosts:
+    - 'host.docker.internal:host-gateway'
+  ```
+
+- **Postgres in another compose project, by service name:** join that project's network (`docker network ls` shows it, usually `<project>_default`) and use the service name and container port, e.g. `postgres://user:pass@postgres:5432/dbname`. The other project must be running first.
+
+  ```yaml
+  services:
+    warden:
+      networks: [app]
+  networks:
+    app:
+      external: true
+      name: myproject_default
+  ```
+
+- **A hosted database** (RDS, Cloud SQL, …): use its hostname, and make sure its firewall or security group allows the Docker host.
+
+Check the connection with a throwaway container before starting Warden:
+
+```sh
+docker run --rm postgres:18-alpine psql "$DATABASE_URL" -c 'select 1'
+```
 
 ## 3. Write the config
 
