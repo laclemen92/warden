@@ -206,6 +206,61 @@ describe('sort menu', SLOW, () => {
     await waitFor(() => expect(search(router).sort).toBe('id,-total'));
   });
 
+  it('keeps focus in the menu as terms change, move and go away', async () => {
+    const router = renderAt('/entities/orders');
+    await table();
+    const user = userEvent.setup();
+
+    screen.getByRole('button', { name: /^Sort/ }).focus();
+    await user.keyboard('{Enter}');
+    const dialog = await screen.findByRole('dialog');
+
+    // Picking another column keeps the row, so focus returns to its column button.
+    within(dialog).getByRole('combobox', { name: 'Sort column 1: Placed at' }).focus();
+    await user.keyboard('{Enter}');
+    await screen.findByRole('searchbox', { name: 'Search columns' });
+    await user.keyboard('tot{Enter}');
+    await waitFor(() => expect(search(router).sort).toBe('-total'));
+    await waitFor(() =>
+      expect(within(dialog).getByRole('combobox', { name: 'Sort column 1: Total' })).toHaveFocus(),
+    );
+    await user.tab();
+    expect(within(dialog).getByRole('button', { name: 'Total: descending' })).toHaveFocus();
+
+    await pick(within(dialog).getByRole('combobox', { name: 'Add sort' }), 'stat');
+    await pick(within(dialog).getByRole('combobox', { name: 'Add sort' }), 'gift');
+    await waitFor(() => expect(search(router).sort).toBe('-total,status,is_gift'));
+
+    // Focus follows the moved term, onto the other arrow when it reaches an end.
+    within(dialog).getByRole('button', { name: 'Move Total down' }).focus();
+    await user.keyboard('{Enter}');
+    await waitFor(() => expect(search(router).sort).toBe('status,-total,is_gift'));
+    expect(within(dialog).getByRole('button', { name: 'Move Total down' })).toHaveFocus();
+    await user.keyboard('{Enter}');
+    await waitFor(() => expect(search(router).sort).toBe('status,is_gift,-total'));
+    expect(within(dialog).getByRole('button', { name: 'Move Total up' })).toHaveFocus();
+
+    // Removing the last row lands on the row above; removing the only one, on Add sort.
+    within(dialog).getByRole('button', { name: 'Remove Total sort' }).focus();
+    await user.keyboard('{Enter}');
+    await waitFor(() => expect(search(router).sort).toBe('status,is_gift'));
+    expect(within(dialog).getByRole('button', { name: 'Remove Gift sort' })).toHaveFocus();
+    within(dialog).getByRole('button', { name: 'Remove Status sort' }).focus();
+    await user.keyboard('{Enter}');
+    await waitFor(() => expect(search(router).sort).toBe('is_gift'));
+    expect(within(dialog).getByRole('button', { name: 'Remove Gift sort' })).toHaveFocus();
+    await user.keyboard('{Enter}');
+    await waitFor(() => expect(search(router)).toEqual({}));
+    expect(within(dialog).getByRole('combobox', { name: 'Add sort' })).toHaveFocus();
+
+    await pick(within(dialog).getByRole('combobox', { name: 'Add sort' }), 'stat');
+    await waitFor(() => expect(search(router).sort).toBe('-placed_at,status'));
+    within(dialog).getByRole('button', { name: 'Reset to default' }).focus();
+    await user.keyboard('{Enter}');
+    await waitFor(() => expect(search(router)).toEqual({}));
+    expect(within(dialog).getByRole('combobox', { name: 'Add sort' })).toHaveFocus();
+  });
+
   it('shows the sort of a saved view link', async () => {
     views = [
       {

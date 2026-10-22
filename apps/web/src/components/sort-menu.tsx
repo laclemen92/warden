@@ -17,7 +17,7 @@ import {
   Plus,
   X,
 } from 'lucide-react';
-import { useId, useState, type KeyboardEvent, type ReactNode } from 'react';
+import { useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import { cn } from 'cn';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -29,6 +29,8 @@ interface FieldComboboxProps {
   label: string;
   disabled?: boolean;
   className?: string;
+  /** Marks the trigger so the sort menu can move focus to it. */
+  control?: string;
   children: ReactNode;
   onChoose: (field: Field) => void;
 }
@@ -40,6 +42,7 @@ function FieldCombobox({
   label,
   disabled,
   className,
+  control,
   children,
   onChoose,
 }: FieldComboboxProps) {
@@ -99,6 +102,7 @@ function FieldCombobox({
           aria-controls={open ? listId : undefined}
           disabled={disabled}
           className={className}
+          data-sort-control={control}
         >
           {children}
         </Button>
@@ -177,13 +181,47 @@ export function SortMenu({ entity, sort, explicit, onChange }: SortMenuProps) {
   const unused = (except?: string) =>
     sortable.filter((f) => f.name === except || !sort.some((t) => t.field === f.name));
 
+  // Rows are keyed by position so they survive edits, but a move, removal or reset still
+  // changes which control is under focus (or removes it), so say where focus goes next.
+  const content = useRef<HTMLDivElement>(null);
+  const pendingFocus = useRef<string | null>(null);
+  useEffect(() => {
+    const selector = pendingFocus.current;
+    if (!selector || !content.current) return;
+    const target =
+      content.current.querySelector<HTMLElement>(`${selector}:not(:disabled)`) ??
+      content.current.querySelector<HTMLElement>('[data-sort-control="add"]:not(:disabled)');
+    pendingFocus.current = null;
+    target?.focus();
+  });
+  const focusLater = (row: number | null, control: string) => {
+    pendingFocus.current =
+      row === null
+        ? `[data-sort-control="${control}"]`
+        : `[data-sort-row="${row}"] [data-sort-control="${control}"]`;
+  };
+
   const replace = (index: number, term: SortTerm) =>
     onChange(sort.map((t, i) => (i === index ? term : t)));
   const move = (index: number, to: number) => {
     const next = [...sort];
     const [term] = next.splice(index, 1);
     if (term) next.splice(to, 0, term);
+    // Follow the moved term; at either end, its button in this direction is disabled.
+    const down = to > index;
+    const atEnd = down ? to === next.length - 1 : to === 0;
+    focusLater(to, down !== atEnd ? 'down' : 'up');
     onChange(next);
+  };
+  const remove = (index: number) => {
+    const next = sort.filter((_, j) => j !== index);
+    if (next.length > 0) focusLater(Math.min(index, next.length - 1), 'remove');
+    else focusLater(null, 'add');
+    onChange(next);
+  };
+  const reset = () => {
+    focusLater(null, 'add');
+    onChange([]);
   };
 
   const first = sort[0];
@@ -204,7 +242,7 @@ export function SortMenu({ entity, sort, explicit, onChange }: SortMenuProps) {
         </Button>
       </PopoverTrigger>
       <PopoverContent align="start" className="w-auto max-w-[calc(100vw-2rem)] min-w-80">
-        <div className="space-y-3">
+        <div ref={content} className="space-y-3">
           <div className="flex items-baseline justify-between gap-4">
             <p className="text-sm font-medium">Sort by</p>
             {!explicit && sort.length > 0 && (
@@ -219,7 +257,7 @@ export function SortMenu({ entity, sort, explicit, onChange }: SortMenuProps) {
                 const label = labelOf(term.field);
                 const desc = term.direction === 'desc';
                 return (
-                  <li key={term.field} className="flex items-center gap-1.5">
+                  <li key={i} data-sort-row={i} className="flex items-center gap-1.5">
                     <span className="w-4 text-right text-xs text-muted-foreground">{i + 1}</span>
                     <FieldCombobox
                       fields={unused(term.field)}
@@ -246,6 +284,7 @@ export function SortMenu({ entity, sort, explicit, onChange }: SortMenuProps) {
                       variant="ghost"
                       size="icon-sm"
                       aria-label={`Move ${label} up`}
+                      data-sort-control="up"
                       disabled={i === 0}
                       onClick={() => move(i, i - 1)}
                     >
@@ -255,6 +294,7 @@ export function SortMenu({ entity, sort, explicit, onChange }: SortMenuProps) {
                       variant="ghost"
                       size="icon-sm"
                       aria-label={`Move ${label} down`}
+                      data-sort-control="down"
                       disabled={i === sort.length - 1}
                       onClick={() => move(i, i + 1)}
                     >
@@ -264,9 +304,10 @@ export function SortMenu({ entity, sort, explicit, onChange }: SortMenuProps) {
                       variant="ghost"
                       size="icon-sm"
                       aria-label={`Remove ${label} sort`}
+                      data-sort-control="remove"
                       // The default sort is what an empty sort means, so there's nothing to remove.
                       disabled={!explicit}
-                      onClick={() => onChange(sort.filter((_, j) => j !== i))}
+                      onClick={() => remove(i)}
                     >
                       <X />
                     </Button>
@@ -279,6 +320,7 @@ export function SortMenu({ entity, sort, explicit, onChange }: SortMenuProps) {
             <FieldCombobox
               fields={addable}
               label="Add sort"
+              control="add"
               disabled={sort.length >= MAX_SORT_TERMS || addable.length === 0}
               onChoose={(f) => onChange([...sort, { field: f.name, direction: 'asc' }])}
             >
@@ -286,7 +328,7 @@ export function SortMenu({ entity, sort, explicit, onChange }: SortMenuProps) {
               Add sort
             </FieldCombobox>
             {explicit && (
-              <Button variant="ghost" size="sm" onClick={() => onChange([])}>
+              <Button variant="ghost" size="sm" onClick={reset}>
                 {defaultSortOf(entity) ? 'Reset to default' : 'Clear sort'}
               </Button>
             )}
