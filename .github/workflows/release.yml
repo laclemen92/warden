@@ -25,6 +25,7 @@ env:
 jobs:
   prepare:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       version: ${{ steps.version.outputs.version }}
       prerelease: ${{ steps.version.outputs.prerelease }}
@@ -59,6 +60,8 @@ jobs:
   image:
     needs: [prepare, checks]
     runs-on: ubuntu-latest
+    # Multi-arch builds run arm64 under emulation.
+    timeout-minutes: 45
     permissions:
       contents: read
       packages: write
@@ -106,6 +109,7 @@ jobs:
   mock-oidc-image:
     needs: [prepare, checks]
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     permissions:
       contents: read
       packages: write
@@ -160,6 +164,7 @@ jobs:
   smoke-test:
     needs: [prepare, image, mock-oidc-image]
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
       packages: read
@@ -231,6 +236,7 @@ jobs:
   release:
     needs: [prepare, image, mock-oidc-image, smoke-test]
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: write
     steps:
