@@ -10,7 +10,12 @@ import pg from 'pg';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { verifyWardenRequest } from '../../../docs/examples/verify-warden-request.mjs';
 import { ActionsError } from '../src/actions.js';
-import { SignInAgainError, type UserTokenProvider } from '../src/http-actions.js';
+import {
+  MAX_CONTEXT_RECORD_BYTES,
+  runHttpAction,
+  type HttpAction,
+  type UserTokenProvider,
+} from '../src/http-actions.js';
 import { createWarden } from '../src/warden.js';
 import { authEnv, login, startTestIdp, writeConfig } from './helpers/auth.js';
 import type { MockOidc } from '@wardenhq/mock-oidc';
@@ -27,7 +32,7 @@ roles:
   viewer: { grants: { '*': [read] } }
   ops:
     grants: { users: [read], companies: [read] }
-    actions: [review-user, review-many, review-batch, m2m-ping, as-user, off-site]
+    actions: [review-user, review-many, review-slow, review-batch, m2m-ping, as-user, off-site]
   admin:
     grants: { '*': [read] }
     admin: [audit]
@@ -66,12 +71,17 @@ const received: Received[] = [];
 let respond: (req: Received) => Reply = () => ({ status: 200, body: {} });
 const logLines: string[] = [];
 
+// Shaped like the session store's error: recognized by name, not class.
+class SessionSignInAgainError extends Error {
+  override name = 'SignInAgainError';
+}
+
 const userTokens: UserTokenProvider = {
-  audiences: ['https://api.test'],
-  accessTokenFor: async (req, audience) => {
+  audience: 'https://api.test',
+  accessTokenFor: async (req) => {
     // The admin's refresh token has been revoked, say.
-    if (req.session?.subject === 'admin') throw new SignInAgainError();
-    return `user-token-${req.session?.subject}-${audience}`;
+    if (req.session?.subject === 'admin') throw new SessionSignInAgainError('refresh rejected');
+    return `user-token-${req.session?.subject}`;
   },
 };
 
@@ -236,6 +246,7 @@ describe('HTTP actions: a real run', () => {
       actor: { subject: 'editor', email: expect.any(String), roles: ['ops'] },
       reason: REASON,
       records: ['1'],
+      recordCount: 1,
     });
 
     const [attempt, answer] = await entries(since);
@@ -424,6 +435,106 @@ describe('HTTP actions on many records', () => {
     expect(received[0]!.method).toBe('PUT');
     expect(JSON.parse(received[0]!.body)).toEqual({ input: {}, records: ['1', '2'] });
   });
+
+  it("audits a batch the API partly or wholly rejected as 'partial' or 'rejected'", async () => {
+    const since = await lastId();
+    respond = () => ({
+      status: 200,
+      body: {
+        records: [
+          { id: '1', ok: true },
+          { id: '2', ok: false, message: 'held' },
+        ],
+      },
+    });
+    expect((await run('review-batch', { records: ['1', '2'] })).status).toBe(200);
+    respond = () => ({
+      status: 200,
+      body: {
+        records: [
+          { id: '1', ok: false },
+          { id: '2', ok: false, message: 'held' },
+        ],
+      },
+    });
+    expect((await run('review-batch', { records: ['1', '2'] })).status).toBe(200);
+    const answers = (await entries(since)).filter(
+      (e) => e.details && 'outcome' in (e.details as object),
+    );
+    expect(
+      answers.map((e) => (e.details as { outcome: { result: string } }).outcome.result),
+    ).toEqual(['partial', 'rejected']);
+  });
+
+  it('starts no request after the deadline, and says which records were skipped', async () => {
+    const since = await lastId();
+    respond = () => ({ status: 200, body: {}, delayMs: 600 });
+    const res = await run('review-slow', { records: ['1', '2', '3'] });
+    expect(res.status).toBe(200);
+    expect(calls('/slow/3')).toHaveLength(0);
+    const records = res.body.result.records as { id: string; ok: boolean; message?: string }[];
+    expect(records[0]).toEqual({ id: '1', ok: true });
+    expect(records[2]).toEqual({
+      id: '3',
+      ok: false,
+      message: 'not attempted: the action ran out of time',
+    });
+    const answer = (await entries(since))[1]!;
+    expect(answer.details).toMatchObject({
+      outcome: {
+        records: expect.arrayContaining([
+          { id: '3', result: 'failed', message: 'not attempted: the action ran out of time' },
+        ]),
+      },
+    });
+  });
+
+  it('keeps X-Warden-Context small however many records there are', async () => {
+    const ids = Array.from({ length: 500 }, () => crypto.randomUUID());
+    const action: HttpAction = {
+      spec: {
+        method: 'PUT',
+        auth: { type: 'hmac', secretEnv: 'TEST_HMAC_SECRET' },
+        timeoutMs: 1000,
+        perRecord: false,
+        concurrency: 1,
+      },
+      authenticator: { retryOn401: false, credentials: async () => ({ secret: SECRET }) },
+    };
+    const body = JSON.stringify({ input: {}, records: ids });
+    const called = await runHttpAction({
+      req: {} as never,
+      action,
+      method: 'PUT',
+      plans: [{ url: `${apiUrl}/batch`, body, records: ids }],
+      credentials: { secret: SECRET },
+      auditId: '1',
+      deadlineMs: 10_000,
+      context: {
+        action: 'review-batch',
+        auditId: '1',
+        requestId: 'r',
+        actor: { subject: 'editor', email: 'editor@example.com', roles: ['ops'] },
+        reason: 'x'.repeat(2000),
+      },
+      log: app.log,
+    });
+    expect(called.outcome.result).toBe('ok');
+    const call = received[0]!;
+    expect(String(call.headers['x-warden-context']).length).toBeLessThan(8192);
+    const context = verifyWardenRequest({
+      secret: SECRET,
+      method: call.method,
+      path: call.url,
+      headers: call.headers,
+      rawBody: call.body,
+    });
+    expect(context.recordCount).toBe(500);
+    expect(context.records.length).toBeGreaterThan(0);
+    expect(context.records.length).toBeLessThan(500);
+    expect(context.records).toEqual(ids.slice(0, context.records.length));
+    expect(JSON.stringify(context.records).length).toBeLessThanOrEqual(MAX_CONTEXT_RECORD_BYTES);
+  });
 });
 
 describe('HTTP action auth', () => {
@@ -455,6 +566,17 @@ describe('HTTP action auth', () => {
       `Bearer ${M2M_TOKEN}-1`,
       `Bearer ${M2M_TOKEN}-1`,
     ]);
+    // The bearer token says only that it's Warden; the signature vouches for the actor.
+    const signed = calls('/m2m')[0]!;
+    expect(
+      verifyWardenRequest({
+        secret: SECRET,
+        method: signed.method,
+        path: signed.url,
+        headers: signed.headers,
+        rawBody: signed.body,
+      }).actor.subject,
+    ).toBe('editor');
 
     rejectNext = true;
     const res = await run('m2m-ping');
@@ -470,9 +592,7 @@ describe('HTTP action auth', () => {
   it("user: sends the signed-in user's token for the audience", async () => {
     const res = await run('as-user');
     expect(res.status).toBe(200);
-    expect(calls('/as-user')[0]!.headers.authorization).toBe(
-      'Bearer user-token-editor-https://api.test',
-    );
+    expect(calls('/as-user')[0]!.headers.authorization).toBe('Bearer user-token-editor');
   });
 
   it('user: asks to sign in again, without calling the API, when there is no token', async () => {
@@ -517,17 +637,65 @@ describe('HTTP actions at startup', () => {
     );
   });
 
+  it('fails when client_credentials has no signing secret', async () => {
+    const file = action(`{
+      url: 'https://api.example.com/x',
+      auth: {
+        type: 'client_credentials',
+        tokenUrl: 'https://idp.example.com/token',
+        clientIdEnv: 'TEST_CLIENT_ID',
+        clientSecretEnv: 'TEST_CLIENT_SECRET',
+      },
+    }`);
+    const err = await start({ WARDEN_ACTIONS: file }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ActionsError);
+    expect((err as ActionsError).problems).toContain(
+      'action "hook": http.auth.secretEnv must be an environment variable name',
+    );
+  });
+
+  it("doesn't hold the action pool's slot while calling the API", async () => {
+    const small = await start(
+      { WARDEN_ACTION_MAX_CONCURRENT: '1', WARDEN_ACTION_MAX_PER_USER: '2' },
+      userTokens,
+    );
+    try {
+      const editor = await login(small, 'editor');
+      // Record 1 takes a while; review-batch waits up to its default 10 s timeout.
+      respond = (req) =>
+        req.body.includes('["1"]') ? { status: 200, body: {}, delayMs: 2000 } : { status: 200 };
+      const runOn = (id: string) =>
+        small.inject({
+          method: 'POST',
+          url: '/api/actions/review-batch/run',
+          headers: { cookie: editor },
+          payload: { reason: REASON, records: [id] },
+        });
+      const slow = runOn('1');
+      // Once the first run is calling the API, its transaction has committed.
+      while (calls('/batch').length === 0) await new Promise((r) => setTimeout(r, 10));
+      // The only pool slot is free again...
+      expect((await runOn('2')).statusCode).toBe(200);
+      // ...but the user's API calls still count against their own limit.
+      const [third, fourth] = [runOn('1'), runOn('3')];
+      expect([(await third).statusCode, (await fourth).statusCode]).toContain(429);
+      expect((await slow).statusCode).toBe(200);
+    } finally {
+      await small.close();
+    }
+  });
+
   it('fails when user auth has no token provider, or the audience is not requested', async () => {
     const err = await start({}).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(ActionsError);
     expect((err as ActionsError).problems.join('\n')).toMatch(
-      /action "as-user": http.auth type "user" needs/,
+      /action "as-user": http.auth type "user" is not available yet/,
     );
-    const other = await start({}, { ...userTokens, audiences: ['https://other.test'] }).catch(
+    const other = await start({}, { ...userTokens, audience: 'https://other.test' }).catch(
       (e: unknown) => e,
     );
     expect((other as ActionsError).problems).toContain(
-      'action "as-user": http.auth.audience "https://api.test" is not an audience login requests',
+      'action "as-user": http.auth.audience "https://api.test" is not the audience login requests',
     );
   });
 

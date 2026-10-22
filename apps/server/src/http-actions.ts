@@ -14,26 +14,26 @@ import type { FastifyBaseLogger, FastifyRequest } from 'fastify';
 import type { LoadedAction } from './actions.js';
 
 /**
- * Gets the signed-in user's access token for an API, for `http.auth: { type: 'user' }`. Built
- * from the session's stored tokens; Warden passes it in from `createWarden`.
+ * The signed-in user's API access token, for `http.auth: { type: 'user' }`. Shaped like the
+ * session's `accessTokenFor` and the OIDC client's `audience`, which `createWarden` will
+ * pass in once sessions keep API tokens; until then a `user`-auth action fails startup.
  */
 export interface UserTokenProvider {
-  /** The API audiences login asks for. An action asking for another fails startup. */
-  audiences: readonly string[];
+  /** The API audience login requests. An action naming another fails startup. */
+  audience: string | undefined;
   /**
-   * The caller's access token for `audience`, refreshed if it is about to expire. Throws
-   * `SignInAgainError` when there is none or it can't be refreshed.
+   * The caller's access token for `audience`, refreshed if it is about to expire. Throws an error
+   * named `SignInAgainError` when there is none or it can't be refreshed.
    */
-  accessTokenFor(req: FastifyRequest, audience: string): Promise<string>;
+  accessTokenFor(req: FastifyRequest): Promise<string>;
 }
 
-/** The user's API token is missing, expired or revoked; they get a 401 telling them to sign in. */
-export class SignInAgainError extends Error {
-  constructor() {
-    super('Sign in again to continue');
-    this.name = 'SignInAgainError';
-  }
-}
+/**
+ * The user's API token is missing, expired or revoked; they get a 401 telling them to sign in.
+ * Checked by name, since the session store defines the error.
+ */
+export const isSignInAgain = (err: unknown): err is Error =>
+  err instanceof Error && err.name === 'SignInAgainError';
 
 /** Largest API response body Warden reads; the rest is ignored. */
 const MAX_RESPONSE_BYTES = 64 * 1024;
@@ -65,7 +65,27 @@ export interface WardenContext {
   requestId: string;
   actor: { subject: string; email?: string; userId?: string; roles: readonly string[] };
   reason?: string;
+  /** The request's record ids, as many as fit in `MAX_CONTEXT_RECORD_BYTES`. */
   records: string[];
+  /** How many records the request is about; more than `records` holds when they didn't fit. */
+  recordCount: number;
+}
+
+/**
+ * Budget for record ids in `X-Warden-Context`. With a maximal reason the header stays under 8 KiB,
+ * nginx's default limit; the full list is in the (signed) body.
+ */
+export const MAX_CONTEXT_RECORD_BYTES = 2048;
+
+function contextRecords(ids: readonly string[]): string[] {
+  const kept: string[] = [];
+  let size = 0;
+  for (const id of ids) {
+    size += Buffer.byteLength(JSON.stringify(id)) + 1;
+    if (size > MAX_CONTEXT_RECORD_BYTES) break;
+    kept.push(id);
+  }
+  return kept;
 }
 
 /** The string an HMAC signature covers. */
@@ -239,12 +259,12 @@ export function prepareHttpActions(
         if (bad) problem(`http.auth.tokenUrl ${bad}`);
         const clientId = secretOf(auth.clientIdEnv);
         const clientSecret = secretOf(auth.clientSecretEnv);
-        const secret = auth.secretEnv !== undefined ? secretOf(auth.secretEnv) : undefined;
+        const secret = secretOf(auth.secretEnv);
         authenticator = {
           retryOn401: true,
           credentials: async (_req, retry = false) => ({
             bearer: await cache.token(auth, clientId, clientSecret, retry),
-            ...(secret ? { secret } : {}),
+            secret,
           }),
         };
         break;
@@ -252,17 +272,15 @@ export function prepareHttpActions(
       case 'user': {
         if (!userTokens) {
           problem(
-            'http.auth type "user" needs the signed-in user\'s API token, but this Warden has no ' +
-              'user token support configured; use "hmac" or "client_credentials"',
+            'http.auth type "user" is not available yet: Warden does not keep users\' API ' +
+              'tokens; use "hmac" or "client_credentials"',
           );
-        } else if (!userTokens.audiences.includes(auth.audience)) {
-          problem(`http.auth.audience "${auth.audience}" is not an audience login requests`);
+        } else if (userTokens.audience !== auth.audience) {
+          problem(`http.auth.audience "${auth.audience}" is not the audience login requests`);
         }
         authenticator = {
           retryOn401: false,
-          credentials: async (req) => ({
-            bearer: await userTokens!.accessTokenFor(req, auth.audience),
-          }),
+          credentials: async (req) => ({ bearer: await userTokens!.accessTokenFor(req) }),
         };
         break;
       }
@@ -275,6 +293,8 @@ export function prepareHttpActions(
 /** One request's outcome. */
 interface CallOutcome {
   result: HttpCallResult;
+  /** Not sent: the run's deadline passed first. */
+  skipped?: true;
   status?: number;
   timedOut?: boolean;
   message?: string;
@@ -342,7 +362,7 @@ export interface HttpRunOptions {
   action: HttpAction;
   method: HttpActionSpec['method'];
   plans: HttpRequestPlan[];
-  context: Omit<WardenContext, 'records'>;
+  context: Omit<WardenContext, 'records' | 'recordCount'>;
   credentials: Credentials;
   log: FastifyBaseLogger;
 }
@@ -358,7 +378,11 @@ async function callOnce(
   for (let attempt = 0; ; attempt++) {
     const url = new URL(plan.url);
     const contextHeader = Buffer.from(
-      JSON.stringify({ ...context, records: plan.records } satisfies WardenContext),
+      JSON.stringify({
+        ...context,
+        records: contextRecords(plan.records),
+        recordCount: plan.records.length,
+      } satisfies WardenContext),
     ).toString('base64url');
     const timestamp = String(Math.floor(Date.now() / 1000));
     const headers: Record<string, string> = {
@@ -456,17 +480,23 @@ const TIMEOUT_MESSAGE = 'the API this action calls did not answer in time';
 const REJECTED_MESSAGE = 'the API this action calls rejected it';
 const FORBIDDEN_MESSAGE = 'the API this action calls says you are not allowed to do this';
 
-/** Run every planned request (several at once with `perRecord`) and sum up the outcome. */
+const SKIPPED_MESSAGE = 'not attempted: the action ran out of time';
+
+/**
+ * Run every planned request (several at once with `perRecord`) and sum up the outcome. No request
+ * starts after `deadlineMs`, so a run takes at most that plus one request's timeout.
+ */
 export async function runHttpAction(
-  options: HttpRunOptions & { auditId: string },
+  options: HttpRunOptions & { auditId: string; deadlineMs: number },
 ): Promise<HttpRunResult> {
   const { action, method, plans, auditId } = options;
   const endpoint = endpointOf(method, plans[0]?.url ?? '');
   const perRecord = action.spec.perRecord;
-  const outcomes: CallOutcome[] = new Array(plans.length);
+  const stopAt = Date.now() + options.deadlineMs;
+  const outcomes: CallOutcome[] = plans.map(() => ({ result: 'failed', skipped: true }));
   let next = 0;
   const worker = async () => {
-    while (next < plans.length) {
+    while (next < plans.length && Date.now() < stopAt) {
       const i = next++;
       // One key per request, so retrying any of them is safe.
       const key = perRecord ? `${auditId}.${i + 1}` : auditId;
@@ -485,6 +515,7 @@ export async function runHttpAction(
         result: o.result,
         ...(o.status !== undefined ? { status: o.status } : {}),
         ...(o.result !== 'failed' && o.message ? { message: o.message } : {}),
+        ...(o.skipped ? { message: SKIPPED_MESSAGE } : {}),
       };
     });
     const ok = records.filter((r) => r.result === 'ok').length;
@@ -514,9 +545,15 @@ export async function runHttpAction(
 
   const o = outcomes[0]!;
   const records = o.records;
+  const rejected = records?.filter((r) => r.result !== 'ok').length ?? 0;
   const outcome: HttpRunResult['outcome'] = {
     endpoint,
-    result: o.result,
+    result:
+      o.result === 'ok' && rejected > 0
+        ? rejected === plans[0]!.records.length
+          ? 'rejected'
+          : 'partial'
+        : o.result,
     ...(o.status !== undefined ? { status: o.status } : {}),
     ...(o.result !== 'failed' && o.message ? { message: o.message } : {}),
     ...(o.resultId ? { resultId: o.resultId } : {}),
@@ -571,6 +608,7 @@ export async function runHttpAction(
 
 /** What the user is told about one request's outcome. */
 function userMessage(o: CallOutcome): string | undefined {
+  if (o.skipped) return SKIPPED_MESSAGE;
   if (o.result === 'ok') return o.message;
   if (o.result === 'rejected') {
     return (

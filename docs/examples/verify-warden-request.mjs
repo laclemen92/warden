@@ -1,5 +1,5 @@
-// Reference verifier for requests signed by Warden HTTP actions (`http.auth.type: 'hmac'`, or
-// `client_credentials` with `secretEnv`). Copy it into your API; it needs only node:crypto.
+// Reference verifier for requests signed by Warden HTTP actions (`http.auth.type: 'hmac'` or
+// `client_credentials`). Copy it into your API; it needs only node:crypto.
 // See docs/actions.md#calling-your-api.
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 
@@ -17,9 +17,9 @@ const header = (headers, name) => {
 
 /**
  * Check a request's Warden signature and return its context: `{ action, auditId, requestId,
- * actor: { subject, email?, userId?, roles }, reason?, records }`. Throws a WardenSignatureError
- * when the headers are missing, the timestamp is more than `toleranceSeconds` away from now, or
- * the signature doesn't match the method, path, timestamp, context and body.
+ * actor: { subject, email?, userId?, roles }, reason?, records, recordCount }`. Throws a
+ * WardenSignatureError when the headers are missing, the timestamp is more than `toleranceSeconds`
+ * away from now, or the signature doesn't match the method, path, timestamp, context and body.
  *
  * `path` is the path and query as Warden requested them (Express: `req.originalUrl`), and
  * `rawBody` the body exactly as received (a Buffer or string), before any JSON parsing.

@@ -182,8 +182,8 @@ export interface HttpContext<I, T extends ActionTarget = ActionTarget> {
  * How Warden authenticates to the API. No mode takes a token from the user.
  * - `hmac`: signs method, path, timestamp, body and the Warden context header with a shared
  *   secret (`X-Warden-Signature`).
- * - `client_credentials`: an M2M bearer token from your IdP, cached until it expires. With
- *   `secretEnv`, the request is HMAC-signed too, so the API can trust the actor it names.
+ * - `client_credentials`: an M2M bearer token from your IdP, cached until it expires. The request
+ *   is HMAC-signed with `secretEnv` too, so the API can trust the actor it names.
  * - `user`: the signed-in user's own access token for `audience`, so the API enforces its own
  *   permissions.
  */
@@ -196,7 +196,7 @@ export type HttpAuth =
       clientSecretEnv: string;
       audience?: string;
       scope?: string;
-      secretEnv?: string;
+      secretEnv: string;
     }
   | { type: 'user'; audience: string };
 

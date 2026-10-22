@@ -69,6 +69,7 @@ describe('HTTP action definitions', () => {
       'action "review": http.auth.tokenUrl must be a non-empty string',
       'action "review": http.auth.clientIdEnv must be an environment variable name',
       'action "review": http.auth.clientSecretEnv must be an environment variable name',
+      'action "review": http.auth.secretEnv must be an environment variable name',
     ]);
   });
 

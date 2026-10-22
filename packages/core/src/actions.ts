@@ -73,7 +73,7 @@ export type HttpAuthSpec =
       clientSecretEnv: string;
       audience?: string;
       scope?: string;
-      secretEnv?: string;
+      secretEnv: string;
     }
   | { type: 'user'; audience: string };
 
@@ -194,7 +194,8 @@ function httpAuthOf(auth: unknown, fail: (message: string) => void): HttpAuthSpe
     text('clientSecretEnv', true, true);
     text('audience', false);
     text('scope', false);
-    text('secretEnv', false, true);
+    // Signs the actor: any client with a token for the audience could otherwise forge it.
+    text('secretEnv', true, true);
   }
   if (type === 'user') text('audience', true);
   return ok ? (auth as unknown as HttpAuthSpec) : undefined;

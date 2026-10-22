@@ -35,6 +35,19 @@ export default ({ defineAction, z }) => [
     },
   }),
   defineAction({
+    name: 'review-slow',
+    label: 'Review each, slowly',
+    on: 'users',
+    target: 'many',
+    deadlineMs: 1000,
+    http: {
+      url: (ctx) => `${api()}/slow/${ctx.record.values.id}`,
+      auth: { type: 'hmac', secretEnv: 'TEST_HMAC_SECRET' },
+      perRecord: true,
+      concurrency: 1,
+    },
+  }),
+  defineAction({
     name: 'review-batch',
     label: 'Review together',
     on: 'users',
@@ -58,6 +71,7 @@ export default ({ defineAction, z }) => [
         clientIdEnv: 'TEST_CLIENT_ID',
         clientSecretEnv: 'TEST_CLIENT_SECRET',
         audience: 'https://api.test',
+        secretEnv: 'TEST_HMAC_SECRET',
       },
     },
   }),

@@ -297,8 +297,8 @@ defineAction({
 Redirects are never followed. Only the first 64 KiB of a response is read. Error responses carry the `auditId` too.
 
 - **Idempotency.** Every request carries `Idempotency-Key`: the action entry's id (with `perRecord`, `<id>.<n>` for the nth record). Make your endpoint apply a key once, so a retried request can't apply twice.
-- **Many records.** By default one request carries every record id. Its `2xx` body may report each one as `records: [{ id, ok, message? }]` (Warden's ids, as sent), and the UI lists those that failed. With `perRecord: true` Warden sends one request per record, at most `concurrency` at a time, and answers `200` with `result.records` saying how each went; a `5xx` for one record gets the generic message.
-- **Limits.** A run holds one of the user's action slots (see [Limits](#limits)) while it calls the API, but no database connection.
+- **Many records.** By default one request carries every record id. Its `2xx` body may report each one as `records: [{ id, ok, message? }]` (Warden's ids, as sent), and the UI lists those that failed; the audit log then records the call as `partial`, or `rejected` when every record failed. With `perRecord: true` Warden sends one request per record, at most `concurrency` at a time, and answers `200` with `result.records` saying how each went; a `5xx` for one record gets the generic message.
+- **Limits.** While it calls the API a run holds no database connection and none of the server's action slots, but it counts toward the user's limit (`WARDEN_ACTION_MAX_PER_USER`, see [Limits](#limits)). With `perRecord`, no request starts after the action's deadline (`deadlineMs`, or `WARDEN_ACTION_DEADLINE`, counted from the first request); records not reached fail with "not attempted: the action ran out of time".
 
 ### Who's calling: `X-Warden-Context`
 
@@ -311,25 +311,29 @@ Every request carries `X-Warden-Context`, base64url JSON naming who ran what and
   "requestId": "6c4a…",
   "actor": { "subject": "auth0|abc", "email": "ana@example.com", "userId": "17", "roles": ["ops"] },
   "reason": "Customer sent proof of address",
-  "records": ["5531"]
+  "records": ["5531"],
+  "recordCount": 1
 }
 ```
 
-With `hmac` auth (or `client_credentials` with `secretEnv`) it is signed with the body, so your API can trust it and record who did what. With `user` auth the bearer token says who the user is; the context header is unsigned.
+`records` holds the request's record ids, up to 2 KiB of them, so the header stays under common proxy limits; `recordCount` says how many there are. The default body carries them all.
+
+With `hmac` and `client_credentials` auth it is signed with the body, so your API can trust it and record who did what. With `user` auth the bearer token says who the user is; the context header is unsigned.
 
 ### `http.auth`
 
 Users never paste tokens. Pick one mode per action:
 
-| `type`               | Keys                                                                              | Sends                                                                                                 |
-| -------------------- | --------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| `hmac`               | `secretEnv`                                                                       | `X-Warden-Timestamp` and `X-Warden-Signature` over the request (below).                               |
-| `client_credentials` | `tokenUrl`, `clientIdEnv`, `clientSecretEnv`, `audience?`, `scope?`, `secretEnv?` | `Authorization: Bearer <M2M token>` from your IdP; with `secretEnv`, the HMAC signature too.          |
-| `user`               | `audience`                                                                        | `Authorization: Bearer <the signed-in user's access token>`, so your API applies its own permissions. |
+| `type`               | Keys                                                                             | Sends                                                                                                 |
+| -------------------- | -------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `hmac`               | `secretEnv`                                                                      | `X-Warden-Timestamp` and `X-Warden-Signature` over the request (below).                               |
+| `client_credentials` | `tokenUrl`, `clientIdEnv`, `clientSecretEnv`, `secretEnv`, `audience?`, `scope?` | `Authorization: Bearer <M2M token>` from your IdP, and the HMAC signature (keyed with `secretEnv`).   |
+| `user`               | `audience`                                                                       | `Authorization: Bearer <the signed-in user's access token>`, so your API applies its own permissions. |
 
 - Secrets are read from the named environment variables at startup. A variable that isn't set fails startup, as does a `tokenUrl` that isn't https (with the same loopback exception).
+- `client_credentials` needs `secretEnv` too: the M2M token only says the caller is Warden (any client with a token for the audience could send it), so the signature is what vouches for the actor in `X-Warden-Context`.
 - `client_credentials` posts `grant_type=client_credentials` with the client id and secret (and `audience`, `scope`) to `tokenUrl`, caches the token until a minute before it expires, and on a `401` from your API fetches a new one and retries once.
-- `user` needs Warden to request and keep the user's API token at sign-in. Until that's configured, an action using it fails startup, and so does one whose `audience` login doesn't request. When the token can't be had or refreshed, the run is a `401` "Sign in again to continue" and the API isn't called.
+- `user` needs Warden to keep the user's API token at sign-in, which it doesn't do yet, so for now an action using it fails startup. Once it does, an action whose `audience` isn't the one login requests (`OIDC_AUDIENCE`) will fail startup too. When the token can't be had or refreshed, the run is a `401` "Sign in again to continue" and the API isn't called.
 - Tokens and secrets are never sent to the browser, logged, or written to the audit log.
 
 ### Verifying the signature
@@ -398,7 +402,7 @@ export class WardenGuard implements CanActivate {
 
 ### In the audit log
 
-The action's own entry is written before the call, and the log is append-only, so the API's answer goes in a second entry for the same action and record, with no input. Its `details.outcome` holds `attempt` (the first entry's id), `endpoint` (method, origin and path; the query is left out, since it may hold secrets), `result` (`ok`, `rejected`, `failed`, or `partial` for `perRecord`), the HTTP `status`, the message the user was shown and the `id` a `2xx` named, and with many records each record's result. A `5xx`'s body is only logged. Both entries are shown to the same people as any action entry (see [Audit log](#audit-log)).
+The action's own entry is written before the call, and the log is append-only, so the API's answer goes in a second entry for the same action and record, with no input. Its `details.outcome` holds `attempt` (the first entry's id), `endpoint` (method, origin and path; the query is left out, since it may hold secrets), `result` (`ok`, `rejected`, `failed`, or `partial` when some records failed), the HTTP `status`, the message the user was shown and the `id` a `2xx` named, and with many records each record's result. A `5xx`'s body is only logged. Both entries are shown to the same people as any action entry (see [Audit log](#audit-log)).
 
 ## Audit log
 

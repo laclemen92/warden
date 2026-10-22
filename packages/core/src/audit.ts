@@ -106,7 +106,7 @@ export interface HttpActionOutcome {
   attempt: string;
   /** Method, origin and path; the query is left out. */
   endpoint: string;
-  /** `partial` when some of a `perRecord` action's requests failed. */
+  /** `partial` when some records failed (`rejected` for a batch whose API failed them all). */
   result: HttpCallResult | 'partial';
   status?: number;
   /** A 2xx's or 4xx's message, as the user was shown it. */

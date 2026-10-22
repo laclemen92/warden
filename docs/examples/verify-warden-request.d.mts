@@ -5,6 +5,7 @@ export interface WardenContext {
   actor: { subject: string; email?: string; userId?: string; roles: string[] };
   reason?: string;
   records: string[];
+  recordCount: number;
 }
 
 export class WardenSignatureError extends Error {}

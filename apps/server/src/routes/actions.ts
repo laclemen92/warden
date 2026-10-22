@@ -54,8 +54,8 @@ import {
 } from '@wardenhq/pg-adapter';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import {
-  SignInAgainError,
   contextActor,
+  isSignInAgain,
   runHttpAction,
   type Credentials,
   type HttpActions,
@@ -256,6 +256,11 @@ export function registerActionRoutes(app: FastifyInstance, options: ActionRouteO
   const { startTransaction, audit: store = { kind: 'warden' }, http } = options;
   const { deadlineMs, ...caps } = { ...DEFAULT_ACTION_LIMITS, ...options.limits };
   const acquire = createSlots(caps);
+  // An HTTP action's API calls hold no connection, so they don't take the pool's slots.
+  const acquireApi = createSlots({
+    maxConcurrent: Number.POSITIVE_INFINITY,
+    maxPerUser: caps.maxPerUser,
+  });
   const byTable = new Map(schema.entities.map((e) => [`${e.schema}.${e.name}`, e]));
   const entities = new Map(schema.entities.map((e) => [e.key, e]));
   // `tx` takes config-style table keys. Hidden tables aren't in the effective schema, and tables
@@ -660,8 +665,8 @@ export function registerActionRoutes(app: FastifyInstance, options: ActionRouteO
       return outcome;
     };
 
-    const release = acquire(actor.subject);
-    if (!release) return tooMany(reply);
+    const releaseApi = action.http ? acquireApi(actor.subject) : () => {};
+    if (!releaseApi) return tooMany(reply);
     const httpAction = action.http ? http?.actions.get(action.name) : undefined;
     let credentials: Credentials = {};
     if (action.http) {
@@ -671,11 +676,11 @@ export function registerActionRoutes(app: FastifyInstance, options: ActionRouteO
         // Before the entry is written: no credentials, no attempt.
         credentials = await httpAction.authenticator.credentials(req);
       } catch (err) {
-        release();
-        if (err instanceof SignInAgainError) {
+        releaseApi();
+        if (isSignInAgain(err)) {
           return reply
             .code(401)
-            .send({ statusCode: 401, error: 'Unauthorized', message: err.message });
+            .send({ statusCode: 401, error: 'Unauthorized', message: 'Sign in again to continue' });
         }
         req.log.error({ err, action: action.name }, 'could not get credentials for the action API');
         return reply.code(502).send({
@@ -685,8 +690,12 @@ export function registerActionRoutes(app: FastifyInstance, options: ActionRouteO
         });
       }
     }
+    const release = acquire(actor.subject);
+    if (!release) {
+      releaseApi();
+      return tooMany(reply);
+    }
     let outcome: Outcome;
-    let holdSlot = false;
     let transaction: DetachedTransaction | undefined;
     let timer: NodeJS.Timeout | undefined;
     try {
@@ -699,10 +708,9 @@ export function registerActionRoutes(app: FastifyInstance, options: ActionRouteO
       outcome = await Promise.race([work(transaction.trx), deadline]);
       clearTimeout(timer);
       await transaction.commit();
-      // An HTTP action keeps its slot while it calls the API.
-      holdSlot = outcome.plans !== undefined;
     } catch (err) {
       clearTimeout(timer);
+      releaseApi();
       if (err instanceof TookTooLong) {
         void txHandle?.close();
         transaction?.destroy();
@@ -716,7 +724,7 @@ export function registerActionRoutes(app: FastifyInstance, options: ActionRouteO
       await transaction?.rollback().catch(() => {});
       return failed(req, reply, err);
     } finally {
-      if (!holdSlot) release();
+      release();
     }
 
     if (outcome.plans) {
@@ -728,6 +736,7 @@ export function registerActionRoutes(app: FastifyInstance, options: ActionRouteO
           plans: outcome.plans,
           credentials,
           auditId: outcome.auditId,
+          deadlineMs: action.deadlineMs ?? deadlineMs,
           context: {
             action: action.name,
             auditId: outcome.auditId,
@@ -763,7 +772,7 @@ export function registerActionRoutes(app: FastifyInstance, options: ActionRouteO
         );
         return reply.code(called.statusCode).send(called.body);
       } finally {
-        release();
+        releaseApi();
       }
     }
 
