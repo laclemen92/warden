@@ -177,6 +177,17 @@ export const MIGRATIONS: readonly Migration[] = [
       alter table warden.audit_log add column actor_user_id text;
     `,
   },
+  {
+    version: '0012_session_api_tokens',
+    sql: `
+      -- The access token (and refresh token, with offline_access) for the API audience login
+      -- requests, encrypted like id_token under a key only the session cookie can derive.
+      alter table warden.sessions
+        add column access_token text,
+        add column refresh_token text,
+        add column access_token_expires_at timestamptz;
+    `,
+  },
 ];
 
 // Arbitrary constant shared by every Warden instance, so replicas don't migrate concurrently.

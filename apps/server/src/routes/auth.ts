@@ -19,6 +19,14 @@ declare module 'fastify' {
     /** The session user's roles from config `access` rules and in-app assignments. */
     roles: readonly string[] | null;
   }
+  interface FastifyInstance {
+    /**
+     * The request's user's access token for the API audience login requests, refreshed if it is
+     * about to expire. Throws `SignInAgainError` (a 401) when there is none. Server-side only:
+     * never send it to the browser or log it.
+     */
+    accessTokenFor(req: FastifyRequest): Promise<string>;
+  }
 }
 
 export interface AuthOptions {
@@ -160,6 +168,7 @@ export async function registerAuth(
   };
   const login = sessions.cookie('warden_login', LOGIN_TTL_SECONDS);
 
+  app.decorate('accessTokenFor', (req: FastifyRequest) => sessions.accessTokenFor(req));
   app.decorateRequest('session', null);
   app.decorateRequest('roles', null);
   app.addHook('onRequest', async (req, reply) => {
@@ -219,9 +228,9 @@ export async function registerAuth(
     const callbackUrl = new URL(oidc.redirectUri);
     callbackUrl.search = new URL(req.url, callbackUrl).search;
 
-    let claims, idToken;
+    let claims, idToken, apiTokens;
     try {
-      ({ claims, idToken } = await oidc.finish(callbackUrl, state));
+      ({ claims, idToken, apiTokens } = await oidc.finish(callbackUrl, state));
     } catch (err) {
       req.log.warn({ err }, 'OIDC login failed');
       return reply.redirect(LOGIN_FAILED);
@@ -248,6 +257,7 @@ export async function registerAuth(
       ...(typeof claims.name === 'string' ? { name: claims.name } : {}),
       claims: { ...claims },
       idToken,
+      ...(apiTokens ? { apiTokens } : {}),
     });
     req.log.info({ sub: claims.sub }, 'login');
     return reply.redirect(state.returnTo);

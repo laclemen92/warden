@@ -263,10 +263,11 @@ export async function createWarden({
     // The first start records the schema drift baseline.
     await ensureSchemaSnapshot(db, model);
 
+    const oidc = createOidcClient(authSettings);
     const auth = {
       sessionSecret: authSettings.sessionSecret,
-      sessions: createSessions(db, authSettings),
-      oidc: createOidcClient(authSettings),
+      sessions: createSessions(db, authSettings, (token) => oidc.refresh(token)),
+      oidc,
       ...(config.access ? { access: config.access } : {}),
       roles: config.roles,
       assignedRoles: (email: string) => assignedRoles(db, email),

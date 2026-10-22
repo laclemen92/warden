@@ -26,6 +26,12 @@ export interface NewSession {
   userId?: string;
   /** `actorMappingKey` of the mapping `userId` was resolved under. */
   actorMapping?: string;
+  /** The access token for the API audience login requested, as the caller encrypted it. */
+  accessToken?: string;
+  /** Its refresh token (`offline_access`), as the caller encrypted it. */
+  refreshToken?: string;
+  /** Seconds until `accessToken` expires; without it the token counts as expired. */
+  accessTokenExpiresIn?: number;
 }
 
 export interface Session {
@@ -44,14 +50,21 @@ const live = ({ idleSeconds, absoluteSeconds }: SessionTimeouts) =>
   sql`created_at > now() - make_interval(secs => ${absoluteSeconds})
       and last_seen_at > now() - make_interval(secs => ${idleSeconds})`;
 
+const expiresAt = (seconds: number | undefined) =>
+  seconds === undefined ? sql`null` : sql`now() + make_interval(secs => ${seconds})`;
+
 export async function insertSession(db: Database, session: NewSession): Promise<void> {
   await sql`
     insert into ${SESSIONS}
-      (token_hash, subject, email, name, claims, id_token, actor_user_id, actor_mapping)
+      (token_hash, subject, email, name, claims, id_token, actor_user_id, actor_mapping,
+       access_token, refresh_token, access_token_expires_at)
     values (${session.tokenHash}, ${session.subject}, ${session.email ?? null},
             ${session.name ?? null}, ${JSON.stringify(session.claims)}::jsonb,
             ${session.idToken ?? null}, ${session.userId ?? null},
-            ${session.actorMapping ?? null})`.execute(db);
+            ${session.actorMapping ?? null}, ${session.accessToken ?? null},
+            ${session.refreshToken ?? null}, ${expiresAt(session.accessTokenExpiresIn)})`.execute(
+    db,
+  );
 }
 
 /** Return the session if it is still live and mark it as just used; otherwise `undefined`. */
@@ -81,6 +94,74 @@ export async function deleteSession(
     delete from ${SESSIONS} where token_hash = ${tokenHash}
     returning id_token as "idToken"`.execute(db);
   return rows[0];
+}
+
+/** A live session's API tokens, still encrypted as they were stored. */
+export interface StoredApiTokens {
+  accessToken: string | null;
+  refreshToken: string | null;
+  /** Whether `accessToken` is still valid for at least the requested number of seconds. */
+  fresh: boolean;
+}
+
+/**
+ * The API tokens of the live session `tokenHash`, or `undefined` without one. Doesn't count as
+ * activity: the idle timer is left alone.
+ */
+export async function readSessionApiTokens(
+  db: Database,
+  tokenHash: Buffer,
+  timeouts: SessionTimeouts,
+  minValiditySeconds: number,
+): Promise<StoredApiTokens | undefined> {
+  const { rows } = await sql<StoredApiTokens>`
+    select access_token as "accessToken", refresh_token as "refreshToken",
+           coalesce(access_token_expires_at > now() + make_interval(secs => ${minValiditySeconds}),
+                    false) as fresh
+    from ${SESSIONS}
+    where token_hash = ${tokenHash} and ${live(timeouts)}`.execute(db);
+  return rows[0];
+}
+
+/**
+ * Run `fn` holding a lock on the session `tokenHash`'s API tokens, across every Warden instance,
+ * so only one refreshes them at a time. The lock doesn't block requests using the session.
+ */
+export async function withSessionApiTokensLock<T>(
+  db: Database,
+  tokenHash: Buffer,
+  fn: () => Promise<T>,
+): Promise<T> {
+  return db.connection().execute(async (conn) => {
+    // The two-key form is a separate lock space from the migration lock.
+    const key = sql`${SESSION_LOCK_SPACE}, hashtext(encode(${tokenHash}::bytea, 'hex'))`;
+    await sql`select pg_advisory_lock(${key})`.execute(conn);
+    try {
+      return await fn();
+    } finally {
+      await sql`select pg_advisory_unlock(${key})`.execute(conn);
+    }
+  });
+}
+
+const SESSION_LOCK_SPACE = 0x73657373; // "sess"
+
+/**
+ * Replace the API tokens of the live session `tokenHash` (already encrypted by the caller), or
+ * clear them with nulls. Neither timeout is extended. Returns whether the session still exists.
+ */
+export async function saveSessionApiTokens(
+  db: Database,
+  tokenHash: Buffer,
+  timeouts: SessionTimeouts,
+  tokens: { accessToken: string | null; refreshToken: string | null; expiresIn?: number },
+): Promise<boolean> {
+  const result = await sql`
+    update ${SESSIONS}
+    set access_token = ${tokens.accessToken}, refresh_token = ${tokens.refreshToken},
+        access_token_expires_at = ${tokens.accessToken === null ? sql`null` : expiresAt(tokens.expiresIn)}
+    where token_hash = ${tokenHash} and ${live(timeouts)}`.execute(db);
+  return Number(result.numAffectedRows ?? 0) > 0;
 }
 
 /** Remove sessions that can no longer be used. Returns how many were removed. */
