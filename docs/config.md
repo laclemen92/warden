@@ -107,7 +107,7 @@ A table's [`deny`](#tables) can still forbid reading it in either mode.
 - `none`: deleting is refused on every table, even for a role granted `delete`, unless the table sets [`allowDelete: true`](#tables).
 - `granted`: a role's `delete` grant on a table is honored, unless the table sets `allowDelete: false`.
 
-A `*` grant never includes `delete` in either mode.
+`delete` can't be granted with `*` in either mode: a `*` grant that lists it fails startup.
 
 ```yaml
 defaults:
@@ -122,7 +122,7 @@ defaults:
 Deleting a row through Warden removes it for good. That's riskier than other writes: most applications soft-delete and have their own cleanup and invariants that a hard delete skips; `on delete cascade` and `set null` foreign keys change other tables outside Warden's policy and audit log (see [cascades](#cascades)); and nothing in Warden restores a deleted row. So deleting has to be turned on table by table:
 
 1. The table allows it: `tables.<table>.allowDelete: true`, or `defaults.delete: granted` (and the table doesn't set `allowDelete: false`).
-2. A role grants `delete` on that table by name (`orders: [delete]`). A `*` grant never includes `delete`.
+2. A role grants `delete` on that table by name (`orders: [delete]`). `*` can't grant `delete`.
 3. The table's `deny` doesn't include `delete`. It beats `allowDelete`.
 
 Otherwise a delete gets the same 403 as any other denied write, and the UI shows no delete control. At startup Warden warns about every `delete` grant it ignores, naming the key to add, and about every table some role (or [custom action](#actions)) may delete from whose rows other tables reference with `on delete cascade`, `set null` or `set default`, naming those tables and any reached further down a chain of `on delete cascade` keys. Foreign keys from tables outside [`schemas`](#schemas) aren't introspected, so they aren't named.
@@ -139,7 +139,7 @@ roles:
       users: [delete] # only users; nobody may delete other tables
 ```
 
-> **Upgrading:** before this setting existed, a `delete` grant (including `*: [delete]`) allowed hard deletes on its own. Such grants now do nothing until the table sets `allowDelete: true` (or you set `defaults.delete: granted` and name each table in the grant). The startup warnings list each one.
+> **Upgrading:** before this setting existed, a `delete` grant allowed hard deletes on its own. A `*: [delete]` grant now fails startup, and a table-named `delete` grant does nothing until the table sets `allowDelete: true` (or you set `defaults.delete: granted`). The startup warnings list each ignored grant.
 
 ## `tables`
 
@@ -268,7 +268,7 @@ How a request is decided:
 3. `read` is allowed when `defaults.read` is `all`.
 4. `export` is denied unless the user may also `read` the table.
 5. `delete` is denied unless [hard delete](#hard-delete) is on for the table.
-6. Otherwise the action is allowed only if one of the user's roles grants it on that table or on `*`. A `*` grant never includes `delete`.
+6. Otherwise the action is allowed only if one of the user's roles grants it on that table or on `*`. `*` can't grant `delete`; config that tries fails startup.
 
 A table the user may do nothing with is hidden from them in the same way as a `hidden` table: it isn't in their sidebar or schema, relations to it are left out, and every request for it gets the same 404 as a table that doesn't exist. A table they may write but not read (for example, a role granted only `create`) stays visible so they can fill in its form: they see its columns, and reading its rows is refused with a 403. A write's response then carries only the new or changed record's id, not its values.
 

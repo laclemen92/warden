@@ -252,7 +252,7 @@ describe('hard delete', () => {
   it('is off everywhere by default, whatever roles grant', () => {
     const policy = policyFor({
       roles: {
-        admin: { grants: { '*': ['read', 'create', 'update', 'delete'] } },
+        admin: { grants: { '*': ['read', 'create', 'update'], users: ['delete'] } },
         ops: { grants: { users: ['delete'], 'billing.invoices': ['delete'] } },
       },
     });
@@ -260,21 +260,6 @@ describe('hard delete', () => {
       expect(isAllowed(policy, ['admin', 'ops'], entity, 'delete')).toBe(false);
     }
     expect(allowedActions(policy, ['admin'], 'users')).toEqual(['read', 'create', 'update']);
-  });
-
-  it('never comes from a `*` grant, even where the table allows it', () => {
-    const optedIn = policyFor({
-      roles: { admin: { grants: { '*': ['delete'] } } },
-      tables: { users: { allowDelete: true } },
-    });
-    const granted = policyFor({
-      defaults: { delete: 'granted' },
-      roles: { admin: { grants: { '*': ['delete'] } } },
-    });
-    for (const entity of ENTITIES) {
-      expect(isAllowed(optedIn, ['admin'], entity, 'delete')).toBe(false);
-      expect(isAllowed(granted, ['admin'], entity, 'delete')).toBe(false);
-    }
   });
 
   it('opting one table in allows delete there and only there', () => {
@@ -341,7 +326,7 @@ describe('hard delete', () => {
   it('warns about every delete grant it ignores, naming the key to add', () => {
     const { warnings } = resolve({
       roles: {
-        admin: { grants: { '*': ['read', 'delete'] } },
+        admin: { grants: { '*': ['read'] } },
         ops: { grants: { users: ['update', 'delete'], 'billing.invoices': ['delete'] } },
         hr: { grants: { companies: ['delete'] } },
       },
@@ -351,12 +336,6 @@ describe('hard delete', () => {
       },
     });
     expect(warnings).toEqual([
-      {
-        path: 'roles.admin.grants.*',
-        message:
-          '"*" never grants delete; grant it on each table that should allow it ' +
-          '(e.g. orders: [delete]) and set tables.<table>.allowDelete: true',
-      },
       {
         path: 'roles.ops.grants.users',
         message:

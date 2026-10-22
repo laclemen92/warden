@@ -256,6 +256,18 @@ roles:
     }
   });
 
+  it('rejects delete in a "*" grant', () => {
+    expect(issues(`roles:\n  ops:\n    grants:\n      "*": [read, delete]\n`)).toMatchObject([
+      {
+        path: 'roles.ops.grants.*.1',
+        message:
+          '"*" can\'t grant delete; grant it on each table that should allow it ' +
+          '(e.g. orders: [delete]) and set tables.<table>.allowDelete: true',
+        line: 4,
+      },
+    ]);
+  });
+
   it('requires qualified grant keys to use a listed schema', () => {
     expect(issues(`roles:\n  ops:\n    grants:\n      billing.invoices: [read]\n`)).toMatchObject([
       {

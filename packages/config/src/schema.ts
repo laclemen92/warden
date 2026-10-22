@@ -246,6 +246,17 @@ export const wardenConfigSchema = z
     }
     for (const [role, { grants }] of Object.entries(config.roles)) {
       for (const key of Object.keys(grants)) checkSchema(key, ['roles', role, 'grants', key]);
+      // Hard delete is granted table by table, so a blanket grant can't hand it out by accident.
+      grants['*']?.forEach((action, i) => {
+        if (action !== 'delete') return;
+        ctx.addIssue({
+          code: 'custom',
+          path: ['roles', role, 'grants', '*', i],
+          message:
+            '"*" can\'t grant delete; grant it on each table that should allow it ' +
+            '(e.g. orders: [delete]) and set tables.<table>.allowDelete: true',
+        });
+      });
     }
     // `users` and `public.users` (against the first schema) are the same table. The resolvers
     // would each pick or merge the two entries differently, dropping hidden columns and field

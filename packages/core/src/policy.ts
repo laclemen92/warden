@@ -62,15 +62,7 @@ export function resolvePolicy(schema: EffectiveSchema, config: WardenConfig): Re
     const resolved: RoleGrants = { everywhere: new Set(), byEntity: new Map() };
     for (const [tableKey, actions] of Object.entries(grants)) {
       if (tableKey === '*') {
-        // Hard delete is granted table by table, so a blanket grant can't hand it out by accident.
-        if (actions.includes('delete')) {
-          warnings.push({
-            path: `roles.${role}.grants.*`,
-            message:
-              '"*" never grants delete; grant it on each table that should allow it ' +
-              '(e.g. orders: [delete]) and set tables.<table>.allowDelete: true',
-          });
-        }
+        // Config rejects `*: [delete]`; dropping it here too keeps a blanket grant from ever deleting.
         actions.filter((a) => a !== 'delete').forEach((a) => resolved.everywhere.add(a));
         continue;
       }

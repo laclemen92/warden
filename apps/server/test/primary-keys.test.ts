@@ -28,7 +28,7 @@ tables:
   imports:
     insertablePrimaryKey: true
 roles:
-  admin: { grants: { '*': [read, create, update, delete] } }
+  admin: { grants: { '*': [read, create, update] } }
 access:
   groups:
     warden-admins: [admin]

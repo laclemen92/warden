@@ -19,7 +19,7 @@ const DEFAULT_CONFIG = `
 roles:
   viewer: { grants: { '*': [read] } }
   named: { grants: { users: [delete], companies: [delete], orders: [delete] } }
-  star: { grants: { '*': [read, create, update, delete] } }
+  star: { grants: { '*': [read, create, update] } }
 ${ACCESS}`;
 
 const OPT_IN_CONFIG = `
@@ -29,7 +29,7 @@ tables:
 roles:
   viewer: { grants: { '*': [read] } }
   named: { grants: { users: [delete], companies: [delete], orders: [delete] } }
-  star: { grants: { '*': [read, create, update, delete] } }
+  star: { grants: { '*': [read, create, update] } }
 ${ACCESS}`;
 
 const FORBIDDEN = { statusCode: 403, error: 'Forbidden', message: 'Forbidden' };
@@ -134,7 +134,6 @@ describe('with the default config', () => {
   it('warns at startup about each ignored grant, naming the key to add', () => {
     expect(warden.warnings).toEqual(
       expect.arrayContaining([
-        ['roles.star.grants.*', expect.stringContaining('"*" never grants delete')],
         [
           'roles.named.grants.users',
           'config: delete is ignored: hard delete is off for "users"; ' +

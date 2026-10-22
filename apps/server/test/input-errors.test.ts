@@ -19,7 +19,7 @@ const SCHEMA = `
 const CONFIG = `
 roles:
   admin:
-    grants: { '*': [read, create, update, delete, export] }
+    grants: { '*': [read, create, update, export] }
     admin: [audit, roles, views]
 access:
   groups:

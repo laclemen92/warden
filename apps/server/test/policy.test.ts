@@ -17,8 +17,8 @@ tables:
 roles:
   viewer: { grants: { users: [read] } }
   ops: { grants: { users: [read, update], orders: [update] } }
-  # The '*' delete grants nothing; users: [delete] does, on the one table that allows it.
-  admin: { grants: { '*': [read, create, update, delete], users: [delete] } }
+  # users: [delete] works on the one table that allows it.
+  admin: { grants: { '*': [read, create, update], users: [delete] } }
   guest: { grants: {} }
 access:
   groups:

@@ -24,7 +24,7 @@ tables:
 roles:
   viewer: { grants: { '*': [read] } }
   ops: { grants: { '*': [read], users: [read, create, update] } }
-  admin: { grants: { '*': [read, create, update, delete] } }
+  admin: { grants: { '*': [read, create, update] } }
 access:
   groups:
     warden-viewers: [viewer]
