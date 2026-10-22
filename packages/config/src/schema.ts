@@ -234,6 +234,7 @@ const auditColumnsSchema = z.strictObject({
   requestId: name.optional(),
   actorSubject: name.optional(),
   actorEmail: name.optional(),
+  actorUserId: name.optional(),
   actorRoles: name.optional(),
   action: name.optional(),
   entity: name.optional(),

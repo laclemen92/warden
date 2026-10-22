@@ -52,7 +52,11 @@ const SCHEMA = `
     for each row execute function log_note();
 `;
 
+// These tests are about who made a change, not why.
 const config = (actor: string) => `
+defaults: { requireReason: [] }
+actions:
+  add-note: { requireReason: false }
 tables:
   staff: { hidden: true }
   notes_log: { hidden: true }

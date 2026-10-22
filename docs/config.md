@@ -447,6 +447,7 @@ audit:
     occurredAt: created_at
     actorSubject: actor_sub
     actorEmail: actor_email
+    actorUserId: actor_id
     action: action
     entity: table_name
     recordId: record_id
@@ -472,6 +473,7 @@ With `audit.columns`, only the fields listed are written; the others are dropped
 | `audit.columns.details`      | `json`/`jsonb`, nullable                               | Required. What exports and custom actions did.                                                          |
 | `audit.columns.requestId`    | `text`/`varchar`, nullable                             | The request's id.                                                                                       |
 | `audit.columns.actorEmail`   | `text`/`varchar`, nullable                             | The user's verified email.                                                                              |
+| `audit.columns.actorUserId`  | `text`/`varchar`, nullable                             | Their id in your users table, from [`actor`](#actor).                                                   |
 | `audit.columns.actorRoles`   | `text[]`                                               | Their Warden roles. Unmapped, History and the audit log don't show roles.                               |
 | `audit.columns.primaryKey`   | `json`/`jsonb`, nullable                               | The row's primary key columns.                                                                          |
 | `audit.columns.before`       | `json`/`jsonb`, nullable                               | The row before the change.                                                                              |

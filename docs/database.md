@@ -108,6 +108,7 @@ create table public.change_log (
   request_id    text,
   actor_subject text not null,
   actor_email   text,
+  actor_user_id text,
   actor_roles   text[] not null default '{}',
   action        text not null,
   entity        text not null,
@@ -149,6 +150,8 @@ export class ChangeLog {
   actorSubject!: string;
   @Column({ name: 'actor_email', type: 'text', nullable: true })
   actorEmail!: string | null;
+  @Column({ name: 'actor_user_id', type: 'text', nullable: true })
+  actorUserId!: string | null;
   @Column({ name: 'actor_roles', type: 'text', array: true, default: () => "'{}'" })
   actorRoles!: string[];
   @Column({ type: 'text' })

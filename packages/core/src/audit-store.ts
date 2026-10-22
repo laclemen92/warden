@@ -35,6 +35,7 @@ const FIELD_SPECS: Record<AuditField, FieldSpec> = {
   requestId: { kind: 'text' },
   actorSubject: { kind: 'text', notNull: true },
   actorEmail: { kind: 'text' },
+  actorUserId: { kind: 'text' },
   actorRoles: { kind: 'text[]', notNull: true },
   action: { kind: 'text', notNull: true },
   entity: { kind: 'text', notNull: true },
