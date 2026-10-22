@@ -99,6 +99,18 @@ const accessConfigSchema = z.strictObject({
   allowAll: z.boolean().default(false),
 });
 
+/** Maps the signed-in user to a row of the operator's own users table, by verified email. */
+const actorConfigSchema = z.strictObject({
+  /** The users table: `table` (in the first schema) or `schema.table`. It may be hidden. */
+  table: tableKey,
+  /** Text column matched, ignoring case, against the user's verified email. */
+  matchColumn: name,
+  /** Column whose value (as text) is recorded as the actor's user id. */
+  idColumn: name,
+  /** Deny sign-in to users with no single matching row, and to everyone if the mapping is broken. */
+  required: z.boolean().default(false),
+});
+
 const columnConfigSchema = z.strictObject({
   /** Never sent to the UI or returned by the API. */
   hidden: z.boolean().optional(),
@@ -222,6 +234,7 @@ const auditColumnsSchema = z.strictObject({
   requestId: name.optional(),
   actorSubject: name.optional(),
   actorEmail: name.optional(),
+  actorUserId: name.optional(),
   actorRoles: name.optional(),
   action: name.optional(),
   entity: name.optional(),
@@ -336,6 +349,8 @@ export const wardenConfigSchema = z
     access: accessConfigSchema.optional(),
     /** Where the audit trail is written. */
     audit: auditConfigSchema.prefault({}),
+    /** Who signed-in users are in the application's own users table. */
+    actor: actorConfigSchema.optional(),
   })
   .superRefine((config, ctx) => {
     const checkSchema = (key: string, path: string[]) => {
@@ -364,6 +379,7 @@ export const wardenConfigSchema = z
         }
       }
     }
+    if (config.actor) checkSchema(config.actor.table, ['actor', 'table']);
     for (const [role, { grants }] of Object.entries(config.roles)) {
       for (const key of Object.keys(grants)) checkSchema(key, ['roles', role, 'grants', key]);
       // Hard delete is granted table by table, so a blanket grant can't hand it out by accident.
@@ -465,6 +481,7 @@ export type RoleConfig = z.infer<typeof roleConfigSchema>;
 export type AccessConfig = z.infer<typeof accessConfigSchema>;
 export type ActionConfig = z.infer<typeof actionConfigSchema>;
 export type AuditConfig = z.infer<typeof auditConfigSchema>;
+export type ActorConfig = z.infer<typeof actorConfigSchema>;
 export type Action = (typeof ACTIONS)[number];
 export type WriteAction = (typeof WRITE_ACTIONS)[number];
 export type AdminArea = (typeof ADMIN_AREAS)[number];

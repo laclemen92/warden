@@ -18,6 +18,9 @@ export interface SessionUser {
   name?: string;
   claims: Record<string, unknown>;
   idToken?: string;
+  /** From config's `actor` mapping. */
+  userId?: string;
+  actorMapping?: string;
 }
 
 export interface Sessions {

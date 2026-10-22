@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { entityFor, type Entity, type Field, type Filter, type SortTerm } from '@wardenhq/core';
 import { sql } from 'kysely';
+import { setActorSettings, type TransactionActor } from './actor.js';
 import type { Database } from './database.js';
 import { compileFilter } from './filter.js';
 import { entityTable, orderBy, type Row } from './rows.js';
@@ -29,7 +30,20 @@ export type WriteHook = (trx: Database, change: WriteChange) => Promise<void>;
 
 export interface WriteOptions {
   onWrite?: WriteHook;
+  /** Set as `warden.actor_*` for the transaction, before the write (see `setActorSettings`). */
+  actor?: TransactionActor;
 }
+
+/** Run `write` in a new transaction that carries `actor`'s settings. */
+const writeTransaction = <T>(
+  db: Database,
+  actor: TransactionActor | undefined,
+  write: (trx: Database) => Promise<T>,
+) =>
+  db.transaction().execute(async (trx) => {
+    if (actor) await setActorSettings(trx, actor);
+    return write(trx);
+  });
 
 export interface VersionCheck {
   /** The version the client last read. */
@@ -90,7 +104,7 @@ export async function createRow(
   values: Record<string, unknown>,
   options: WriteOptions = {},
 ): Promise<Row> {
-  return db.transaction().execute((trx) => insertIn(trx, entity, values, options));
+  return writeTransaction(db, options.actor, (trx) => insertIn(trx, entity, values, options));
 }
 
 /**
@@ -179,7 +193,9 @@ export async function updateRow(
   if (assignments(entityFor(entity, 'update'), values).length === 0) {
     throw new Error('nothing to update');
   }
-  return db.transaction().execute((trx) => updateIn(trx, entity, filter, values, options));
+  return writeTransaction(db, options.actor, (trx) =>
+    updateIn(trx, entity, filter, values, options),
+  );
 }
 
 /** Update a row inside an open transaction; without `version`, whatever its version. */
@@ -222,7 +238,7 @@ export async function deleteRow(
   filter: Filter,
   options: WriteOptions & Partial<VersionCheck> = {},
 ): Promise<WriteResult> {
-  return db.transaction().execute((trx) => deleteIn(trx, entity, filter, options));
+  return writeTransaction(db, options.actor, (trx) => deleteIn(trx, entity, filter, options));
 }
 
 /** Delete a row inside an open transaction. */

@@ -27,6 +27,7 @@ const defaultColumns = (): Column[] => [
   col('request_id', 'text'),
   col('actor_subject', 'text', notNull),
   col('actor_email', 'text'),
+  col('actor_user_id', 'text'),
   col('actor_roles', 'text', { ...notNull, isArray: true, hasDefault: true }),
   col('action', 'text', notNull),
   col('entity', 'text', notNull),

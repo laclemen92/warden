@@ -39,7 +39,7 @@ grant select, insert, delete on warden.role_assignments to warden_app;
 grant select, insert, update, delete on warden.saved_views to warden_app;
 ```
 
-The runtime role also needs whatever access your configuration grants on your application tables (at least `select`, plus `insert`/`update`/`delete` where roles may write).
+The runtime role also needs whatever access your configuration grants on your application tables (at least `select`, plus `insert`/`update`/`delete` where roles may write). With [`actor`](config.md#actor), it needs `select` on the users table's `matchColumn` and `idColumn`, even if config hides the table; a column-level grant (`grant select (id, email) on users to warden_app`) is enough. Columns that migrations add to Warden's own tables, such as `actor_user_id`, need no new grants.
 
 ## Timeouts, exports and actions
 
@@ -70,7 +70,7 @@ To refuse exports over the 100,000-row limit cheaply, Warden counts at most 100,
 
 `warden.audit_log` is append-only. (To write the audit log to a table you own instead, see [below](#writing-the-audit-log-to-your-own-table).) Besides the grants above, triggers reject every `update`, `delete`, and `truncate`, including from the table owner. Removing an entry means dropping those triggers first, a deliberate step the runtime role can't take. If the role Warden runs as owns `warden.audit_log` (as it does when it ran the migrations itself), the `warden` schema (which lets it drop the table), or the `warden.audit_log_append_only()` trigger function (which `create or replace` could turn into a no-op), or is a superuser, it could get around the triggers, so Warden logs a warning at startup.
 
-Every create, update, and delete made through Warden inserts its entry in the same transaction as the change, so a write that can't be audited (for example, because the insert fails) is rolled back and the request fails with a 500. Rows are recorded as the API shows them: hidden columns are never stored. Rows that foreign key cascades or triggers change in other tables aren't recorded; see [cascades](config.md#cascades).
+Every create, update, and delete made through Warden inserts its entry in the same transaction as the change, so a write that can't be audited (for example, because the insert fails) is rolled back and the request fails with a 500. Rows are recorded as the API shows them: hidden columns are never stored. Rows that foreign key cascades or triggers change in other tables aren't recorded; see [cascades](config.md#cascades). Those transactions, and custom actions', also set `warden.actor_id`, `warden.actor_sub` and `warden.actor_email` locally, so your own triggers can record who made the change; see [`actor`](config.md#actor).
 
 An [export](config.md#csv-export) inserts its entry, with `record_id` null and what was exported in `details`, before any row is sent; if that insert fails, the export fails with a 500 and sends nothing.
 
@@ -81,6 +81,7 @@ An [export](config.md#csv-export) inserts its entry, with `record_id` null and w
 | `request_id`    | `text`        | The request's id (a UUID), logged as `reqId` by the server.                                                                                                                                                                                                                                                                       |
 | `actor_subject` | `text`        | OIDC subject of the user who made the change.                                                                                                                                                                                                                                                                                     |
 | `actor_email`   | `text`        | Their verified email at the time, or null. Entries written by builds before v1.0.0-rc.1 may hold an unverified one.                                                                                                                                                                                                               |
+| `actor_user_id` | `text`        | Their id in your own users table, as config's [`actor`](config.md#actor) mapped it at sign-in, or null.                                                                                                                                                                                                                           |
 | `actor_roles`   | `text[]`      | The Warden roles they held.                                                                                                                                                                                                                                                                                                       |
 | `action`        | `text`        | `create`, `update`, `delete`, `export`, or a custom action's name.                                                                                                                                                                                                                                                                |
 | `entity`        | `text`        | Entity key, as in `/api/entities/:entity`.                                                                                                                                                                                                                                                                                        |
@@ -107,6 +108,7 @@ create table public.change_log (
   request_id    text,
   actor_subject text not null,
   actor_email   text,
+  actor_user_id text,
   actor_roles   text[] not null default '{}',
   action        text not null,
   entity        text not null,
@@ -148,6 +150,8 @@ export class ChangeLog {
   actorSubject!: string;
   @Column({ name: 'actor_email', type: 'text', nullable: true })
   actorEmail!: string | null;
+  @Column({ name: 'actor_user_id', type: 'text', nullable: true })
+  actorUserId!: string | null;
   @Column({ name: 'actor_roles', type: 'text', array: true, default: () => "'{}'" })
   actorRoles!: string[];
   @Column({ type: 'text' })

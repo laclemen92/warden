@@ -42,6 +42,7 @@ import {
   isDataError,
   lockKeyedRows,
   mapWriteError,
+  setActorSettings,
   setStatementTimeout,
   toRecordRef,
   type ActionTxHandle,
@@ -264,6 +265,7 @@ export function registerActionRoutes(app: FastifyInstance, options: ActionRouteO
       subject: session.subject,
       ...(session.email ? { email: session.email } : {}),
       ...(session.name ? { name: session.name } : {}),
+      ...(session.userId ? { userId: session.userId } : {}),
       roles: req.roles ?? [],
     };
   };
@@ -428,6 +430,7 @@ export function registerActionRoutes(app: FastifyInstance, options: ActionRouteO
     let txHandle: ActionTxHandle | undefined;
     /** Everything the run does in its transaction; the caller commits or rolls back. */
     const work = async (trx: Database): Promise<Outcome> => {
+      await setActorSettings(trx, actor);
       if (action.timeoutMs !== undefined) await setStatementTimeout(trx, action.timeoutMs);
       // Several ids can name one row ("1" and "01", a UUID in either case), so the targets are
       // looked up first and compared by their canonical ids. Then they're locked in one query in

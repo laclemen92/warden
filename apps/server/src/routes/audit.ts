@@ -101,7 +101,11 @@ export function registerAuditRoutes(
       ? entries
       : entries.map((entry) => ({
           ...entry,
-          actor: { subject: entry.actor.subject, email: entry.actor.email },
+          actor: {
+            subject: entry.actor.subject,
+            email: entry.actor.email,
+            ...(entry.actor.userId !== undefined ? { userId: entry.actor.userId } : {}),
+          },
         }));
     return { items, nextCursor: hasMore ? (entries.at(-1)?.id ?? null) : null };
   };

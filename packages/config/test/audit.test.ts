@@ -96,9 +96,9 @@ describe('audit config', () => {
   store: table
   table: change_log
   columns:${MINIMAL_COLUMNS}
-    actorUserId: actor_id
+    actorName: actor_name
 `),
-    ).toEqual([['audit.columns.actorUserId', expect.stringMatching(/unrecognized key/i)]]);
+    ).toEqual([['audit.columns.actorName', expect.stringMatching(/unrecognized key/i)]]);
     expect(
       issues(`audit:
   store: table

@@ -12,6 +12,7 @@ Warden needs one decision from you before it starts: who may sign in ([`access`]
 - [`actions`](#actions)
 - [`access`](#access)
 - [`audit`](#audit)
+- [`actor`](#actor)
 - [Schema drift](#schema-drift)
 - [Audit log](#audit-log)
 - [Saved views](#saved-views)
@@ -446,6 +447,7 @@ audit:
     occurredAt: created_at
     actorSubject: actor_sub
     actorEmail: actor_email
+    actorUserId: actor_id
     action: action
     entity: table_name
     recordId: record_id
@@ -471,6 +473,7 @@ With `audit.columns`, only the fields listed are written; the others are dropped
 | `audit.columns.details`      | `json`/`jsonb`, nullable                               | Required. What exports and custom actions did.                                                          |
 | `audit.columns.requestId`    | `text`/`varchar`, nullable                             | The request's id.                                                                                       |
 | `audit.columns.actorEmail`   | `text`/`varchar`, nullable                             | The user's verified email.                                                                              |
+| `audit.columns.actorUserId`  | `text`/`varchar`, nullable                             | Their id in your users table, from [`actor`](#actor).                                                   |
 | `audit.columns.actorRoles`   | `text[]`                                               | Their Warden roles. Unmapped, History and the audit log don't show roles.                               |
 | `audit.columns.primaryKey`   | `json`/`jsonb`, nullable                               | The row's primary key columns.                                                                          |
 | `audit.columns.before`       | `json`/`jsonb`, nullable                               | The row before the change.                                                                              |
@@ -503,6 +506,53 @@ Each assignment and removal, and each sign-out everywhere, is recorded in the [a
 
 Warden only matches ASCII emails, against both `emailDomains` and assignments. An email claim with any other character matches neither, even when it's verified. Such a user can still sign in through `groups` or `allowAll`, and their email is still shown and audited as the IdP sent it, so an IdP that verifies a look-alike address (`аdmin@example.com` with a Cyrillic `а`) shows it as such; trust displayed emails only as far as you trust the IdP's verification. Unicode case folding and normalization turn look-alike characters into ASCII: the Kelvin sign `K` (U+212A) lowercases to `k`, and full-width `ｋ` normalizes to `k`. Without this rule, an IdP that marks such an address verified without proving the mailbox (admin-created users, some federated logins) could hand someone another person's assignment or domain. Users with internationalized addresses need a group rule or an ASCII alias. Internationalized domains match only when the IdP sends them in punycode.
 
+## `actor`
+
+Maps each signed-in user to a row of your own users table, so audit entries, custom actions, and your database's triggers know which internal user made a change, not just their OIDC subject and email.
+
+| Key                 | Type        | Default  |
+| ------------------- | ----------- | -------- |
+| `actor.table`       | table key   | Required |
+| `actor.matchColumn` | column name | Required |
+| `actor.idColumn`    | column name | Required |
+| `actor.required`    | boolean     | `false`  |
+
+```yaml
+actor:
+  table: users # or schema.table; the schema must be listed in `schemas`
+  matchColumn: email # matched against the verified email claim
+  idColumn: id
+  required: false # true: deny sign-in to users with no matching row
+```
+
+- At sign-in, Warden looks for the row whose **`matchColumn`** equals the user's `email` claim, ignoring case, and takes its **`idColumn`** as text. The email must be verified, always, even when [`access.requireVerifiedEmail`](#access) is `false` (the id attributes changes to a person in your own tables, so an unverified address must never claim it), and ASCII, as must the stored value (see [non-ASCII emails](#non-ascii-emails)). `matchColumn` must be a text column (`text`, `varchar`, `char`, or `citext`).
+- No matching row, several, or a null id gives the user no id; several also log a warning. Make `matchColumn` unique to avoid that.
+- The table may be [hidden](#tables): Warden still looks the user up, reading only those two columns, and the table stays absent from the API and UI. The database role Warden runs as needs `select` on both columns.
+- The id is stored on the session, so it is as of sign-in: a change to the user's row applies when they next sign in. Changing `actor`'s `table`, `matchColumn`, or `idColumn`, or removing or breaking the mapping, stops existing sessions' ids being used at the next restart; those users have no id until they sign in again (and with `required`, must sign in again).
+- With **`required: true`**, a user without an id can't sign in (`/login?error=access_denied`), and a session without one (from before the mapping was required) gets a `401`.
+- A table or column that doesn't exist is a startup [warning](#errors-and-warnings), not an error: nobody gets an id, and with `required: true` nobody can sign in.
+
+The id is recorded as `actor_user_id` on every [audit log](database.md#the-audit-log) entry the user makes (writes, custom actions, exports, role assignments, and sign-outs everywhere), shown next to them in History and on the audit log page, where the actor search also matches it exactly. It is passed to custom actions as [`actor.userId`](actions.md#defineaction). Inside every transaction Warden writes in (creates, updates, deletes, and custom actions), it sets these for your triggers and column defaults to read:
+
+| Setting              | Value                                            |
+| -------------------- | ------------------------------------------------ |
+| `warden.actor_id`    | The user's id from `actor`, or empty without one |
+| `warden.actor_sub`   | Their OIDC subject                               |
+| `warden.actor_email` | Their verified email, or empty without one       |
+
+They are local to the transaction (`set_config(..., true)`). Read them with `nullif(current_setting('warden.actor_id', true), '')`, which is null outside a Warden write, including for writes your application makes:
+
+```sql
+create function stamp_updated_by() returns trigger language plpgsql as $$
+begin
+  new.updated_by := nullif(current_setting('warden.actor_id', true), '');
+  return new;
+end;
+$$;
+create trigger users_updated_by before update on users
+  for each row execute function stamp_updated_by();
+```
+
 ## Schema drift
 
 Warden keeps a baseline snapshot of the database schema in the `warden` schema. The first start records it. Users with a role that has `admin: [schema]` can open **Schema drift** in the sidebar, which lists:
@@ -519,7 +569,7 @@ The page reflects the schema as of Warden's last start. **Acknowledge** makes th
 
 Every create, update, and delete made through Warden is recorded in the [audit log](database.md#the-audit-log), with the reason given for it (the **Internal note** in the UI). It is `warden.audit_log` unless [`audit`](#audit) points it at a table you own. Reasons are required by default; see [Required reasons](#required-reasons). Entries are shown in two places:
 
-- **History** on a record lists its changes, newest first, with who made each one (email and OIDC subject), why, and the before and after values. Anyone who may read the record sees it. The roles the author held are shown only to users with `admin: [audit]`, so reading a record doesn't tell everyone who holds `admin` or `hr`.
+- **History** on a record lists its changes, newest first, with who made each one (email and OIDC subject, plus their [`actor`](#actor) user id), why, and the before and after values. Anyone who may read the record sees it. The roles the author held are shown only to users with `admin: [audit]`, so reading a record doesn't tell everyone who holds `admin` or `hr`.
 - **Audit log** in the sidebar searches every entry by actor (email or subject), entity, action, and date range. Only users with a role that has `admin: [audit]` can open it. Besides changes to tables, it lists [role assignments](#role-assignments) and removals (`assign`, `unassign`: who gave or removed which role from whom) and sign-outs everywhere (`revoke_sessions`: whose sessions, and how many). These are shown in full, and only here: they belong to no table, so no record's History includes them.
 
 A [custom action](#actions) records one entry for the run, with its name, input (sensitive fields redacted), target records and reason, and an entry for every row it changed that links back to it. A record's History shows those as part of the action; on the audit log page, an action's entry links to the rows it changed. The rows it changed are shown like any other change, field by field. The action's own entry is different: its input isn't made of the record's fields and may hold anything, so a record's History shows it only to users who could run the action now, and to users with `admin: [audit]`. Everyone else sees neither that entry nor the action's name: rows it changed lose their link to it. Input fields that pick records of a table the user can't read are left out for everyone.
@@ -636,6 +686,11 @@ access:
     warden-finance: [finance]
   emailDomains:
     example.com: [viewer]
+
+actor:
+  table: staff
+  matchColumn: email
+  idColumn: id
 ```
 
 [`examples/basic/warden.config.yaml`](../examples/basic/warden.config.yaml) is the config used by `docker compose` and the tests.

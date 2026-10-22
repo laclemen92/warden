@@ -11,6 +11,7 @@ export {
   type AuditField,
   type AccessConfig,
   type ActionConfig,
+  type ActorConfig,
   wardenConfigSchema,
   type Action,
   type AdminArea,

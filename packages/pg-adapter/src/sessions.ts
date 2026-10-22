@@ -22,6 +22,10 @@ export interface NewSession {
   claims: Record<string, unknown>;
   /** The ID token, for `id_token_hint` at logout, as the caller encrypted it. */
   idToken?: string;
+  /** The internal user id config's `actor` mapped them to at sign-in. */
+  userId?: string;
+  /** `actorMappingKey` of the mapping `userId` was resolved under. */
+  actorMapping?: string;
 }
 
 export interface Session {
@@ -29,6 +33,9 @@ export interface Session {
   email: string | null;
   name: string | null;
   claims: Record<string, unknown>;
+  /** As resolved at sign-in; a later change to the user's row applies at their next sign-in. */
+  userId: string | null;
+  actorMapping: string | null;
   createdAt: string;
   lastSeenAt: string;
 }
@@ -39,10 +46,12 @@ const live = ({ idleSeconds, absoluteSeconds }: SessionTimeouts) =>
 
 export async function insertSession(db: Database, session: NewSession): Promise<void> {
   await sql`
-    insert into ${SESSIONS} (token_hash, subject, email, name, claims, id_token)
+    insert into ${SESSIONS}
+      (token_hash, subject, email, name, claims, id_token, actor_user_id, actor_mapping)
     values (${session.tokenHash}, ${session.subject}, ${session.email ?? null},
             ${session.name ?? null}, ${JSON.stringify(session.claims)}::jsonb,
-            ${session.idToken ?? null})`.execute(db);
+            ${session.idToken ?? null}, ${session.userId ?? null},
+            ${session.actorMapping ?? null})`.execute(db);
 }
 
 /** Return the session if it is still live and mark it as just used; otherwise `undefined`. */
@@ -54,7 +63,8 @@ export async function touchSession(
   const { rows } = await sql<Session>`
     update ${SESSIONS} set last_seen_at = now()
     where token_hash = ${tokenHash} and ${live(timeouts)}
-    returning subject, email, name, claims,
+    returning subject, email, name, claims, actor_user_id as "userId",
+              actor_mapping as "actorMapping",
               created_at as "createdAt", last_seen_at as "lastSeenAt"`.execute(db);
   return rows[0];
 }
@@ -156,6 +166,7 @@ export async function deleteSessionsForSubject(
         requestId: actor.requestId ?? null,
         actorSubject: actor.subject,
         actorEmail: actor.email ?? null,
+        actorUserId: actor.userId ?? null,
         actorRoles: [...actor.roles],
         action: 'revoke_sessions',
         entity: 'warden.sessions',

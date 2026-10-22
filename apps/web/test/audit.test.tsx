@@ -147,7 +147,16 @@ describe('record history tab', () => {
       if (url.pathname === '/api/entities/users/42/history') {
         return {
           status: 200,
-          body: { items: [entry('2', { reason: 'fix typo' }), created], nextCursor: null },
+          body: {
+            items: [
+              entry('2', {
+                reason: 'fix typo',
+                actor: { subject: 'sub-ada', email: 'ada@example.com', userId: '7' },
+              }),
+              created,
+            ],
+            nextCursor: null,
+          },
         };
       }
     });
@@ -156,6 +165,7 @@ describe('record history tab', () => {
     await userEvent.click(await screen.findByRole('tab', { name: 'History' }));
     const update = await screen.findByRole('article', { name: 'update 2' });
     expect(within(update).getByText('ada@example.com')).toHaveAttribute('title', 'sub-ada');
+    expect(within(update).getByText('user 7')).toBeInTheDocument();
     expect(within(update).getByText('fix typo')).toBeInTheDocument();
     expect(within(update).getByText('Internal note')).toBeInTheDocument();
     // In entity field order, not the diff's.
@@ -165,6 +175,7 @@ describe('record history tab', () => {
     ]);
 
     const create = screen.getByRole('article', { name: 'create 1' });
+    expect(within(create).queryByText(/^user /)).not.toBeInTheDocument();
     expect(diffRows(create)).toEqual([
       ['ID', '', '42'],
       ['Email', '', 'old@example.com'],

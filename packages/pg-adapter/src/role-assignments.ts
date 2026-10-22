@@ -20,6 +20,8 @@ export type RoleAssignment = {
 export interface AssignmentActor {
   subject: string;
   email?: string;
+  /** The internal user id config's `actor` mapped them to. */
+  userId?: string;
   roles: readonly string[];
   requestId?: string;
   /** Where the change is audited; `warden.audit_log` when absent. */
@@ -53,6 +55,7 @@ async function audit(
     requestId: actor.requestId ?? null,
     actorSubject: actor.subject,
     actorEmail: actor.email ?? null,
+    actorUserId: actor.userId ?? null,
     actorRoles: [...actor.roles],
     action,
     entity: ENTITY,

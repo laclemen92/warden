@@ -321,6 +321,23 @@ roles:
     ]);
   });
 
+  it('parses the actor mapping, defaulting required to false', () => {
+    expect(
+      parseConfig(`actor: { table: users, matchColumn: email, idColumn: id }\n`, FILE).actor,
+    ).toEqual({ table: 'users', matchColumn: 'email', idColumn: 'id', required: false });
+    expect(issues(`actor: { table: users, matchColumn: email }\n`)).toMatchObject([
+      { path: 'actor.idColumn' },
+    ]);
+    expect(
+      issues(`actor: { table: users, matchColumn: email, idColumn: id, nope: 1 }\n`),
+    ).toMatchObject([{ path: 'actor.nope' }]);
+    expect(
+      issues(`actor: { table: billing.staff, matchColumn: email, idColumn: id }\n`),
+    ).toMatchObject([
+      { path: 'actor.table', message: 'schema "billing" is not listed in `schemas`' },
+    ]);
+  });
+
   it('parses access rules and fills their defaults', () => {
     const config = parseConfig(
       `

@@ -20,6 +20,11 @@ export interface Actor {
   subject: string;
   email?: string;
   name?: string;
+  /**
+   * Their id in your own users table, when config's `actor` maps them to one. Resolved at sign-in,
+   * and also set as `warden.actor_id` for the action's transaction.
+   */
+  userId?: string;
   roles: readonly string[];
 }
 

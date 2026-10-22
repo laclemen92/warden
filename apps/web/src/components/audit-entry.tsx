@@ -227,6 +227,9 @@ export function AuditEntryItem({
           </span>
         )}
         <span title={entry.actor.subject}>{entry.actor.email ?? entry.actor.subject}</span>
+        {entry.actor.userId !== undefined && (
+          <span className="text-muted-foreground">user {entry.actor.userId}</span>
+        )}
         {entry.source != null && (
           <Badge variant="outline" title="Source">
             {entry.source}
