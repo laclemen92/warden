@@ -22,7 +22,8 @@ const SCHEMA = `
 `;
 
 const CONFIG = `
-defaults: { delete: granted }
+# Reasons are covered in require-reason.test.ts.
+defaults: { delete: granted, requireReason: [] }
 tables:
   stamps:
     requireReason: [update, delete]

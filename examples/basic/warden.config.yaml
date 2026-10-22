@@ -9,6 +9,10 @@ defaults:
   read: all # all | granted (reading requires a `read` grant)
   # none: hard delete is off unless a table sets allowDelete: true | granted: delete grants apply
   delete: none
+  # Writes that must say why: an "Internal note" in the UI, kept in the audit log. A table's own
+  # requireReason overrides this ([] makes reasons optional there).
+  requireReason: [create, update, delete]
+  reasonMinLength: 10 # after trimming, so "." or "fix" doesn't count
 
 tables:
   companies:
@@ -37,8 +41,6 @@ tables:
     # Hard delete is off by default; roles granted `users: [delete]` may delete users. Deleting a
     # user sets orders.user_id to null (`on delete set null`), which Warden warns about at startup.
     allowDelete: true
-    # Deleting a user must say why; the reason is kept in the audit log.
-    requireReason: [delete]
 
   orders:
     defaultSort: { column: placed_at, direction: desc }
@@ -71,7 +73,8 @@ roles:
     # Running an action doesn't need the table grants it writes with, but a `deny` disables it.
     actions: [move-user, deactivate-users]
 
-# Settings that override what an action's definition says.
+# Settings that override what an action's definition says. Actions require a reason unless their
+# definition sets requireReason: false; this keeps it required even if the definition changes.
 actions:
   cancel-stale-orders:
     requireReason: true

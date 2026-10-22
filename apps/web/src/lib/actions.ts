@@ -17,6 +17,8 @@ export interface ActionDescriptor {
   confirm: 'preview' | 'confirm';
   destructive: boolean;
   requireReason: boolean;
+  /** The shortest a required reason may be, once trimmed; present with `requireReason`. */
+  reasonMinLength?: number;
   hasDefaults: boolean;
   inputSchema: { properties: Record<string, JsonSchema>; required?: string[] };
   /** Entity key → the writes the action can make. */

@@ -10,8 +10,10 @@ import {
 } from '@wardenhq/actions';
 import {
   MAX_ACTION_RECORDS,
+  MAX_REASON_LENGTH,
   auditDiff,
   canRunAction,
+  checkReason,
   decodeRecordId,
   encodeRecordId,
   isAllowed,
@@ -48,7 +50,7 @@ import {
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { createSlots } from '../slots.js';
 import type { Views } from '../views.js';
-import { MAX_REASON_LENGTH, REASON_REQUIRED } from './entities.js';
+import { NO_NUL } from './schemas.js';
 
 /** Changes a preview sends back; `total` still counts them all. */
 export const MAX_PREVIEW_CHANGES = 200;
@@ -102,6 +104,8 @@ export interface ActionDescriptor {
   confirm: ResolvedAction['confirm'];
   destructive: boolean;
   requireReason: boolean;
+  /** The shortest a required reason may be, once trimmed; present with `requireReason`. */
+  reasonMinLength?: number;
   hasDefaults: boolean;
   inputSchema: ResolvedAction['inputSchema'];
   /** What the action can change: entity key → writes. */
@@ -128,7 +132,7 @@ const actionBodyProperties = {
   },
   // Checked against the action's own input schema.
   input: { type: 'object' },
-  reason: { type: 'string', maxLength: MAX_REASON_LENGTH },
+  reason: { type: 'string', maxLength: MAX_REASON_LENGTH, pattern: NO_NUL },
 } as const;
 const previewBodySchema = { type: 'object', properties: actionBodyProperties } as const;
 const runBodySchema = {
@@ -269,6 +273,7 @@ export function registerActionRoutes(app: FastifyInstance, options: ActionRouteO
     confirm: action.confirm,
     destructive: action.destructive,
     requireReason: action.requireReason,
+    ...(action.reasonMinLength !== undefined ? { reasonMinLength: action.reasonMinLength } : {}),
     hasDefaults: typeof definitions.get(action.name)?.defaults === 'function',
     inputSchema: action.inputSchema,
     permissions: action.permissions,
@@ -359,7 +364,11 @@ export function registerActionRoutes(app: FastifyInstance, options: ActionRouteO
     const body = req.body ?? {};
     const ids = body.records ?? [];
     const rawInput = body.input ?? {};
-    const reason = body.reason?.trim() || undefined;
+    const checked = checkReason(
+      body.reason,
+      action.requireReason ? (action.reasonMinLength ?? 1) : undefined,
+    );
+    const reason = checked.ok ? checked.reason : undefined;
 
     const expected =
       action.target === 'one'
@@ -378,7 +387,7 @@ export function registerActionRoutes(app: FastifyInstance, options: ActionRouteO
       );
     }
     if (new Set(ids).size !== ids.length) return badRequest(reply, RECORDS_REPEAT);
-    if (action.requireReason && !reason) return badRequest(reply, REASON_REQUIRED);
+    if (!checked.ok) return badRequest(reply, checked.message);
 
     // Unknown keys are rejected rather than stripped, as for record writes.
     const unknown = Object.keys(rawInput).filter(

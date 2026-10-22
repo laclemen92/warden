@@ -18,8 +18,9 @@ export function exampleConfigWith(edit: (config: WardenConfig) => void): string 
 }
 
 /** The example config, with admins also allowed to hard-delete companies. */
-export const exampleConfigDeletingCompanies = () =>
+export const exampleConfigDeletingCompanies = (defaults: Partial<WardenConfig['defaults']> = {}) =>
   exampleConfigWith((config) => {
     config.tables.companies = { ...config.tables.companies!, allowDelete: true };
     config.roles.admin!.grants.companies = ['delete'];
+    Object.assign(config.defaults, defaults);
   });

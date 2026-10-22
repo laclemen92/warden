@@ -12,7 +12,8 @@ import { authEnv, login, startTestIdp } from './helpers/auth.js';
 // Reading is granted per table, so `ops` can't read orders. Only admins see full names and
 // salaries, and password hashes are hidden from everyone.
 const CONFIG = `
-defaults: { read: granted }
+# Reasons are covered in require-reason.test.ts.
+defaults: { read: granted, requireReason: [] }
 tables:
   employees:
     columns:

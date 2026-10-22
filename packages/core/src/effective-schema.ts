@@ -26,8 +26,13 @@ export interface Entity {
   /** Columns the grid shows first, from config; absent when not configured. See `gridColumnOrder`. */
   columnOrder?: string[];
   searchable: string[];
-  /** Writes that must give a reason (stored in the audit log); absent when none must. */
+  /**
+   * Writes that must give a reason (stored in the audit log): the table's `requireReason`, or
+   * `defaults.requireReason`. Absent when none must.
+   */
   requireReason?: WriteAction[];
+  /** The shortest a required reason may be, once trimmed; present with `requireReason`. */
+  reasonMinLength?: number;
   fields: Field[];
   relations: Relation[];
 }
@@ -150,10 +155,12 @@ export function resolveSchema(model: SchemaModel, config: WardenConfig): Resolve
       relations: [],
     };
     if (table.comment) entity.comment = table.comment;
-    if (tableConfig?.requireReason?.length) {
+    const requireReason = tableConfig?.requireReason ?? config.defaults.requireReason;
+    if (requireReason.length > 0) {
       // Canonical order, without duplicates.
-      const required = new Set(tableConfig.requireReason);
+      const required = new Set(requireReason);
       entity.requireReason = WRITE_ACTIONS.filter((a) => required.has(a));
+      entity.reasonMinLength = config.defaults.reasonMinLength;
     }
     const sort = tableConfig?.defaultSort;
     if (sort && usable(sort.column, `${path}.defaultSort.column`)) entity.defaultSort = sort;

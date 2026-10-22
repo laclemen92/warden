@@ -19,6 +19,8 @@ test('editor previews and runs a custom action, audited as one entry', async ({ 
   await dialog.getByRole('combobox', { name: /New company/ }).click();
   await page.getByRole('searchbox', { name: 'Search companies' }).fill(`Company ${target}`);
   await page.getByRole('option', { name: new RegExp(`^Company ${target} \\(`) }).click();
+  // Actions require an internal note by default; Preview stays disabled until it's long enough.
+  await dialog.getByRole('textbox', { name: 'Internal note' }).fill('e2e: moving to test');
   await dialog.getByRole('button', { name: 'Preview' }).click();
 
   const changes = dialog.getByRole('region', { name: 'Changes' });
@@ -37,4 +39,5 @@ test('editor previews and runs a custom action, audited as one entry', async ({ 
   await expect(change.getByRole('row', { name: /Company/ })).toBeVisible();
   await expect(parent).toContainText('Move to company');
   await expect(parent).toContainText(String(target));
+  await expect(parent).toContainText('e2e: moving to test');
 });

@@ -32,11 +32,6 @@ export interface RecordList {
   total?: number;
 }
 
-// apps/server/src/routes/entities.ts: the longest reason a write may give, and the message for a
-// write that config requires a reason for but has none.
-export const MAX_REASON_LENGTH = 2000;
-export const REASON_REQUIRED = 'a reason is required for this change';
-
 export function recordPath(entity: Pick<Entity, 'key'>, id: string): string {
   return `${entityPath(entity)}/${encodeURIComponent(id)}`;
 }

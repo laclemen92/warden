@@ -3,6 +3,7 @@ import type { Entity, Relation } from '@wardenhq/core';
 import { Plus, X } from 'lucide-react';
 import { Link } from 'react-router';
 import { FieldValue } from '@/components/field-value';
+import { InternalNote, noteProblem } from '@/components/internal-note';
 import { RecordPicker } from '@/components/record-picker';
 import {
   AlertDialog,
@@ -43,7 +44,6 @@ import {
   type ActionRequest,
   type ActionRun,
 } from '@/lib/actions';
-import { MAX_REASON_LENGTH } from '@/lib/records';
 import { recordPath } from '@/lib/records';
 import { useSchema } from '@/lib/schema';
 
@@ -147,7 +147,8 @@ function ActionSteps({
     };
   };
   const pending = preview.isPending || run.isPending;
-  const missingReason = action.requireReason && reason.trim() === '';
+  const reasonMinLength = action.requireReason ? (action.reasonMinLength ?? 1) : undefined;
+  const missingReason = noteProblem(reason, reasonMinLength) !== null;
 
   const doPreview = (event?: MouseEvent) => {
     event?.preventDefault();
@@ -256,25 +257,7 @@ function ActionSteps({
           onChange={(value) => setDrafts((d) => ({ ...d, [field.name]: value }))}
         />
       ))}
-      {action.requireReason && (
-        <div className="space-y-1">
-          <label htmlFor={reasonId} className="text-sm font-medium">
-            Reason
-          </label>
-          <Textarea
-            id={reasonId}
-            rows={2}
-            value={reason}
-            maxLength={MAX_REASON_LENGTH}
-            aria-required
-            aria-describedby={`${reasonId}-help`}
-            onChange={(e) => setReason(e.target.value)}
-          />
-          <p id={`${reasonId}-help`} className="text-xs text-muted-foreground">
-            Required. Saved in the audit log with this action.
-          </p>
-        </div>
-      )}
+      <InternalNote id={reasonId} value={reason} minLength={reasonMinLength} onChange={setReason} />
       {error && <ErrorMessage error={error} grouped={errors} />}
       <AlertDialogFooter>
         <AlertDialogCancel type="button" disabled={pending}>

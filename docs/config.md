@@ -75,12 +75,14 @@ tables:
 
 ## `defaults`
 
-| Key                   | Values                          | Default   |
-| --------------------- | ------------------------------- | --------- |
-| `defaults.expose`     | `all`, `none`                   | `all`     |
-| `defaults.newColumns` | `visible`, `hidden`, `readOnly` | `visible` |
-| `defaults.read`       | `all`, `granted`                | `all`     |
-| `defaults.delete`     | `none`, `granted`               | `none`    |
+| Key                        | Values                               | Default                    |
+| -------------------------- | ------------------------------------ | -------------------------- |
+| `defaults.expose`          | `all`, `none`                        | `all`                      |
+| `defaults.newColumns`      | `visible`, `hidden`, `readOnly`      | `visible`                  |
+| `defaults.read`            | `all`, `granted`                     | `all`                      |
+| `defaults.delete`          | `none`, `granted`                    | `none`                     |
+| `defaults.requireReason`   | list of `create`, `update`, `delete` | `[create, update, delete]` |
+| `defaults.reasonMinLength` | integer, 1 to 2000                   | `10`                       |
 
 **`defaults.expose`** decides which tables Warden shows.
 
@@ -109,13 +111,41 @@ A table's [`deny`](#tables) can still forbid reading it in either mode.
 
 `delete` can't be granted with `*` in either mode: a `*` grant that lists it fails startup.
 
+**`defaults.requireReason`** lists the writes that must say why, on every table that doesn't set its own [`requireReason`](#tables). By default that's all three: every create, update and delete needs a reason. See [Required reasons](#required-reasons). `[]` makes reasons optional.
+
+**`defaults.reasonMinLength`** is the shortest a required reason may be, in characters, after trimming whitespace, so `.` or `fix` doesn't count. It applies to required reasons on tables and [custom actions](#actions) alike.
+
 ```yaml
 defaults:
   expose: none
   newColumns: hidden
   read: granted
   delete: none
+  requireReason: [update, delete] # creates may skip the reason
+  reasonMinLength: 15
 ```
+
+### Required reasons
+
+Every write may send a `reason`, stored in the [audit log](#audit-log) with the change. The UI labels it **Internal note**: people who can read the audit log see it, end users of your application don't. Unless config says otherwise, it is required: the API rejects a write that needs one with a 400 when the reason is missing, only whitespace, or shorter than `defaults.reasonMinLength` once trimmed, and the UI won't save, delete or run an action until the note is long enough. A reason is never longer than 2,000 characters, required or not.
+
+What needs one:
+
+- **Creates, updates and deletes:** the table's `requireReason` if it sets one, otherwise `defaults.requireReason`. A table's list overrides the default either way: `requireReason: []` turns reasons off for that table, and `requireReason: [delete]` requires them for deletes only.
+- **[Custom actions](#actions):** required unless the action's definition sets `requireReason: false`. `actions.<action>.requireReason` overrides the definition either way. A table that sets its own `requireReason` covering a write the action may make on it requires one regardless; `defaults.requireReason` doesn't apply to actions.
+
+```yaml
+defaults:
+  requireReason: [create, update, delete] # the default
+tables:
+  page_views:
+    requireReason: [] # high-volume corrections; reasons optional
+actions:
+  resend-invite:
+    requireReason: false
+```
+
+> **Upgrading:** reasons used to be optional unless a table opted in. Writes and actions that don't send one now get a 400. Set `defaults.requireReason: []` (and `requireReason: false` on actions) to go back to optional reasons.
 
 ### Hard delete
 
@@ -156,7 +186,7 @@ Each key is a table, as `table` (in the default schema) or `schema.table`. Warde
 | `tables.<table>.searchable`            | list of column names                                       | Visible text columns                           |
 | `tables.<table>.deny`                  | list of `read`, `create`, `update`, `delete`, `export`     | None                                           |
 | `tables.<table>.allowDelete`           | boolean                                                    | Per `defaults.delete`                          |
-| `tables.<table>.requireReason`         | list of `create`, `update`, `delete`                       | None                                           |
+| `tables.<table>.requireReason`         | list of `create`, `update`, `delete`                       | Per `defaults.requireReason`                   |
 | `tables.<table>.updatablePrimaryKey`   | boolean                                                    | `false`                                        |
 | `tables.<table>.insertablePrimaryKey`  | boolean                                                    | `false`                                        |
 | `tables.<table>.columns`               | map of column name to [column config](#tablestablecolumns) | None                                           |
@@ -177,7 +207,7 @@ Each key is a table, as `table` (in the default schema) or `schema.table`. Warde
 
 **`allowDelete`** turns [hard delete](#hard-delete) on (`true`) or off (`false`) for this table, overriding `defaults.delete`. It doesn't grant anything: a role still needs `delete` on the table by name. A `deny` that includes `delete` beats it, with a warning.
 
-**`requireReason`** lists writes that must say why. Every write may send a `reason`, which is stored in the [audit log](#audit-log); for these actions the API rejects a write without one (or with only whitespace) with a 400, and the UI asks for it before saving or deleting. This includes [custom actions](#actions) whose `permissions` allow one of these writes on the table: running them needs a reason too. It doesn't grant or deny anything: the caller still needs a role that may perform the action.
+**`requireReason`** lists writes on this table that must say why, overriding [`defaults.requireReason`](#defaults) either way (`[]` makes reasons optional here). See [Required reasons](#required-reasons). It also covers [custom actions](#actions) whose `permissions` allow one of these writes on the table: running them needs a reason too, even if the action turns it off. It doesn't grant or deny anything: the caller still needs a role that may perform the action.
 
 **`updatablePrimaryKey`** lets updates change the table's primary key columns. By default key columns without a default must be set when creating a row but are read-only afterwards: an update that sends one is rejected with `is read-only`, and the edit form shows them read-only. Changing a key gives the row a new record id, so its links stop working and its [audit history](#audit-log) splits between the old id and the new one, and an `on update cascade` foreign key changes rows in other tables (see [cascades](#cascades)). Set it only for tables with natural keys that really do change. Columns that are read-only anyway (`readOnly`, identity `GENERATED ALWAYS`, generated, or a key with a default without `insertablePrimaryKey`) stay read-only.
 
@@ -311,11 +341,11 @@ Users get roles from [`access`](#access) when they sign in, plus any [assigned i
 
 Custom actions are multi-step operations, written in code, that run in one transaction with one audit entry linking every row they change: for example, "move this user to another company and cancel their pending orders". A deployment defines them in a JavaScript or TypeScript module and points `WARDEN_ACTIONS` at it; see [Custom actions](actions.md) for writing one. Config decides who may run them, and can override a few of their settings:
 
-| Key                              | Type    | Default                  |
-| -------------------------------- | ------- | ------------------------ |
-| `actions.<action>.disabled`      | boolean | `false`                  |
-| `actions.<action>.requireReason` | boolean | The action's own setting |
-| `actions.<action>.label`         | string  | The action's own label   |
+| Key                              | Type    | Default                                              |
+| -------------------------------- | ------- | ---------------------------------------------------- |
+| `actions.<action>.disabled`      | boolean | `false`                                              |
+| `actions.<action>.requireReason` | boolean | The action's own setting, which is by default `true` |
+| `actions.<action>.label`         | string  | The action's own label                               |
 
 Action names are those the action module gives (`^[a-z][a-z0-9-]*$`), except `create`, `update`, `delete`, `export`, `assign`, `unassign` and `acknowledge`, which the audit log uses for Warden's own entries. Naming one of those here or in a role's `actions` fails startup.
 
@@ -339,10 +369,12 @@ roles:
 
 actions:
   refund-order:
-    requireReason: true # running it must say why
+    requireReason: true # running it must say why, even if the action turns it off
   legacy-cleanup:
     disabled: true
 ```
+
+**`requireReason`** overrides the action's own setting either way. Actions require a reason by default; see [Required reasons](#required-reasons).
 
 Mismatches warn rather than fail, as for tables and columns: an action whose table, written tables, or picked tables are hidden or don't exist, or whose `permissions` include a write a table `deny` forbids, a table that denies `read`, or `delete` on a table where hard delete is off, is disabled with a warning; and `roles.<role>.actions` or `actions` naming an action the module doesn't define is a warning. Mistakes in the module itself (a missing file, duplicate names, unsupported input fields) fail startup with an `ActionsError`.
 
@@ -426,7 +458,7 @@ The page reflects the schema as of Warden's last start. **Acknowledge** makes th
 
 ## Audit log
 
-Every create, update, and delete made through Warden is recorded in the [audit log](database.md#the-audit-log), with the reason given for it, if any. A table's [`requireReason`](#tables) makes the reason mandatory for chosen actions. Entries are shown in two places:
+Every create, update, and delete made through Warden is recorded in the [audit log](database.md#the-audit-log), with the reason given for it (the **Internal note** in the UI). Reasons are required by default; see [Required reasons](#required-reasons). Entries are shown in two places:
 
 - **History** on a record lists its changes, newest first, with who made each one (email and OIDC subject), why, and the before and after values. Anyone who may read the record sees it. The roles the author held are shown only to users with `admin: [audit]`, so reading a record doesn't tell everyone who holds `admin` or `hr`.
 - **Audit log** in the sidebar searches every entry by actor (email or subject), entity, action, and date range. Only users with a role that has `admin: [audit]` can open it. Besides changes to tables, it lists [role assignments](#role-assignments) and removals (`assign`, `unassign`: who gave or removed which role from whom) and sign-outs everywhere (`revoke_sessions`: whose sessions, and how many). These are shown in full, and only here: they belong to no table, so no record's History includes them.
@@ -487,6 +519,8 @@ defaults:
   newColumns: visible
   read: all
   delete: none
+  requireReason: [create, update, delete]
+  reasonMinLength: 10
 
 tables:
   users:

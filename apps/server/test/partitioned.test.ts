@@ -18,6 +18,8 @@ const SCHEMA = `
 `;
 
 const CONFIG = `
+# Reasons are covered in require-reason.test.ts.
+defaults: { requireReason: [] }
 tables:
   events: { allowDelete: true }
 roles:

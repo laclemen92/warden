@@ -237,10 +237,10 @@ export function AuditEntryItem({
         )}
       </header>
       {entry.reason && (
-        <p className="text-sm">
-          <span className="text-muted-foreground">Reason: </span>
+        <blockquote className="border-l-2 border-primary/60 pl-3 text-sm whitespace-pre-wrap">
+          <span className="block text-xs font-medium text-muted-foreground">Internal note</span>
           {entry.reason}
-        </p>
+        </blockquote>
       )}
       {accessEntity ? (
         <AccessSummary entry={entry} />
