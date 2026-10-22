@@ -317,6 +317,27 @@ describe('actor mapping', () => {
     expect(await sessionUserIds(IMPOSTOR)).toEqual([null]);
   });
 
+  it('never matches an unverified email, even with access.requireVerifiedEmail off', async () => {
+    const trusting = await createWarden({
+      env: {
+        DATABASE_URL: db.connectionString,
+        WARDEN_CONFIG: writeConfig(
+          config(ACTOR).replace(/^access:\n/m, 'access:\n  requireVerifiedEmail: false\n'),
+        ),
+        WARDEN_ACTIONS: actionsPath,
+        ...authEnv(idp),
+      },
+      logger: false,
+    });
+    try {
+      await sqlPool.query('delete from warden.sessions where subject = $1', [IMPOSTOR]);
+      await login(trusting, IMPOSTOR);
+      expect(await sessionUserIds(IMPOSTOR)).toEqual([null]);
+    } finally {
+      await trusting.close();
+    }
+  });
+
   it('ignores an id stored on a session once the mapping is gone', async () => {
     const unmapped = await start('');
     try {

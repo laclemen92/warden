@@ -22,7 +22,7 @@ export type * from './policy.js';
 export { allowedActions, isAllowed, isFieldReadable, resolvePolicy, schemaFor } from './policy.js';
 export type * from './validation.js';
 export { fieldSchema, recordSchema, toFieldErrors, validateRecord } from './validation.js';
-export { assignmentEmail, parseEmail, resolveRoles, sessionEmail } from './roles.js';
+export { actorEmail, assignmentEmail, parseEmail, resolveRoles, sessionEmail } from './roles.js';
 export { relationFilter } from './relation.js';
 export type * from './admin.js';
 export { adminAreas, lastHolderRoles } from './admin.js';

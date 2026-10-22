@@ -1,6 +1,12 @@
 import { wardenConfigSchema } from '@wardenhq/config';
 import { describe, expect, it } from 'vitest';
-import { assignmentEmail, parseEmail, resolveRoles, sessionEmail } from '../src/index.js';
+import {
+  actorEmail,
+  assignmentEmail,
+  parseEmail,
+  resolveRoles,
+  sessionEmail,
+} from '../src/index.js';
 
 const access = (rules: unknown) =>
   wardenConfigSchema.parse({
@@ -132,6 +138,24 @@ describe('resolveRoles with in-app assignments', () => {
       'ops',
       'viewer',
     ]);
+  });
+});
+
+describe('actorEmail', () => {
+  it('is the verified email, lowercased', () => {
+    expect(actorEmail(user({ email: 'U1@Example.COM' }))).toBe('u1@example.com');
+  });
+
+  it('always requires a verified email', () => {
+    for (const email_verified of [false, 'false', undefined, 1, null]) {
+      expect(actorEmail(user({ email_verified })), String(email_verified)).toBeUndefined();
+    }
+  });
+
+  it('ignores missing, malformed and non-ASCII emails', () => {
+    for (const email of [undefined, 42, 'not-an-email', ' u@example.com', 'ü@example.com']) {
+      expect(actorEmail(user({ email })), String(email)).toBeUndefined();
+    }
   });
 });
 

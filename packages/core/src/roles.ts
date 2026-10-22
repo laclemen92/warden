@@ -52,6 +52,16 @@ export function assignmentEmail(
 }
 
 /**
+ * The email to look up a user's internal id by (`actor`). Always a verified one, whatever
+ * `requireVerifiedEmail` says: the id attributes changes to a person in the operator's own
+ * tables, so an address someone merely typed into the IdP must never claim it.
+ */
+export function actorEmail(claims: Record<string, unknown>): string | undefined {
+  const email = asciiLower(verifiedEmail(claims, true));
+  return email !== undefined && parseEmail(email) === email ? email : undefined;
+}
+
+/**
  * The email to show for, and attribute actions to, a signed-in user, as the IdP sent it. Only a
  * verified one (unless `requireVerifiedEmail` is off), so nobody can sign in as someone else's
  * address and appear in the audit log as them; without it, the user is known by `sub`.

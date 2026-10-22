@@ -1,6 +1,12 @@
 import fastifyCookie from '@fastify/cookie';
 import type { AccessConfig, WardenConfig } from '@wardenhq/config';
-import { adminAreas, assignmentEmail, resolveRoles, sessionEmail } from '@wardenhq/core';
+import {
+  actorEmail,
+  adminAreas,
+  assignmentEmail,
+  resolveRoles,
+  sessionEmail,
+} from '@wardenhq/core';
 import type { ActorLookup, Session } from '@wardenhq/pg-adapter';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { LoginChecks, OidcClient } from '../auth/oidc.js';
@@ -138,7 +144,7 @@ export async function registerAuth(
    * can claim another user's row by setting an unverified address at the IdP.
    */
   const userIdFor = async (req: FastifyRequest, claims: Record<string, unknown>) => {
-    const email = actor?.lookup ? assignmentEmail(access, claims) : undefined;
+    const email = actor?.lookup ? actorEmail(claims) : undefined;
     if (!email) return undefined;
     try {
       const found = await actor!.lookup!(email);
