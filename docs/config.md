@@ -145,7 +145,7 @@ actions:
     requireReason: false
 ```
 
-> **Upgrading:** reasons used to be optional unless a table opted in. Writes and actions that don't send one now get a 400. Set `defaults.requireReason: []` (and `requireReason: false` on actions) to go back to optional reasons.
+> **Upgrading:** reasons used to be optional unless a table opted in. Writes and actions that don't send one now get a 400. Set `defaults.requireReason: []` (and `requireReason: false` on actions) to go back to optional reasons. Until you do, Warden logs a startup notice saying so.
 
 ### Hard delete
 

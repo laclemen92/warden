@@ -1,6 +1,7 @@
 import type { EffectiveSchema } from '@wardenhq/core';
 import type { MockOidc } from '@wardenhq/mock-oidc';
 import { readExampleSql, startPostgres, type TestDatabase } from '@wardenhq/testing';
+import { Writable } from 'node:stream';
 import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createWarden } from '../src/warden.js';
@@ -100,14 +101,23 @@ function withWarden(config: string) {
     app: Awaited<ReturnType<typeof createWarden>>;
     admin: string;
     viewer: string;
+    logs: { msg?: string; requireReason?: string[] }[];
   };
   beforeAll(async () => {
+    state.logs = [];
+    const stream = new Writable({
+      write(chunk, _encoding, done) {
+        state.logs.push(JSON.parse(String(chunk)));
+        done();
+      },
+    });
     state.app = await createWarden({
       env: {
         DATABASE_URL: db.connectionString,
         WARDEN_CONFIG: writeConfig(config),
         ...authEnv(idp),
       },
+      logger: { level: 'info', stream },
     });
     state.admin = await login(state.app, 'admin');
     state.viewer = await login(state.app, 'viewer');
@@ -134,8 +144,17 @@ function withWarden(config: string) {
   return { state, send, create };
 }
 
+const OPT_OUT_NOTICE = /set defaults\.requireReason: \[\] to make reasons optional/;
+
 describe('required reasons, by default', () => {
   const { state, send, create } = withWarden(CONFIG);
+
+  it('logs one startup notice naming the opt-out', () => {
+    const notices = state.logs.filter((l) => OPT_OUT_NOTICE.test(l.msg ?? ''));
+    expect(notices).toEqual([
+      expect.objectContaining({ requireReason: ['create', 'update', 'delete'] }),
+    ]);
+  });
 
   it('tells the UI which writes need one, and how long it must be', async () => {
     const { entities } = (await send('GET', '/api/schema')).body as EffectiveSchema;
@@ -287,7 +306,11 @@ describe('required reasons, by default', () => {
 });
 
 describe('with defaults.requireReason: []', () => {
-  const { send, create } = withWarden(OPT_OUT_CONFIG);
+  const { state, send, create } = withWarden(OPT_OUT_CONFIG);
+
+  it('logs no opt-out notice', () => {
+    expect(state.logs.filter((l) => OPT_OUT_NOTICE.test(l.msg ?? ''))).toEqual([]);
+  });
 
   it('makes reasons optional, as before', async () => {
     const item = await create('companies', { name: 'Optional reasons' });
