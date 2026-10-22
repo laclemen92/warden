@@ -19,6 +19,7 @@ beforeAll(async () => {
         postLogoutRedirectUris: ['http://localhost:3000/'],
       },
     ],
+    legacyLogout: true,
   });
   config = await discover(CLIENT_SECRET);
 });
@@ -217,6 +218,27 @@ describe('mock OIDC provider', () => {
     expect(location(done)).toBe('http://localhost:3000/');
 
     // The next authorization prompts for a user again instead of reusing the session.
+    const { interaction } = await startLogin(go);
+    expect(new URL(interaction).pathname).toMatch(/^\/interaction\//);
+  });
+
+  it('ends the session on legacy /v2/logout, like Auth0', async () => {
+    const { go } = await login('editor');
+    const logout = (params: Record<string, string>) =>
+      go(`/v2/logout?${new URLSearchParams(params).toString()}`);
+
+    expect(
+      (await logout({ client_id: CLIENT_ID, returnTo: 'https://attacker.example/' })).status,
+    ).toBe(400);
+    expect((await logout({ client_id: 'other', returnTo: 'http://localhost:3000/' })).status).toBe(
+      400,
+    );
+    // Refused requests leave the session alone: the next authorization is silent.
+    const silent = await startLogin(go);
+    expect(silent.interaction.startsWith(REDIRECT_URI)).toBe(true);
+
+    const done = await logout({ client_id: CLIENT_ID, returnTo: 'http://localhost:3000/' });
+    expect(location(done)).toBe('http://localhost:3000/');
     const { interaction } = await startLogin(go);
     expect(new URL(interaction).pathname).toMatch(/^\/interaction\//);
   });

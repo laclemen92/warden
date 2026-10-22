@@ -35,6 +35,8 @@ Then set `OIDC_ISSUER`, `OIDC_CLIENT_ID`, and `OIDC_CLIENT_SECRET` in `.env`. Ge
 - The issuer is `https://login.microsoftonline.com/<tenant-id>/v2.0`.
 - Add the groups claim to the token if you want to map groups to roles.
 
+**Auth0:** see [Signing in with Auth0](auth0.md).
+
 `WARDEN_PUBLIC_URL` must be `https` except on `localhost`. If you change the host port with `WARDEN_PORT`, the public URL must use the same port, or the sign-in redirect lands nowhere. See [Authentication](../README.md#authentication) for every sign-in and session setting.
 
 ### Trying it locally without an identity provider

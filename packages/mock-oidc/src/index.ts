@@ -23,6 +23,11 @@ export interface MockOidcOptions {
   users?: readonly MockUser[];
   /** RP-initiated logout (`end_session_endpoint`). On by default; off mimics IdPs without it. */
   endSession?: boolean;
+  /**
+   * Serve Auth0's legacy `GET /v2/logout?client_id=…&returnTo=…`, which ends the session and
+   * redirects to `returnTo` if it is one of the client's post-logout redirect URIs. Off by default.
+   */
+  legacyLogout?: boolean;
 }
 
 export interface MockOidc {
@@ -43,6 +48,7 @@ export async function startMockOidc({
   clients,
   users = MOCK_USERS,
   endSession = true,
+  legacyLogout = false,
 }: MockOidcOptions): Promise<MockOidc> {
   // The issuer may depend on the bound port, so the provider is created after listen().
   let handler: http.RequestListener = (_req, res) => res.writeHead(503).end();
@@ -58,6 +64,11 @@ export async function startMockOidc({
   const callback = provider.callback();
   handler = (req, res) => {
     const url = new URL(req.url ?? '/', resolvedIssuer);
+    if (legacyLogout && url.pathname === LEGACY_LOGOUT_PATH) {
+      return void handleLegacyLogout(provider, clients, url, req, res).catch((err: unknown) => {
+        if (!res.headersSent) sendHtml(res, 400, page('Error', `<p>${escape(String(err))}</p>`));
+      });
+    }
     const match = INTERACTION_PATH.exec(url.pathname);
     if (!match) return callback(req, res);
     handleInteraction(provider, users, match[1] ?? '', match[2], req, res).catch((err: unknown) => {
@@ -155,6 +166,28 @@ function createProvider(
   };
 
   return new Provider(issuer, configuration);
+}
+
+const LEGACY_LOGOUT_PATH = '/v2/logout';
+
+async function handleLegacyLogout(
+  provider: Provider,
+  clients: MockOidcClient[],
+  url: URL,
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+): Promise<void> {
+  if (req.method !== 'GET') return sendHtml(res, 405, page('Error', '<p>Method not allowed</p>'));
+  const client = clients.find((c) => c.clientId === url.searchParams.get('client_id'));
+  if (!client) return sendHtml(res, 400, page('Error', '<p>Unknown client</p>'));
+  const returnTo = url.searchParams.get('returnTo');
+  if (returnTo !== null && !(client.postLogoutRedirectUris ?? []).includes(returnTo)) {
+    return sendHtml(res, 400, page('Error', '<p>returnTo is not an allowed logout URL</p>'));
+  }
+  const session = await provider.Session.get(provider.createContext(req, res));
+  await session.destroy();
+  if (returnTo === null) return sendHtml(res, 200, page('Signed out', '<p>Signed out.</p>'));
+  res.writeHead(302, { location: returnTo }).end();
 }
 
 const INTERACTION_PATH = /^\/interaction\/([^/]+)(?:\/(login|abort))?$/;
