@@ -10,6 +10,8 @@ RUN pnpm --filter @wardenhq/mock-oidc build
 RUN pnpm --filter @wardenhq/mock-oidc deploy --prod --legacy /out
 
 FROM node:22-alpine
+LABEL org.opencontainers.image.title="Warden mock OIDC (development only)" \
+      org.opencontainers.image.description="Development-only OIDC provider that signs anyone in as a fixed test user, with no password. For trying Warden locally and E2E tests. Never deploy it."
 ENV NODE_ENV=production \
     MOCK_OIDC_PORT=9400
 WORKDIR /app

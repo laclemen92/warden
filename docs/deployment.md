@@ -2,11 +2,12 @@
 
 Warden is one Docker image. It needs three things: environment variables (database, sign-in, secrets), a config file, and a Postgres database it can read your tables from and keep its own `warden` schema in. [`examples/deploy`](../examples/deploy) has all three ready to fill in:
 
-| File                                                          | What it's for                                                                                        |
-| ------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| [`docker-compose.yml`](../examples/deploy/docker-compose.yml) | Runs the image with your `.env` and config, plus an optional local Postgres. Usually needs no edits. |
-| [`.env.example`](../examples/deploy/.env.example)             | Every setting Warden reads from the environment. Copy it to `.env`, fill it in, and never commit it. |
-| [`warden.config.yaml`](../examples/deploy/warden.config.yaml) | Who can sign in, what they can do, and what's hidden. Mounted into the container read-only.          |
+| File                                                                              | What it's for                                                                                               |
+| --------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| [`docker-compose.yml`](../examples/deploy/docker-compose.yml)                     | Runs the image with your `.env` and config, plus an optional local Postgres. Usually needs no edits.        |
+| [`.env.example`](../examples/deploy/.env.example)                                 | Every setting Warden reads from the environment. Copy it to `.env`, fill it in, and never commit it.        |
+| [`warden.config.yaml`](../examples/deploy/warden.config.yaml)                     | Who can sign in, what they can do, and what's hidden. Mounted into the container read-only.                 |
+| [`docker-compose.mock-oidc.yml`](../examples/deploy/docker-compose.mock-oidc.yml) | Development only: adds a mock IdP for [trying it locally](#trying-it-locally-without-an-identity-provider). |
 
 ```sh
 cp -r examples/deploy ~/warden && cd ~/warden
@@ -39,41 +40,24 @@ Then set `OIDC_ISSUER`, `OIDC_CLIENT_ID`, and `OIDC_CLIENT_SECRET` in `.env`. Ge
 
 ### Trying it locally without an identity provider
 
-To try Warden on your machine before registering a client, run the development-only mock IdP from this repository next to it. It shows a login page with fixed test users (`viewer@`, `editor@`, and `admin@example.com`, plus `outsider@example.org`). **Never deploy it.**
+To try Warden on your machine before registering a client, run the development-only mock IdP next to it. It shows a login page with fixed test users (`viewer@`, `editor@`, and `admin@example.com`, plus `outsider@example.org`) and signs you in as any of them with no password. **Never deploy it.**
 
-Add this to your `docker-compose.yml`, with `context` pointing at a checkout of this repository, and replace the `warden` service's `ports` with `network_mode` so both containers share `localhost`:
-
-```yaml
-services:
-  mock-oidc:
-    build:
-      context: ../warden
-      dockerfile: docker/mock-oidc.Dockerfile
-    environment:
-      MOCK_OIDC_ISSUER: http://localhost:9400
-      MOCK_OIDC_REDIRECT_URIS: http://localhost:${WARDEN_PORT:-3000}/auth/callback
-      MOCK_OIDC_POST_LOGOUT_REDIRECT_URIS: http://localhost:${WARDEN_PORT:-3000}/
-    ports:
-      - '9400:9400'
-      - '${WARDEN_PORT:-3000}:3000' # Warden's port, published here because it shares this network
-
-  warden:
-    network_mode: service:mock-oidc
-    depends_on:
-      mock-oidc: { condition: service_healthy }
-    # ...the rest of the service as before, without `ports`
-```
-
-Then set these in `.env`, and grant the test users a role in the config, e.g. `access.emailDomains: { example.com: [viewer] }`:
+[`docker-compose.mock-oidc.yml`](../examples/deploy/docker-compose.mock-oidc.yml) adds it from its published image, `ghcr.io/laclemen92/warden-mock-oidc`, tagged with the same versions as Warden. It isn't part of the Warden image or the default `docker-compose.yml`, so it only runs when you name the file. In `.env`, set the image (same version as `WARDEN_IMAGE`) and a throwaway session secret (at least 32 characters):
 
 ```sh
-OIDC_ISSUER=http://localhost:9400
-OIDC_CLIENT_ID=warden
-OIDC_CLIENT_SECRET=warden-dev-secret
-WARDEN_SESSION_SECRET=local-only-not-a-real-secret
+MOCK_OIDC_IMAGE=ghcr.io/laclemen92/warden-mock-oidc:1.0.0-rc.1
+WARDEN_SESSION_SECRET=local-only-session-secret-not-for-production
 ```
 
-Sharing the network matters: the browser and Warden must both reach the IdP at the same issuer URL. To reach a database on your machine from there, use `host.docker.internal` (see [below](#reaching-the-database-from-the-container)).
+Grant the test users a role in `warden.config.yaml`, e.g. `access.emailDomains: { example.com: [viewer] }` (the starter config already does), then start both files together:
+
+```sh
+docker compose -f docker-compose.yml -f docker-compose.mock-oidc.yml up -d
+```
+
+Open http://localhost:3000 and pick a test user. The file sets `OIDC_ISSUER`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, and `WARDEN_PUBLIC_URL` for Warden, overriding `.env`, so leave those as they are for when you switch to a real IdP. Use `OIDC_PORT` and `WARDEN_PORT` in `.env` if 9400 or 3000 are taken. Pass the same `-f` flags to `docker compose down`, or set `COMPOSE_FILE=docker-compose.yml:docker-compose.mock-oidc.yml` in `.env` to make them the default while you try it.
+
+Warden joins the mock IdP's network, so both containers share `localhost`. That matters because the browser and Warden must reach the IdP at the same issuer URL. To reach a database on your machine from there, use `host.docker.internal` (see [below](#reaching-the-database-from-the-container)). Pulling the image needs the same GHCR login as the Warden image (see [releasing](releasing.md#pulling-the-image)).
 
 ## 2. Choose a database
 

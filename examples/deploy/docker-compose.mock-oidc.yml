@@ -1,0 +1,33 @@
+# DEVELOPMENT ONLY. Adds a mock IdP that signs anyone in as a test user, with no password.
+# Never use it in front of real data. See docs/deployment.md.
+#   docker compose -f docker-compose.yml -f docker-compose.mock-oidc.yml up -d
+#
+# This is a separate file rather than a profile because Warden has to join the mock IdP's
+# network (below), which a profile can't switch on and off.
+services:
+  mock-oidc:
+    image: ${MOCK_OIDC_IMAGE:?set MOCK_OIDC_IMAGE in .env (see .env.example)}
+    environment:
+      # The browser and Warden must reach the IdP at the same issuer URL. Warden shares this
+      # container's network, so http://localhost:<port> works for both, as long as the
+      # container listens on the same port the host publishes.
+      MOCK_OIDC_PORT: ${OIDC_PORT:-9400}
+      MOCK_OIDC_ISSUER: http://localhost:${OIDC_PORT:-9400}
+      MOCK_OIDC_REDIRECT_URIS: http://localhost:${WARDEN_PORT:-3000}/auth/callback
+      MOCK_OIDC_POST_LOGOUT_REDIRECT_URIS: http://localhost:${WARDEN_PORT:-3000}/
+    ports:
+      - '${OIDC_PORT:-9400}:${OIDC_PORT:-9400}'
+      # Warden's port is published here because Warden uses this container's network.
+      - '${WARDEN_PORT:-3000}:3000'
+
+  warden:
+    network_mode: service:mock-oidc
+    ports: !reset []
+    environment:
+      WARDEN_PUBLIC_URL: http://localhost:${WARDEN_PORT:-3000}
+      OIDC_ISSUER: http://localhost:${OIDC_PORT:-9400}
+      OIDC_CLIENT_ID: warden
+      OIDC_CLIENT_SECRET: warden-dev-secret
+    depends_on:
+      mock-oidc:
+        condition: service_healthy
