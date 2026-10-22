@@ -32,6 +32,7 @@ import { ColumnPicker } from '@/components/column-picker';
 import { ExportButton } from '@/components/export-button';
 import { FilterBuilder } from '@/components/filter-builder';
 import { SavedViewsMenu } from '@/components/saved-views-menu';
+import { SortMenu } from '@/components/sort-menu';
 import { Badge } from '@/components/ui/badge';
 import { displayText } from '@/components/field-value';
 import { Button } from '@/components/ui/button';
@@ -344,6 +345,12 @@ export function EntityGrid({ entity }: { entity: Entity }) {
           <SearchBox value={state.q} onSearch={(q) => update({ q }, { replace: true })} />
         )}
         <FilterBuilder entity={entity} conditions={conditions} onApply={applyConditions} />
+        <SortMenu
+          entity={entity}
+          sort={state.sort}
+          explicit={Boolean(params.get('sort')?.trim())}
+          onChange={(sort) => update({ sort })}
+        />
         <ColumnPicker
           entity={entity}
           columns={state.columns}
