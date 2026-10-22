@@ -185,7 +185,9 @@ export const MIGRATIONS: readonly Migration[] = [
       alter table warden.sessions
         add column access_token text,
         add column refresh_token text,
-        add column access_token_expires_at timestamptz;
+        add column access_token_expires_at timestamptz,
+        -- Set while one caller refreshes the tokens, so other instances wait instead.
+        add column api_tokens_refreshing_until timestamptz;
     `,
   },
 ];

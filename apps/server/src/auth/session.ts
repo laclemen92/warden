@@ -1,13 +1,15 @@
 import { createCipheriv, createDecipheriv, createHash, hkdfSync, randomBytes } from 'node:crypto';
+import { setTimeout as sleep } from 'node:timers/promises';
 import type { CookieSerializeOptions } from '@fastify/cookie';
 import {
   deleteExpiredSessions,
   deleteSession,
   insertSession,
+  claimSessionApiTokensRefresh,
   readSessionApiTokens,
+  releaseSessionApiTokensRefresh,
   saveSessionApiTokens,
   touchSession,
-  withSessionApiTokensLock,
   type Database,
   type Session,
   type SessionTimeouts,
@@ -50,8 +52,8 @@ export class SignInAgainError extends Error {
 
 /**
  * Renews an access token with a refresh token at the IdP. Throws `RefreshRejectedError` when the
- * IdP refuses the refresh token (revoked, expired, user removed), anything else on failures that
- * might be transient.
+ * IdP refuses the refresh token itself (`invalid_grant`: revoked, expired, user removed), anything
+ * else on failures that might be transient, such as rate limits.
  */
 export type RefreshApiTokens = (refreshToken: string) => Promise<ApiTokens>;
 
@@ -64,6 +66,9 @@ export class RefreshRejectedError extends Error {
 
 /** An access token is refreshed when it has less than this left, so it can't expire in flight. */
 export const ACCESS_TOKEN_MIN_VALIDITY_SECONDS = 60;
+// Longer than openid-client's 30s request timeout, so a claim outlives the refresh it guards.
+const REFRESH_LEASE_SECONDS = 60;
+const REFRESH_POLL_MS = 100;
 
 export interface Sessions {
   /**
@@ -145,7 +150,7 @@ export function createSessions(
     idleSeconds: settings.idleTimeoutSeconds,
     absoluteSeconds: settings.absoluteTimeoutSeconds,
   };
-  // Per session, so concurrent requests on this instance share one refresh (and one connection).
+  // Per session, so concurrent requests on this instance share one refresh.
   const refreshing = new Map<string, Promise<string>>();
 
   const cookie = (name: string, maxAgeSeconds: number) => ({
@@ -185,53 +190,78 @@ export function createSessions(
   };
 
   /**
-   * Refresh the session's access token under its lock, unless another request (or instance)
-   * already did while this one waited. A refresh token the IdP rejects is cleared, so later calls
-   * fail without asking it again.
+   * Refresh the session's access token under its claim, unless another caller already did. A
+   * refresh token the IdP rejects is cleared, so later calls fail without asking it again.
    */
-  const refreshUnderLock = (
+  const refreshClaimed = async (
     req: FastifyRequest,
     token: string,
     tokenHash: Buffer,
     refresh: RefreshApiTokens,
-  ) =>
-    withSessionApiTokensLock(db, tokenHash, async () => {
+  ) => {
+    const release = () => releaseSessionApiTokensRefresh(db, tokenHash);
+    const { stored, accessToken } = await freshAccessToken(token, tokenHash);
+    const refreshToken = stored?.refreshToken
+      ? unseal(token, 'refresh_token', stored.refreshToken)
+      : undefined;
+    if (accessToken || !refreshToken) {
+      await release();
+      if (accessToken) return accessToken;
+      throw new SignInAgainError();
+    }
+
+    let next;
+    try {
+      next = await refresh(refreshToken);
+    } catch (err) {
+      // Only the error code: IdP errors can echo request details.
+      if (err instanceof RefreshRejectedError) {
+        req.log.warn({ error: err.code }, 'access token refresh rejected; sign-in required');
+        await saveSessionApiTokens(db, tokenHash, timeouts, {
+          accessToken: null,
+          refreshToken: null,
+        });
+      } else {
+        req.log.warn(
+          { error: err instanceof Error ? err.name : 'unknown' },
+          'access token refresh failed',
+        );
+        await release();
+      }
+      throw new SignInAgainError();
+    }
+    // IdPs that don't rotate refresh tokens leave the old one valid.
+    const saved = await saveSessionApiTokens(db, tokenHash, timeouts, {
+      accessToken: seal(token, 'access_token', next.accessToken),
+      refreshToken: seal(token, 'refresh_token', next.refreshToken ?? refreshToken),
+      ...(next.expiresIn !== undefined ? { expiresIn: next.expiresIn } : {}),
+    });
+    // Signed out, or the session expired, while refreshing.
+    if (!saved) throw new SignInAgainError();
+    return next.accessToken;
+  };
+
+  /**
+   * Refresh the access token, or wait for whichever caller (on any instance) is refreshing it.
+   * Waiting polls without holding a connection; a claim left by a crashed instance expires.
+   */
+  const refreshShared = async (
+    req: FastifyRequest,
+    token: string,
+    tokenHash: Buffer,
+    refresh: RefreshApiTokens,
+  ) => {
+    const deadline = Date.now() + (REFRESH_LEASE_SECONDS + 5) * 1000;
+    for (;;) {
+      if (await claimSessionApiTokensRefresh(db, tokenHash, timeouts, REFRESH_LEASE_SECONDS)) {
+        return refreshClaimed(req, token, tokenHash, refresh);
+      }
       const { stored, accessToken } = await freshAccessToken(token, tokenHash);
       if (accessToken) return accessToken;
-      const refreshToken = stored?.refreshToken
-        ? unseal(token, 'refresh_token', stored.refreshToken)
-        : undefined;
-      if (!refreshToken) throw new SignInAgainError();
-
-      let next;
-      try {
-        next = await refresh(refreshToken);
-      } catch (err) {
-        // Only the error code: IdP errors can echo request details.
-        if (err instanceof RefreshRejectedError) {
-          req.log.warn({ error: err.code }, 'access token refresh rejected; sign-in required');
-          await saveSessionApiTokens(db, tokenHash, timeouts, {
-            accessToken: null,
-            refreshToken: null,
-          });
-        } else {
-          req.log.warn(
-            { error: err instanceof Error ? err.name : 'unknown' },
-            'access token refresh failed',
-          );
-        }
-        throw new SignInAgainError();
-      }
-      // IdPs that don't rotate refresh tokens leave the old one valid.
-      const saved = await saveSessionApiTokens(db, tokenHash, timeouts, {
-        accessToken: seal(token, 'access_token', next.accessToken),
-        refreshToken: seal(token, 'refresh_token', next.refreshToken ?? refreshToken),
-        ...(next.expiresIn !== undefined ? { expiresIn: next.expiresIn } : {}),
-      });
-      // Signed out, or the session expired, while refreshing.
-      if (!saved) throw new SignInAgainError();
-      return next.accessToken;
-    });
+      if (!stored?.refreshToken || Date.now() > deadline) throw new SignInAgainError();
+      await sleep(REFRESH_POLL_MS);
+    }
+  };
 
   return {
     cookie,
@@ -285,7 +315,7 @@ export function createSessions(
       const key = tokenHash.toString('hex');
       let pending = refreshing.get(key);
       if (!pending) {
-        pending = refreshUnderLock(req, token, tokenHash, refresh).finally(() =>
+        pending = refreshShared(req, token, tokenHash, refresh).finally(() =>
           refreshing.delete(key),
         );
         refreshing.set(key, pending);

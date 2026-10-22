@@ -238,6 +238,46 @@ describe('refreshing', () => {
     expect(refreshes().slice(count)).toEqual([{ grantType: 'refresh_token', ok: true }]);
   });
 
+  it('refreshes more sessions at once than the connection pool holds', async () => {
+    const app = await start();
+    // The main pool has 10 connections; no refresh may hold one while it waits for another.
+    const cookies = await Promise.all(Array.from({ length: 14 }, () => login(app, 'editor')));
+    for (const cookie of cookies) await expire(cookie);
+    const count = refreshes().length;
+    const results = await Promise.all(cookies.map((cookie) => tokenOf(app, cookie)));
+    expect(results.map((r) => r.statusCode)).toEqual(Array(14).fill(200));
+    expect(new Set(results.map((r) => r.json<{ token: string }>().token)).size).toBe(14);
+    expect(refreshes().slice(count)).toEqual(
+      Array(14).fill({ grantType: 'refresh_token', ok: true }),
+    );
+  }, 30_000);
+
+  it('waits for another instance refreshing, and takes over a claim it abandoned', async () => {
+    const app = await start();
+    const cookie = await login(app, 'editor');
+    const old = opened(cookie, (await rowOf(cookie))!);
+    await expire(cookie);
+    // As an instance that crashed mid-refresh would leave it.
+    await sqlPool.query(
+      `update warden.sessions set api_tokens_refreshing_until = now() + interval '1 second'
+       where token_hash = $1`,
+      [tokenHash(cookie)],
+    );
+    const count = refreshes().length;
+    const started = Date.now();
+    const res = await tokenOf(app, cookie);
+    expect(res.statusCode).toBe(200);
+    expect(Date.now() - started).toBeGreaterThanOrEqual(500);
+    expect(res.json<{ token: string }>().token).not.toBe(old.access);
+    expect(refreshes().slice(count)).toEqual([{ grantType: 'refresh_token', ok: true }]);
+    const { rows } = await sqlPool.query<{ until: string | null }>(
+      `select api_tokens_refreshing_until::text as until from warden.sessions
+       where token_hash = $1`,
+      [tokenHash(cookie)],
+    );
+    expect(rows[0]?.until).toBeNull();
+  });
+
   it('asks the user to sign in again when the IdP rejects the refresh token', async () => {
     const app = await start();
     const cookie = await login(app, 'editor');

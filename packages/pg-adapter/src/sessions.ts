@@ -124,31 +124,41 @@ export async function readSessionApiTokens(
 }
 
 /**
- * Run `fn` holding a lock on the session `tokenHash`'s API tokens, across every Warden instance,
- * so only one refreshes them at a time. The lock doesn't block requests using the session.
+ * Claim the refresh of the live session `tokenHash`'s API tokens for `leaseSeconds`, across every
+ * Warden instance, so only one caller refreshes them at a time. Returns `false` while another
+ * caller's claim is unexpired, or without a live session. A lease row rather than an advisory
+ * lock, so no connection is held while the IdP answers. `saveSessionApiTokens` and
+ * `releaseSessionApiTokensRefresh` end the claim.
  */
-export async function withSessionApiTokensLock<T>(
+export async function claimSessionApiTokensRefresh(
   db: Database,
   tokenHash: Buffer,
-  fn: () => Promise<T>,
-): Promise<T> {
-  return db.connection().execute(async (conn) => {
-    // The two-key form is a separate lock space from the migration lock.
-    const key = sql`${SESSION_LOCK_SPACE}, hashtext(encode(${tokenHash}::bytea, 'hex'))`;
-    await sql`select pg_advisory_lock(${key})`.execute(conn);
-    try {
-      return await fn();
-    } finally {
-      await sql`select pg_advisory_unlock(${key})`.execute(conn);
-    }
-  });
+  timeouts: SessionTimeouts,
+  leaseSeconds: number,
+): Promise<boolean> {
+  const result = await sql`
+    update ${SESSIONS}
+    set api_tokens_refreshing_until = now() + make_interval(secs => ${leaseSeconds})
+    where token_hash = ${tokenHash} and ${live(timeouts)}
+      and (api_tokens_refreshing_until is null or api_tokens_refreshing_until <= now())`.execute(
+    db,
+  );
+  return Number(result.numAffectedRows ?? 0) > 0;
 }
 
-const SESSION_LOCK_SPACE = 0x73657373; // "sess"
+/** End a claim from `claimSessionApiTokensRefresh` without changing the tokens. */
+export async function releaseSessionApiTokensRefresh(
+  db: Database,
+  tokenHash: Buffer,
+): Promise<void> {
+  await sql`
+    update ${SESSIONS} set api_tokens_refreshing_until = null
+    where token_hash = ${tokenHash}`.execute(db);
+}
 
 /**
  * Replace the API tokens of the live session `tokenHash` (already encrypted by the caller), or
- * clear them with nulls. Neither timeout is extended. Returns whether the session still exists.
+ * clear them with nulls, and end any refresh claim. Neither timeout is extended. Returns whether the session still exists.
  */
 export async function saveSessionApiTokens(
   db: Database,
@@ -159,7 +169,8 @@ export async function saveSessionApiTokens(
   const result = await sql`
     update ${SESSIONS}
     set access_token = ${tokens.accessToken}, refresh_token = ${tokens.refreshToken},
-        access_token_expires_at = ${tokens.accessToken === null ? sql`null` : expiresAt(tokens.expiresIn)}
+        access_token_expires_at = ${tokens.accessToken === null ? sql`null` : expiresAt(tokens.expiresIn)},
+        api_tokens_refreshing_until = null
     where token_hash = ${tokenHash} and ${live(timeouts)}`.execute(db);
   return Number(result.numAffectedRows ?? 0) > 0;
 }

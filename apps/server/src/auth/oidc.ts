@@ -110,8 +110,9 @@ export function createOidcClient(settings: AuthSettings): OidcClient {
       try {
         return apiTokensFrom(await oidc.refreshTokenGrant(config, refreshToken));
       } catch (err) {
-        // An OAuth error (invalid_grant and the like), not an outage.
-        if (err instanceof oidc.ResponseBodyError && err.status < 500) {
+        // Only invalid_grant means the refresh token itself is dead. Rate limits (429) and client
+        // misconfiguration (invalid_client) are fixable without the user, so the token is kept.
+        if (err instanceof oidc.ResponseBodyError && err.error === 'invalid_grant') {
           throw new RefreshRejectedError(err.error);
         }
         throw err;
