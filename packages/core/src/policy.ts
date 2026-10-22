@@ -173,7 +173,8 @@ const ON_DELETE_SQL = { cascade: 'cascade', setNull: 'set null', setDefault: 'se
  * Warnings for tables that a role (or a custom action, in `actionDeletes`) may hard-delete from
  * and whose rows are referenced by foreign keys that change other rows on delete. Those changes
  * bypass Warden's policy and audit log, so the operator should know which tables they reach,
- * hidden ones included.
+ * hidden ones included. Cascades are followed transitively, since a cascaded delete fires the
+ * foreign keys into the table it deletes from.
  */
 export function deleteCascadeWarnings(
   model: SchemaModel,
@@ -188,16 +189,7 @@ export function deleteCascadeWarnings(
       actionDeletes.has(entity.key) ||
       [...policy.roles.values()].some((g) => g.byEntity.get(entity.key)?.has('delete'));
     if (!granted) continue;
-    const affected = model.tables.flatMap((table) =>
-      table.foreignKeys
-        .filter(
-          (fk) =>
-            fk.onDelete !== undefined &&
-            fk.references.schema === entity.schema &&
-            fk.references.name === entity.name,
-        )
-        .map((fk) => `"${table.schema}.${table.name}" (on delete ${ON_DELETE_SQL[fk.onDelete!]})`),
-    );
+    const affected = cascadeTargets(model, entity.schema, entity.name);
     if (affected.length === 0) continue;
     warnings.push({
       path: `tables.${entity.key}`,
@@ -207,6 +199,36 @@ export function deleteCascadeWarnings(
     });
   }
   return warnings;
+}
+
+function cascadeTargets(model: SchemaModel, schema: string, name: string): string[] {
+  const label = (s: string, n: string) => `"${s}.${n}"`;
+  const start = label(schema, name);
+  const visited = new Set([start]);
+  const queue = [{ schema, name }];
+  const affected: string[] = [];
+  for (let next = queue.shift(); next; next = queue.shift()) {
+    const from = label(next.schema, next.name);
+    for (const table of model.tables) {
+      for (const fk of table.foreignKeys) {
+        if (
+          fk.onDelete === undefined ||
+          fk.references.schema !== next.schema ||
+          fk.references.name !== next.name
+        ) {
+          continue;
+        }
+        const target = label(table.schema, table.name);
+        const via = from === start ? '' : `, via ${from}`;
+        affected.push(`${target} (on delete ${ON_DELETE_SQL[fk.onDelete]}${via})`);
+        if (fk.onDelete === 'cascade' && !visited.has(target)) {
+          visited.add(target);
+          queue.push({ schema: table.schema, name: table.name });
+        }
+      }
+    }
+  }
+  return affected;
 }
 
 /**

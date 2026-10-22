@@ -397,6 +397,12 @@ describe('deleteCascadeWarnings', () => {
       ]),
       withFks(table('invoices', 'billing'), [fk('invoices_order', 'orders')]),
       withFks(table('secrets'), [fk('secrets_user', 'users', 'cascade')]),
+      withFks(table('order_items'), [
+        fk('order_items_order', 'orders', 'cascade'),
+        fk('order_items_parent', 'order_items', 'cascade'),
+      ]),
+      withFks(table('notes'), [fk('notes_item', 'order_items', 'setNull')]),
+      withFks(table('tags'), [fk('tags_note', 'notes')]),
     ],
   };
   const warningsFor = (config: unknown, actionDeletes?: Set<string>) => {
@@ -426,6 +432,25 @@ describe('deleteCascadeWarnings', () => {
     ]);
   });
 
+  it('follows cascades down the chain, and stops at cycles', () => {
+    expect(
+      warningsFor({
+        roles: { ops: { grants: { companies: ['delete'] } } },
+        tables: { companies: { allowDelete: true } },
+      }),
+    ).toEqual([
+      {
+        path: 'tables.companies',
+        message:
+          'deleting a row here also changes rows in "public.orders" (on delete cascade), ' +
+          '"public.order_items" (on delete cascade, via "public.orders"), ' +
+          '"public.order_items" (on delete cascade, via "public.order_items"), ' +
+          '"public.notes" (on delete set null, via "public.order_items"), ' +
+          "outside Warden's policy and audit log",
+      },
+    ]);
+  });
+
   it('says nothing where nobody may delete, or nothing cascades', () => {
     // Off by default; opted in with no grant; denied; `no action` foreign keys only.
     expect(warningsFor({ roles: { ops: { grants: { users: ['delete'] } } } })).toEqual([]);
@@ -438,8 +463,8 @@ describe('deleteCascadeWarnings', () => {
     ).toEqual([]);
     expect(
       warningsFor({
-        roles: { ops: { grants: { orders: ['delete'] } } },
-        tables: { orders: { allowDelete: true } },
+        roles: { ops: { grants: { notes: ['delete'] } } },
+        tables: { notes: { allowDelete: true } },
       }),
     ).toEqual([]);
   });

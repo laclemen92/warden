@@ -125,7 +125,7 @@ Deleting a row through Warden removes it for good. That's riskier than other wri
 2. A role grants `delete` on that table by name (`orders: [delete]`). A `*` grant never includes `delete`.
 3. The table's `deny` doesn't include `delete`. It beats `allowDelete`.
 
-Otherwise a delete gets the same 403 as any other denied write, and the UI shows no delete control. At startup Warden warns about every `delete` grant it ignores, naming the key to add, and about every table some role (or [custom action](#actions)) may delete from whose rows other tables reference with `on delete cascade`, `set null` or `set default`, naming those tables. Foreign keys from tables outside [`schemas`](#schemas) aren't introspected, so they aren't named.
+Otherwise a delete gets the same 403 as any other denied write, and the UI shows no delete control. At startup Warden warns about every `delete` grant it ignores, naming the key to add, and about every table some role (or [custom action](#actions)) may delete from whose rows other tables reference with `on delete cascade`, `set null` or `set default`, naming those tables and any reached further down a chain of `on delete cascade` keys. Foreign keys from tables outside [`schemas`](#schemas) aren't introspected, so they aren't named.
 
 ```yaml
 tables:
