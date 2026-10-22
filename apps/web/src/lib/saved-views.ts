@@ -5,16 +5,24 @@ import { useCurrentUser } from './auth';
 
 // Shape served by apps/server/src/routes/saved-views.ts.
 export interface SavedView {
+  /** Numeric for saved views, `config:<key>` for views defined in config. */
   id: string;
   entity: string;
   name: string;
+  origin: 'config' | 'shared' | 'personal';
   shared: boolean;
   mine: boolean;
   owner: string | null;
   canEdit: boolean;
   /** Null when the view uses a field the user can't see; it can only be replaced or deleted. */
   state: ViewState | null;
-  updatedAt: string;
+  updatedAt?: string;
+  /** Config views: the key in config. */
+  key?: string;
+  sidebar?: true;
+  default?: true;
+  /** A view shared in the UI while shared views come only from config; others don't see it. */
+  notInConfig?: true;
 }
 
 const VIEWS_URL = '/api/views';
@@ -25,22 +33,45 @@ const json = (body: unknown): RequestInit => ({
 
 /** The link that opens a saved view. It always shows the view's current state. */
 export const viewPath = (view: Pick<SavedView, 'entity' | 'id'>) =>
-  `/entities/${encodeURIComponent(view.entity)}?view=${encodeURIComponent(view.id)}`;
+  // Config ids keep their colon: `?view=config:fraud-review`.
+  `/entities/${encodeURIComponent(view.entity)}?view=${encodeURIComponent(view.id).replace('%3A', ':')}`;
 
-/** Whether the current user may share views. The server enforces it either way. */
-export function useCanShareViews(): boolean {
+/**
+ * URL param naming the config view the grid was opened from, so the views menu can tell when
+ * the grid no longer matches it.
+ */
+export const FROM_PARAM = 'from';
+
+/** Whether the current user administers views (exports every shared view). */
+export function useIsViewsAdmin(): boolean {
   const { data: me } = useCurrentUser();
   return me?.admin?.includes('views') ?? false;
 }
 
-export function useSavedViews(entity: string) {
+interface ViewList {
+  views: SavedView[];
+  /** False when the user lacks `admin: [views]`, or shared views come only from config. */
+  canShare: boolean;
+}
+
+export function useViewList(entity: string) {
   return useQuery({
     queryKey: ['views', entity],
-    queryFn: async () =>
-      (await apiFetch<{ views: SavedView[] }>(`${VIEWS_URL}?${new URLSearchParams({ entity })}`))
-        .views,
+    queryFn: () => apiFetch<ViewList>(`${VIEWS_URL}?${new URLSearchParams({ entity })}`),
   });
 }
+
+/** Config views pinned to the sidebar, of every table. */
+export function useSidebarViews() {
+  return useQuery({
+    queryKey: ['views', 'sidebar'],
+    queryFn: async () => (await apiFetch<{ views: SavedView[] }>(`${VIEWS_URL}/sidebar`)).views,
+  });
+}
+
+/** Every view shared in the UI, of every table; views admins only. */
+export const fetchSharedViews = async () =>
+  (await apiFetch<{ views: SavedView[] }>(`${VIEWS_URL}/shared`)).views;
 
 /** One view, for opening a view link. */
 export function useSavedView(id: string | null) {

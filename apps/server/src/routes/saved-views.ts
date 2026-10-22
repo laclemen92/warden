@@ -1,11 +1,14 @@
-import type { WardenConfig } from '@wardenhq/config';
+import type { SharedViewsMode, WardenConfig } from '@wardenhq/config';
 import {
+  CONFIG_VIEW_PREFIX,
   adminAreas,
+  configViewId,
   isAllowed,
   namesRestrictedField,
   validateViewState,
   viewName,
   VIEW_LIMITS,
+  type ConfigView,
   type Entity,
   type FilterError,
   type Policy,
@@ -16,6 +19,7 @@ import {
   deleteSavedView,
   getSavedView,
   listSavedViews,
+  listSharedViews,
   updateSavedView,
   type Database,
   type SavedView,
@@ -31,13 +35,20 @@ export interface SavedViewOptions {
   views: Views;
   /** Config `roles`, for `admin: [views]`, which may share views. */
   roles: WardenConfig['roles'];
+  /** Views from `tables.<table>.views`, checked against the schema at startup. */
+  configViews?: readonly ConfigView[];
+  /** `defaults.sharedViews`; `both` when absent. */
+  sharedViews?: SharedViewsMode;
 }
 
 /** A saved view as one user sees it. */
 export interface SavedViewItem {
+  /** Numeric for saved views, `config:<key>` for config views. */
   id: string;
   entity: string;
   name: string;
+  /** Where it comes from: config, a view shared in the UI, or the user's own private view. */
+  origin: 'config' | 'shared' | 'personal';
   shared: boolean;
   /** Whether the current user owns it. */
   mine: boolean;
@@ -51,7 +62,19 @@ export interface SavedViewItem {
    * of those, only its owner when the field is restricted.
    */
   state: ViewState | null;
-  updatedAt: string;
+  /** Absent for config views. */
+  updatedAt?: string;
+  /** Config views: the key in config. */
+  key?: string;
+  /** Config views: shown in the sidebar. */
+  sidebar?: true;
+  /** Config views: applied when the table is opened without other grid state. */
+  default?: true;
+  /**
+   * With `defaults.sharedViews: config`, a view shared in the UI, which nobody else sees any more.
+   * Only its owner and views admins see it, to export it to config or delete it.
+   */
+  notInConfig?: true;
 }
 
 // Checked in the handler rather than by a schema, so a malformed id 404s like a missing one.
@@ -106,9 +129,14 @@ const duplicate = (reply: FastifyReply) =>
  */
 export function registerSavedViewRoutes(
   app: FastifyInstance,
-  { db, policy, views, roles }: SavedViewOptions,
+  { db, policy, views, roles, configViews = [], sharedViews = 'both' }: SavedViewOptions,
 ) {
-  const canShare = (req: FastifyRequest) => adminAreas(roles, req.roles ?? []).includes('views');
+  const isViewsAdmin = (req: FastifyRequest) =>
+    adminAreas(roles, req.roles ?? []).includes('views');
+  // With `sharedViews: config`, shared views come only from config.
+  const canShare = (req: FastifyRequest) => sharedViews !== 'config' && isViewsAdmin(req);
+  const configOnly = sharedViews === 'config';
+  const configById = new Map(configViews.map((v) => [configViewId(v.key), v]));
 
   /** The entity as the caller sees it, if they may read it. */
   const readable = (req: FastifyRequest, key: string): Entity | undefined =>
@@ -118,7 +146,7 @@ export function registerSavedViewRoutes(
 
   // Owners may always delete their views, but changing a shared view takes the permission.
   const mayDelete = (req: FastifyRequest, view: SavedView) =>
-    view.ownerSubject === req.session!.subject || (view.shared && canShare(req));
+    view.ownerSubject === req.session!.subject || (view.shared && isViewsAdmin(req));
   const mayEdit = (req: FastifyRequest, view: SavedView) =>
     view.shared ? canShare(req) : view.ownerSubject === req.session!.subject;
 
@@ -126,6 +154,8 @@ export function registerSavedViewRoutes(
   const present = (req: FastifyRequest, view: SavedView): SavedViewItem | undefined => {
     const mine = view.ownerSubject === req.session!.subject;
     if (!mine && !view.shared) return undefined;
+    // Left over from before config mode: gone for everyone but those who can clean it up.
+    if (configOnly && view.shared && !mine && !isViewsAdmin(req)) return undefined;
     const entity = readable(req, view.entity);
     if (!entity) return undefined;
     const state = validateViewState(entity, view.state);
@@ -141,12 +171,37 @@ export function registerSavedViewRoutes(
       id: view.id,
       entity: view.entity,
       name: view.name,
+      origin: view.shared ? 'shared' : 'personal',
       shared: view.shared,
       mine,
       owner: view.ownerName,
       canEdit: mayEdit(req, view),
       state: state.ok ? state.state : null,
       updatedAt: view.updatedAt,
+      ...(configOnly && view.shared ? { notInConfig: true as const } : {}),
+    };
+  };
+
+  /**
+   * A config view as the caller sees it. Like a shared view, it exists only for users who can
+   * read its table and every field it uses; unlike one, nobody can change or delete it.
+   */
+  const presentConfig = (req: FastifyRequest, view: ConfigView): SavedViewItem | undefined => {
+    const entity = readable(req, view.entity);
+    if (!entity || !validateViewState(entity, view.state).ok) return undefined;
+    return {
+      id: configViewId(view.key),
+      entity: view.entity,
+      name: view.name,
+      origin: 'config',
+      shared: true,
+      mine: false,
+      owner: null,
+      canEdit: false,
+      state: view.state,
+      key: view.key,
+      ...(view.sidebar ? { sidebar: true as const } : {}),
+      ...(view.default ? { default: true as const } : {}),
     };
   };
 
@@ -157,6 +212,12 @@ export function registerSavedViewRoutes(
 
   /** Load a view the caller can see, sending a 404 otherwise. */
   const load = async (req: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+    if (req.params.id.startsWith(CONFIG_VIEW_PREFIX)) {
+      const config = configById.get(req.params.id);
+      const item = config && presentConfig(req, config);
+      if (!item) notFound(reply);
+      return item ? { view: undefined, item } : undefined;
+    }
     const view = isId(req.params.id) ? await getSavedView(db, req.params.id) : undefined;
     const item = view && present(req, view);
     if (!view || !item) {
@@ -184,9 +245,35 @@ export function registerSavedViewRoutes(
         entity: req.query.entity,
         subject: req.session!.subject,
       });
-      return { views: rows.flatMap((view) => present(req, view) ?? []) };
+      return {
+        views: [
+          ...configViews.flatMap((view) =>
+            view.entity === req.query.entity ? (presentConfig(req, view) ?? []) : [],
+          ),
+          ...rows.flatMap((view) => present(req, view) ?? []),
+        ],
+        // Whether the caller may share views here, so the UI can leave out the controls.
+        canShare: canShare(req),
+      };
     },
   );
+
+  // Config views with their own sidebar entry, of every table.
+  app.get('/api/views/sidebar', async (req) => ({
+    views: configViews.flatMap((view) => (view.sidebar ? (presentConfig(req, view) ?? []) : [])),
+  }));
+
+  // Every view shared in the UI, of every table, for views admins to export to config.
+  app.get('/api/views/shared', async (req, reply) => {
+    if (!isViewsAdmin(req)) return forbidden(reply);
+    const rows = await listSharedViews(db);
+    return {
+      views: rows.flatMap((view) => {
+        const item = present(req, view);
+        return item?.state ? [item] : [];
+      }),
+    };
+  });
 
   app.get<{ Params: { id: string } }>(
     '/api/views/:id',
@@ -250,6 +337,8 @@ export function registerSavedViewRoutes(
       const found = await load(req, reply);
       if (!found) return reply;
       const { view } = found;
+      // Config views change only through config.
+      if (!view) return forbidden(reply);
       // Sharing, unsharing, or changing a shared view all take the permission.
       if (!mayEdit(req, view)) return forbidden(reply);
       if (req.body.shared !== undefined && req.body.shared !== view.shared && !canShare(req)) {
@@ -286,10 +375,9 @@ export function registerSavedViewRoutes(
   app.delete<{ Params: { id: string } }>('/api/views/:id', async (req, reply) => {
     const found = await load(req, reply);
     if (!found) return reply;
-    if (!mayDelete(req, found.view)) return forbidden(reply);
-    const deleted = await deleteSavedView(db, found.view.id, {
-      expectShared: found.view.shared,
-    });
+    const { view } = found;
+    if (!view || !mayDelete(req, view)) return forbidden(reply);
+    const deleted = await deleteSavedView(db, view.id, { expectShared: view.shared });
     return deleted ? reply.code(204).send() : notFound(reply);
   });
 }

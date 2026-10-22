@@ -267,6 +267,7 @@ describe('sort menu', SLOW, () => {
         id: '7',
         name: 'Linked',
         entity: 'orders',
+        origin: 'personal',
         shared: false,
         mine: true,
         owner: 'Ada',

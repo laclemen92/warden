@@ -15,7 +15,7 @@ import { registerEntityRoutes } from './routes/entities.js';
 import { registerExportRoutes, type ExportRouteOptions } from './routes/export.js';
 import { registerPolicy } from './routes/policy.js';
 import { registerRoleRoutes, type RoleRoutesOptions } from './routes/roles.js';
-import { registerSavedViewRoutes } from './routes/saved-views.js';
+import { registerSavedViewRoutes, type SavedViewOptions } from './routes/saved-views.js';
 import { registerSchemaDriftRoutes, type SchemaDriftOptions } from './routes/schema-drift.js';
 import { createViews } from './views.js';
 
@@ -53,6 +53,8 @@ export interface AppOptions {
   /** Release version (`WARDEN_VERSION`, baked into the image); reported by /healthz. */
   version?: string;
   logger?: FastifyServerOptions['logger'];
+  /** Config views and `defaults.sharedViews`. */
+  savedViews?: Pick<SavedViewOptions, 'configViews' | 'sharedViews'>;
 }
 
 export async function buildApp({
@@ -69,6 +71,7 @@ export async function buildApp({
   bodyLimit,
   version,
   logger = false,
+  savedViews,
 }: AppOptions = {}) {
   if ((schema || drift || roles) && !auth) throw new Error('auth is required to serve /api routes');
   if (schema && db && !policy) throw new Error('policy is required to serve entity routes');
@@ -129,7 +132,7 @@ export async function buildApp({
       audit,
     });
     registerExportRoutes(app, { db, policy, views, ...exports, audit });
-    registerSavedViewRoutes(app, { db, policy, views, roles: auth?.roles ?? {} });
+    registerSavedViewRoutes(app, { db, policy, views, roles: auth?.roles ?? {}, ...savedViews });
     if (actions && auth) {
       registerActionRoutes(app, {
         ...actions,

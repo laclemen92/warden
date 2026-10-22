@@ -116,6 +116,7 @@ describe('saved views', () => {
       id: expect.stringMatching(/^\d+$/),
       entity: 'users',
       name: 'Active users',
+      origin: 'personal',
       shared: false,
       mine: true,
       owner: 'Vera Viewer',

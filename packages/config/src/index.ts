@@ -20,10 +20,14 @@ export {
   type TableConfig,
   type WardenConfig,
   type WriteAction,
+  VIEW_KEY,
+  type SharedViewsMode,
+  type ViewConfig,
 } from './schema.js';
 export {
   CONFIG_FILE_NAMES,
   ConfigError,
+  configError,
   loadConfig,
   parseConfig,
   requireAccess,

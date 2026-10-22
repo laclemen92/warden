@@ -123,6 +123,43 @@ const columnConfigSchema = z.strictObject({
   writableBy: roleList.optional(),
 });
 
+/** Config view keys: lowercase words joined by hyphens, as in `?view=config:fraud-review`. */
+export const VIEW_KEY = /^[a-z0-9]+(-[a-z0-9]+)*$/;
+
+/** A shared grid view defined in config. Fields are checked against the database at startup. */
+const viewConfigSchema = z.strictObject({
+  /** Stable id, unique across all tables. Links use `?view=config:<key>`. */
+  key: z
+    .string()
+    .max(100)
+    .regex(VIEW_KEY, 'Expected lowercase letters, digits and hyphens, such as "fraud-review"'),
+  name: z
+    .string()
+    .trim()
+    .min(1)
+    .max(100)
+    .refine((n) => !n.includes('\0'), 'Must not contain NUL'),
+  /** A filter, as the list endpoint takes it. */
+  filter: z.unknown().optional(),
+  /** Free-text search. */
+  search: z.string().trim().min(1).max(1000).optional(),
+  sort: z
+    .array(
+      z.strictObject({
+        column: name,
+        direction: z.enum(['asc', 'desc']).default('asc'),
+      }),
+    )
+    .min(1)
+    .optional(),
+  /** Visible columns, in the grid's usual order. Without it, every column is shown. */
+  columns: z.array(name).min(1).optional(),
+  /** Give the view its own entry in the sidebar. */
+  sidebar: z.boolean().optional(),
+  /** Open this view when the table is opened without other grid state. */
+  default: z.boolean().optional(),
+});
+
 const tableConfigSchema = z
   .strictObject({
     hidden: z.boolean().optional(),
@@ -164,6 +201,8 @@ const tableConfigSchema = z
      * Warden's or the application's, fail with unique violations when it reaches that key.
      */
     insertablePrimaryKey: z.boolean().optional(),
+    /** Shared grid views of this table, read-only in the UI. */
+    views: z.array(viewConfigSchema).optional(),
   })
   .superRefine((table, ctx) => {
     for (const [column, config] of Object.entries(table.columns)) {
@@ -225,6 +264,21 @@ const tableConfigSchema = z
         });
       }
     });
+    if (table.views?.length && table.hidden) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['views'],
+        message: 'a hidden table cannot have views',
+      });
+    }
+    const defaults = table.views?.flatMap((v, i) => (v.default ? [i] : [])) ?? [];
+    for (const i of defaults.slice(1)) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['views', i, 'default'],
+        message: 'only one view per table can be the default',
+      });
+    }
   });
 
 /** Audit entry fields Warden writes, mapped to a column of the audit table (`audit.columns`). */
@@ -339,6 +393,11 @@ export const wardenConfigSchema = z
         requireReason: z.array(z.enum(WRITE_ACTIONS)).default([...WRITE_ACTIONS]),
         /** The shortest required reason, after trimming, so "." or "fix" doesn't count. */
         reasonMinLength: z.number().int().min(1).max(MAX_REASON_LENGTH).default(10),
+        /**
+         * Where shared views come from. `config`: only `tables.<table>.views`; sharing in the UI is
+         * refused. `ui`: only views shared in the UI; config views are an error. `both`: either.
+         */
+        sharedViews: z.enum(['config', 'ui', 'both']).default('both'),
       })
       .prefault({}),
     tables: z.record(tableKey, tableConfigSchema).default({}),
@@ -378,6 +437,28 @@ export const wardenConfigSchema = z
           });
         }
       }
+    }
+    // Keys are global so `?view=config:<key>` names one view without its table.
+    const viewKeys = new Map<string, string>();
+    for (const [key, table] of Object.entries(config.tables)) {
+      table.views?.forEach((view, i) => {
+        const path = ['tables', key, 'views', i];
+        if (config.defaults.sharedViews === 'ui') {
+          ctx.addIssue({
+            code: 'custom',
+            path,
+            message: 'config views need `defaults.sharedViews: config` or `both`',
+          });
+        }
+        const other = viewKeys.get(view.key);
+        if (other !== undefined) {
+          ctx.addIssue({
+            code: 'custom',
+            path: [...path, 'key'],
+            message: `view key "${view.key}" is already used by a view of "${other}"`,
+          });
+        } else viewKeys.set(view.key, key);
+      });
     }
     if (config.actor) checkSchema(config.actor.table, ['actor', 'table']);
     for (const [role, { grants }] of Object.entries(config.roles)) {
@@ -477,6 +558,8 @@ export const wardenConfigSchema = z
 export type WardenConfig = z.infer<typeof wardenConfigSchema>;
 export type TableConfig = z.infer<typeof tableConfigSchema>;
 export type ColumnConfig = z.infer<typeof columnConfigSchema>;
+export type ViewConfig = z.infer<typeof viewConfigSchema>;
+export type SharedViewsMode = WardenConfig['defaults']['sharedViews'];
 export type RoleConfig = z.infer<typeof roleConfigSchema>;
 export type AccessConfig = z.infer<typeof accessConfigSchema>;
 export type ActionConfig = z.infer<typeof actionConfigSchema>;
