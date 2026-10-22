@@ -12,8 +12,13 @@ const CLIENT_SECRET = 'test-client-secret';
 
 export function startTestIdp({
   endSession = true,
+  legacyLogout = false,
   users,
-}: { endSession?: boolean; users?: readonly MockUser[] } = {}): Promise<MockOidc> {
+}: {
+  endSession?: boolean;
+  legacyLogout?: boolean;
+  users?: readonly MockUser[];
+} = {}): Promise<MockOidc> {
   return startMockOidc({
     ...(users ? { users } : {}),
     clients: [
@@ -25,6 +30,7 @@ export function startTestIdp({
       },
     ],
     endSession,
+    legacyLogout,
   });
 }
 

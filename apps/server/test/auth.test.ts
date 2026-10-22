@@ -9,7 +9,7 @@ import { readExampleSql, startPostgres, type TestDatabase } from '@wardenhq/test
 import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { openIdToken, sealIdToken } from '../src/auth/session.js';
-import { parseAuthSettings, parseDuration } from '../src/auth/settings.js';
+import { buildLogoutUrl, parseAuthSettings, parseDuration } from '../src/auth/settings.js';
 import { safeReturnTo } from '../src/routes/auth.js';
 import { createWarden } from '../src/warden.js';
 import {
@@ -647,6 +647,61 @@ describe('IdP logout', () => {
     }
   });
 
+  it('falls back to OIDC_LOGOUT_URL without an end_session_endpoint, ending the IdP session', async () => {
+    const legacyIdp = await startTestIdp({ endSession: false, legacyLogout: true });
+    const legacyApp = await start({
+      OIDC_ISSUER: legacyIdp.issuer,
+      OIDC_LOGOUT_URL: `${legacyIdp.issuer}/v2/logout?client_id={clientId}&returnTo={postLogoutRedirect}`,
+    });
+    try {
+      const jar = new Map<string, string>();
+      const { authorizeUrl, cookies } = await beginLogin(legacyApp);
+      const res = await callback(
+        legacyApp,
+        await signInAtIdp(authorizeUrl, 'editor', jar),
+        cookies,
+      );
+      const cookie = [...cookiesFrom(res.headers['set-cookie'])]
+        .filter(([k]) => k.includes('warden_session'))
+        .map(([k, v]) => `${k}=${v}`)[0]!;
+      const authorize = async () =>
+        (await idpRequest(jar, (await beginLogin(legacyApp)).authorizeUrl)).location;
+      expect(await authorize()).toMatch(new RegExp(`^${PUBLIC_URL}/auth/callback\\?`));
+
+      const out = await legacyApp.inject({
+        method: 'POST',
+        url: '/auth/logout',
+        headers: { cookie },
+        payload: {},
+      });
+      expect(out.statusCode).toBe(200);
+      const { redirectTo } = out.json<{ redirectTo: string }>();
+      expect(redirectTo).toBe(
+        `${legacyIdp.issuer}/v2/logout?client_id=warden&returnTo=${encodeURIComponent(`${PUBLIC_URL}/`)}`,
+      );
+
+      expect((await idpRequest(jar, redirectTo)).location).toBe(`${PUBLIC_URL}/`);
+      expect(new URL((await authorize())!).pathname).toMatch(/^\/interaction\//);
+    } finally {
+      await legacyApp.close();
+      await legacyIdp.close();
+    }
+  });
+
+  it('prefers the end_session_endpoint over OIDC_LOGOUT_URL', async () => {
+    const both = await start({
+      OIDC_LOGOUT_URL: `${idp.issuer}/v2/logout?client_id={clientId}&returnTo={postLogoutRedirect}`,
+    });
+    try {
+      const out = await both.inject({ method: 'POST', url: '/auth/logout', payload: {} });
+      const url = new URL(out.json<{ redirectTo: string }>().redirectTo);
+      expect(url.pathname).not.toBe('/v2/logout');
+      expect(url.searchParams.get('post_logout_redirect_uri')).toBe(`${PUBLIC_URL}/`);
+    } finally {
+      await both.close();
+    }
+  });
+
   it('still logs out of Warden when the IdP is down', async () => {
     const downApp = await start({ OIDC_ISSUER: 'http://127.0.0.1:9' });
     try {
@@ -787,6 +842,132 @@ describe('settings', () => {
     await expect(
       createWarden({ env: { DATABASE_URL: db.connectionString, OIDC_ISSUER: idp.issuer } }),
     ).rejects.toThrow(/Invalid auth settings/);
+  });
+
+  const AUTH0_LOGOUT =
+    'https://accounts.example.com/v2/logout?client_id={clientId}&returnTo={postLogoutRedirect}';
+
+  it('accepts an OIDC_LOGOUT_URL template on the issuer origin', () => {
+    expect(parseAuthSettings({ ...valid, OIDC_LOGOUT_URL: AUTH0_LOGOUT })).toMatchObject({
+      logoutUrl: AUTH0_LOGOUT,
+    });
+    expect(
+      parseAuthSettings({
+        ...valid,
+        OIDC_ISSUER: 'http://localhost:9400',
+        OIDC_LOGOUT_URL: 'http://localhost:9400/logout?returnTo={postLogoutRedirect}',
+      }).logoutUrl,
+    ).toBeDefined();
+    expect(parseAuthSettings(valid)).not.toHaveProperty('logoutUrl');
+  });
+
+  it.each([
+    ['http://accounts.example.com/v2/logout?returnTo={postLogoutRedirect}', /must use https/],
+    ['https://evil.example/v2/logout?returnTo={postLogoutRedirect}', /same origin as OIDC_ISSUER/],
+    ['https://accounts.example.com.evil.example/v2/logout', /same origin/],
+    ['https://accounts.example.com:8443/v2/logout', /same origin/],
+    [
+      'https://accounts.example.com/v2/logout?returnTo={returnTo}',
+      /unknown placeholder \{returnTo\}/,
+    ],
+    ['https://accounts.example.com/v2/logout?u={idToken}', /unknown placeholder/],
+    ['https://accounts.example.com/{clientId}/logout', /placeholders in the query/],
+    ['https://{clientId}/logout', /placeholders in the query/],
+    ['https://accounts.example.com/v2/logout?x={clientId', /unmatched/],
+    ['https://accounts.example.com/v2/logout#{clientId}', /fragment/],
+    ['https://user:pw@accounts.example.com/v2/logout', /credentials/],
+    ['not a url', /must be a URL/],
+  ])('rejects OIDC_LOGOUT_URL %s', (OIDC_LOGOUT_URL, message) => {
+    expect(() => parseAuthSettings({ ...valid, OIDC_LOGOUT_URL })).toThrow(message);
+  });
+
+  it('URL-encodes values filled into OIDC_LOGOUT_URL', () => {
+    const url = buildLogoutUrl(AUTH0_LOGOUT, {
+      clientId: 'a&b=c',
+      postLogoutRedirect: 'https://warden.example.com/?x=1#y',
+    });
+    expect(url.origin).toBe('https://accounts.example.com');
+    expect([...url.searchParams]).toEqual([
+      ['client_id', 'a&b=c'],
+      ['returnTo', 'https://warden.example.com/?x=1#y'],
+    ]);
+  });
+
+  it('parses OIDC_AUDIENCE and OIDC_AUTH_PARAMS', () => {
+    expect(parseAuthSettings(valid).authParams).toEqual({});
+    expect(
+      parseAuthSettings({
+        ...valid,
+        OIDC_AUDIENCE: 'https://api.example.com',
+        OIDC_AUTH_PARAMS: 'organization=org_123&connection=google-oauth2&prompt=login&x=a%26b+c',
+      }).authParams,
+    ).toEqual({
+      audience: 'https://api.example.com',
+      organization: 'org_123',
+      connection: 'google-oauth2',
+      prompt: 'login',
+      x: 'a&b c',
+    });
+  });
+
+  it.each([
+    ['redirect_uri=https://evil.example/cb', /must not set redirect_uri/],
+    ['state=x', /must not set state/],
+    ['nonce=x', /must not set nonce/],
+    ['code_challenge=x', /must not set code_challenge/],
+    ['code_challenge_method=plain', /must not set code_challenge_method/],
+    ['scope=openid', /must not set scope/],
+    ['response_type=token', /must not set response_type/],
+    ['response_mode=fragment', /must not set response_mode/],
+    ['client_id=other', /must not set client_id/],
+    ['request_uri=https://evil.example/r', /must not set request_uri/],
+    ['request=eyJ', /must not set request\b/],
+    ['prompt=login&Redirect_URI=x', /must not set Redirect_URI/],
+    ['redirect%5Furi=x', /must not set redirect_uri/],
+    ['prompt', /key=value pairs/],
+    ['=x', /key=value pairs/],
+    ['prompt=', /key=value pairs/],
+    ['prompt=login&prompt=none', /more than once/],
+    ['x=%E0%A4%A', /invalid escape/],
+  ])('rejects OIDC_AUTH_PARAMS %s', (OIDC_AUTH_PARAMS, message) => {
+    expect(() => parseAuthSettings({ ...valid, OIDC_AUTH_PARAMS })).toThrow(message);
+  });
+
+  it('rejects an audience set twice', () => {
+    expect(() =>
+      parseAuthSettings({ ...valid, OIDC_AUDIENCE: 'a', OIDC_AUTH_PARAMS: 'audience=b' }),
+    ).toThrow(/not both/);
+  });
+
+  it('fails startup on a reserved OIDC_AUTH_PARAMS key or a foreign OIDC_LOGOUT_URL', async () => {
+    await expect(
+      start({ OIDC_AUTH_PARAMS: 'redirect_uri=https://evil.example/cb' }),
+    ).rejects.toThrow(/Invalid auth settings[\s\S]*must not set redirect_uri/);
+    await expect(
+      start({ OIDC_LOGOUT_URL: 'https://evil.example/logout?returnTo={postLogoutRedirect}' }),
+    ).rejects.toThrow(/Invalid auth settings[\s\S]*same origin/);
+  });
+
+  it('sends OIDC_AUDIENCE and OIDC_AUTH_PARAMS on the authorization URL', async () => {
+    const paramApp = await start({
+      OIDC_AUDIENCE: 'https://api.example.com',
+      OIDC_AUTH_PARAMS: 'organization=org_123&prompt=login',
+    });
+    try {
+      const { authorizeUrl, cookies } = await beginLogin(paramApp);
+      const url = new URL(authorizeUrl);
+      expect(url.searchParams.get('audience')).toBe('https://api.example.com');
+      expect(url.searchParams.get('organization')).toBe('org_123');
+      expect(url.searchParams.get('prompt')).toBe('login');
+      expect(url.searchParams.get('redirect_uri')).toBe(`${PUBLIC_URL}/auth/callback`);
+      expect(url.searchParams.get('code_challenge_method')).toBe('S256');
+      // The IdP accepts the extras and the login completes.
+      const res = await callback(paramApp, await signInAtIdp(authorizeUrl, 'viewer'), cookies);
+      expect(res.statusCode).toBe(302);
+      expect(String(res.headers['set-cookie'])).toContain('warden_session=');
+    } finally {
+      await paramApp.close();
+    }
   });
 
   it('only accepts same-origin paths as returnTo', () => {

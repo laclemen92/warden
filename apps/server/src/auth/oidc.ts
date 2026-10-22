@@ -1,5 +1,5 @@
 import * as oidc from 'openid-client';
-import type { AuthSettings } from './settings.js';
+import { buildLogoutUrl, type AuthSettings } from './settings.js';
 
 /** Per-login values kept in the browser between /auth/login and /auth/callback. */
 export interface LoginChecks {
@@ -17,8 +17,8 @@ export interface OidcClient {
   /** Exchange the callback's code and return the validated ID token and its claims. */
   finish(callbackUrl: URL, checks: LoginChecks): Promise<{ claims: oidc.IDToken; idToken: string }>;
   /**
-   * The IdP's logout URL (RP-initiated logout), so it ends its own session too; `undefined` when
-   * the IdP doesn't advertise an `end_session_endpoint`.
+   * The IdP's logout URL (RP-initiated logout), so it ends its own session too. Falls back to
+   * `OIDC_LOGOUT_URL` without an `end_session_endpoint`; `undefined` when neither exists.
    */
   endSessionUrl(idToken?: string): Promise<URL | undefined>;
 }
@@ -52,6 +52,7 @@ export function createOidcClient(settings: AuthSettings): OidcClient {
         codeVerifier: oidc.randomPKCECodeVerifier(),
       };
       const url = oidc.buildAuthorizationUrl(config, {
+        ...settings.authParams,
         redirect_uri: redirectUri,
         scope: settings.scopes,
         state: checks.state,
@@ -77,7 +78,14 @@ export function createOidcClient(settings: AuthSettings): OidcClient {
 
     async endSessionUrl(idToken) {
       const config = await configuration();
-      if (!config.serverMetadata().end_session_endpoint) return undefined;
+      if (!config.serverMetadata().end_session_endpoint) {
+        return settings.logoutUrl
+          ? buildLogoutUrl(settings.logoutUrl, {
+              clientId: settings.clientId,
+              postLogoutRedirect: postLogoutRedirectUri,
+            })
+          : undefined;
+      }
       // buildEndSessionUrl adds client_id, which some IdPs need when the hint is missing.
       return oidc.buildEndSessionUrl(config, {
         post_logout_redirect_uri: postLogoutRedirectUri,
