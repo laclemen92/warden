@@ -49,13 +49,13 @@ MOCK_OIDC_IMAGE=ghcr.io/laclemen92/warden-mock-oidc:1.0.0-rc.1
 WARDEN_SESSION_SECRET=local-only-session-secret-not-for-production
 ```
 
-Grant the test users a role in `warden.config.yaml`, e.g. `access.emailDomains: { example.com: [viewer] }` (the starter config already does), then start both files together:
+Grant the test users a role in `warden.config.yaml`, e.g. `access.emailDomains: { example.com: [viewer] }` (the starter config already does), then start both files together. `--profile local-db` also starts the bundled Postgres that the default `DATABASE_URL` points at (empty until you [copy a database into it](#a-copy-of-your-database-safest-way-to-try-it)). Leave it out if `DATABASE_URL` points at another database:
 
 ```sh
-docker compose -f docker-compose.yml -f docker-compose.mock-oidc.yml up -d
+docker compose --profile local-db -f docker-compose.yml -f docker-compose.mock-oidc.yml up -d
 ```
 
-Open http://localhost:3000 and pick a test user. The file sets `OIDC_ISSUER`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, and `WARDEN_PUBLIC_URL` for Warden, overriding `.env`, so leave those as they are for when you switch to a real IdP. Use `OIDC_PORT` and `WARDEN_PORT` in `.env` if 9400 or 3000 are taken. Pass the same `-f` flags to `docker compose down`, or set `COMPOSE_FILE=docker-compose.yml:docker-compose.mock-oidc.yml` in `.env` to make them the default while you try it.
+Open http://localhost:3000 and pick a test user. Both ports are published on `127.0.0.1` only, so other machines on your network can't reach them. The file sets `OIDC_ISSUER`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, and `WARDEN_PUBLIC_URL` for Warden, overriding `.env`, so leave those as they are for when you switch to a real IdP. Use `OIDC_PORT` and `WARDEN_PORT` in `.env` if 9400 or 3000 are taken. Pass the same flags to `docker compose down`, or set `COMPOSE_FILE=docker-compose.yml:docker-compose.mock-oidc.yml` and `COMPOSE_PROFILES=local-db` in `.env` to make them the default while you try it.
 
 Warden joins the mock IdP's network, so both containers share `localhost`. That matters because the browser and Warden must reach the IdP at the same issuer URL. To reach a database on your machine from there, use `host.docker.internal` (see [below](#reaching-the-database-from-the-container)). Pulling the image needs the same GHCR login as the Warden image (see [releasing](releasing.md#pulling-the-image)).
 
