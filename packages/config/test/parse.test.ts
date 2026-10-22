@@ -119,6 +119,20 @@ tables:
     ]);
   });
 
+  it('rejects hidden or repeated columns in columnOrder', () => {
+    expect(
+      issues(`tables:
+  users:
+    columnOrder: [email, password_hash, email]
+    columns:
+      password_hash: { hidden: true }
+`).map((i) => [i.path, i.message]),
+    ).toEqual([
+      ['tables.users.columnOrder.1', '"password_hash" is hidden and cannot be ordered'],
+      ['tables.users.columnOrder.2', '"email" appears more than once'],
+    ]);
+  });
+
   it('requires qualified table keys to use a listed schema', () => {
     expect(issues(`tables:\n  billing.invoices: {}\n`)).toMatchObject([
       { path: 'tables.billing.invoices', message: 'schema "billing" is not listed in `schemas`' },

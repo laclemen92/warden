@@ -1,4 +1,4 @@
-import type { Entity } from '@wardenhq/core';
+import { gridColumnOrder, type Entity } from '@wardenhq/core';
 import { Columns3 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
@@ -22,6 +22,10 @@ interface ColumnPickerProps {
 /** Shows and hides grid columns. At least one column stays visible. */
 export function ColumnPicker({ entity, columns, onChange }: ColumnPickerProps) {
   const visible = new Set(columns ?? entity.fields.map((f) => f.name));
+  const ordered = gridColumnOrder(entity).flatMap((name) => {
+    const field = entity.fields.find((f) => f.name === name);
+    return field ? [field] : [];
+  });
   const toggle = (name: string, show: boolean) => {
     const next = entity.fields
       .map((f) => f.name)
@@ -44,7 +48,7 @@ export function ColumnPicker({ entity, columns, onChange }: ColumnPickerProps) {
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="max-h-96 overflow-y-auto">
         <DropdownMenuLabel>Visible columns</DropdownMenuLabel>
-        {entity.fields.map((field) => (
+        {ordered.map((field) => (
           <DropdownMenuCheckboxItem
             key={field.name}
             checked={visible.has(field.name)}

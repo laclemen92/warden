@@ -118,6 +118,8 @@ const tableConfigSchema = z
         direction: z.enum(['asc', 'desc']).default('asc'),
       })
       .optional(),
+    /** Columns the grid shows first, in this order; the rest follow in the default order. */
+    columnOrder: z.array(name).optional(),
     /** Columns included in the grid's free-text search. */
     searchable: z.array(name).optional(),
     columns: z.record(name, columnConfigSchema).default({}),
@@ -179,6 +181,21 @@ const tableConfigSchema = z
         message: `"${table.defaultSort.column}" is hidden and cannot be sorted on`,
       });
     }
+    table.columnOrder?.forEach((column, i) => {
+      if (hidden(column)) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['columnOrder', i],
+          message: `"${column}" is hidden and cannot be ordered`,
+        });
+      } else if (table.columnOrder!.indexOf(column) !== i) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['columnOrder', i],
+          message: `"${column}" appears more than once`,
+        });
+      }
+    });
     table.searchable?.forEach((column, i) => {
       if (hidden(column)) {
         ctx.addIssue({

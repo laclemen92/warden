@@ -9,6 +9,7 @@ import {
 } from '@tanstack/react-table';
 import {
   MAX_SORT_TERMS,
+  gridColumnOrder,
   isSortable,
   type Condition,
   type Entity,
@@ -23,8 +24,8 @@ import {
   Search,
   X,
 } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useLocation, useSearchParams } from 'react-router';
+import { useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
+import { Link, useLocation, useNavigate, useSearchParams } from 'react-router';
 import { cn } from 'cn';
 import { BulkActionsBar, EntityActionsMenu, RowActionsMenu } from '@/components/actions-menu';
 import { ColumnPicker } from '@/components/column-picker';
@@ -86,6 +87,10 @@ function CellValue({ value }: { value: unknown }) {
     </span>
   );
 }
+
+// Double-clicks on these keep their own meaning instead of opening the row.
+const INTERACTIVE =
+  'a, button, input, select, textarea, label, [role="checkbox"], [role="menuitem"]';
 
 function SearchBox({ value, onSearch }: { value: string; onSearch: (q: string) => void }) {
   const [text, setText] = useState(value);
@@ -173,11 +178,28 @@ export function EntityGrid({ entity }: { entity: Entity }) {
     });
   };
 
-  const fields = useMemo(
-    () =>
-      state.columns ? entity.fields.filter((f) => state.columns!.includes(f.name)) : entity.fields,
-    [entity, state.columns],
-  );
+  const fields = useMemo(() => {
+    const byName = new Map(entity.fields.map((f) => [f.name, f]));
+    return gridColumnOrder(entity).flatMap((name) => {
+      const field = byName.get(name);
+      return field && (!state.columns || state.columns.includes(name)) ? [field] : [];
+    });
+  }, [entity, state.columns]);
+
+  const navigate = useNavigate();
+  // The double-click itself selects a word, so check for a selection when it starts instead: a
+  // user who had text selected is copying, not opening.
+  const selectedOnPress = useRef(false);
+  const pressRow = (e: MouseEvent<HTMLTableRowElement>) => {
+    if (e.detail === 1) selectedOnPress.current = Boolean(window.getSelection()?.toString());
+  };
+  const openRow = (e: MouseEvent<HTMLTableRowElement>, id: string) => {
+    const target = e.target as Element;
+    // Events from portals (an open actions menu) bubble through React's tree, not the DOM's.
+    if (!e.currentTarget.contains(target) || target.closest(INTERACTIVE)) return;
+    if (selectedOnPress.current) return;
+    void navigate(recordPath(entity, id));
+  };
 
   // Custom actions: per row, and on a selection of rows. Rows need ids for either.
   const addressable = entity.primaryKey.length > 0;
@@ -454,15 +476,27 @@ export function EntityGrid({ entity }: { entity: Entity }) {
                   </TableCell>
                 </TableRow>
               ) : (
-                table.getRowModel().rows.map((row) => (
-                  <TableRow key={row.id}>
-                    {row.getAllCells().map((cell) => (
-                      <TableCell key={cell.id}>
-                        <table.FlexRender cell={cell} />
-                      </TableCell>
-                    ))}
-                  </TableRow>
-                ))
+                table.getRowModel().rows.map((row) => {
+                  const id = row.original.id;
+                  return (
+                    <TableRow
+                      key={row.id}
+                      {...(id !== null
+                        ? {
+                            className: 'cursor-pointer',
+                            onMouseDown: pressRow,
+                            onDoubleClick: (e) => openRow(e, id),
+                          }
+                        : {})}
+                    >
+                      {row.getAllCells().map((cell) => (
+                        <TableCell key={cell.id}>
+                          <table.FlexRender cell={cell} />
+                        </TableCell>
+                      ))}
+                    </TableRow>
+                  );
+                })
               )}
             </TableBody>
           </Table>
