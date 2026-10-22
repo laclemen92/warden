@@ -3,8 +3,8 @@ import { existsSync } from 'node:fs';
 import { STATUS_CODES } from 'node:http';
 import fastifyStatic from '@fastify/static';
 import type { AnyActionDefinition } from '@wardenhq/actions';
-import type { ActionPolicy, EffectiveSchema, Policy } from '@wardenhq/core';
-import { isDataError, type Database } from '@wardenhq/pg-adapter';
+import type { ActionPolicy, AuditStore, EffectiveSchema, Policy } from '@wardenhq/core';
+import { AuditUnavailableError, isDataError, type Database } from '@wardenhq/pg-adapter';
 import Fastify, { type FastifyServerOptions } from 'fastify';
 import { redactingLogger } from './logging.js';
 import { registerActionRoutes, type ActionRouteOptions } from './routes/actions.js';
@@ -39,6 +39,11 @@ export interface AppOptions {
   drift?: Omit<SchemaDriftOptions, 'db'>;
   /** Config for the roles page; registered when `db` is given. */
   roles?: Omit<RoleRoutesOptions, 'db'>;
+  /**
+   * Where every audited change is written and History and the audit log read from;
+   * `warden.audit_log` when absent.
+   */
+  audit?: AuditStore;
   /** Export pool and limits; exports use `db` and the default limits when absent. */
   exports?: Pick<ExportRouteOptions, 'exportDb' | 'limits'>;
   /** Directory containing the built web UI. Served with SPA fallback when present. */
@@ -58,6 +63,7 @@ export async function buildApp({
   auth,
   drift,
   roles,
+  audit,
   exports,
   webDir,
   bodyLimit,
@@ -84,6 +90,13 @@ export async function buildApp({
         .code(400)
         .send({ statusCode: 400, error: 'Bad Request', message: 'a value is invalid' });
     }
+    // The message says the audit config is broken, not how; the problems are logged at startup.
+    if (err instanceof AuditUnavailableError) {
+      req.log.error('request refused: the audit store is misconfigured');
+      return reply
+        .code(503)
+        .send({ statusCode: 503, error: 'Service Unavailable', message: err.message });
+    }
     const statusCode = err.statusCode ?? 500;
     if (statusCode < 500) {
       return reply
@@ -105,7 +118,7 @@ export async function buildApp({
   if (schema) app.get('/api/schema', async (req) => (views ? views(req.roles).schema : schema));
   if (schema && db && policy && views) {
     registerPolicy(app, policy, views);
-    registerEntityRoutes(app, schema, db, policy, views);
+    registerEntityRoutes(app, schema, db, policy, views, audit);
     registerCapabilityRoutes(app, policy, views, actions?.actionPolicy);
     registerAuditRoutes(app, {
       db,
@@ -113,8 +126,9 @@ export async function buildApp({
       views,
       roles: auth?.roles ?? {},
       actionPolicy: actions?.actionPolicy,
+      audit,
     });
-    registerExportRoutes(app, { db, policy, views, ...exports });
+    registerExportRoutes(app, { db, policy, views, ...exports, audit });
     registerSavedViewRoutes(app, { db, policy, views, roles: auth?.roles ?? {} });
     if (actions && auth) {
       registerActionRoutes(app, {
@@ -124,11 +138,12 @@ export async function buildApp({
         policy,
         views,
         sessionSecret: auth.sessionSecret,
+        audit,
       });
     }
   }
-  if (drift && db) registerSchemaDriftRoutes(app, { ...drift, db });
-  if (roles && db) registerRoleRoutes(app, { ...roles, db });
+  if (drift && db) registerSchemaDriftRoutes(app, { ...drift, db, audit });
+  if (roles && db) registerRoleRoutes(app, { ...roles, db, audit });
 
   const serveWeb = webDir !== undefined && existsSync(webDir);
   if (serveWeb) await app.register(fastifyStatic, { root: webDir });

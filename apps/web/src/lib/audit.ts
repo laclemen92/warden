@@ -43,9 +43,11 @@ export interface AuditFilters {
   to?: string;
   /** A custom action's entry id: only the rows it changed. */
   parent?: string;
+  /** Who wrote the entry, in an audit table shared with the application (`audit.source`). */
+  source?: string;
 }
 
-const FILTER_KEYS = ['actor', 'entity', 'action', 'from', 'to', 'parent'] as const;
+const FILTER_KEYS = ['actor', 'entity', 'action', 'from', 'to', 'parent', 'source'] as const;
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
 
 export function filtersFromParams(params: URLSearchParams): AuditFilters {
@@ -83,6 +85,7 @@ export function auditSearchParams(filters: AuditFilters): URLSearchParams {
   if (filters.entity) params.set('entity', filters.entity);
   if (filters.action) params.set('action', filters.action);
   if (filters.parent) params.set('parent', filters.parent);
+  if (filters.source) params.set('source', filters.source);
   const from = filters.from && startOfDay(filters.from);
   const to = filters.to && startOfDay(filters.to, 1);
   if (from) params.set('from', from);

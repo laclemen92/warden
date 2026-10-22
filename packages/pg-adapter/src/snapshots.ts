@@ -1,10 +1,10 @@
-import type { SchemaModel } from '@wardenhq/core';
+import type { AuditStore, SchemaModel } from '@wardenhq/core';
 import { sql } from 'kysely';
+import { insertAuditEntry } from './audit.js';
 import type { Database } from './database.js';
 import { WARDEN_SCHEMA } from './introspect.js';
 
 const SNAPSHOTS = sql.id(WARDEN_SCHEMA, 'schema_snapshots');
-const AUDIT_LOG = sql.id(WARDEN_SCHEMA, 'audit_log');
 // Serializes baseline changes across replicas; distinct from the migration lock.
 const LOCK_ID = 0x736e6170; // "snap"
 
@@ -23,6 +23,8 @@ export interface SnapshotActor {
   email?: string;
   roles: readonly string[];
   requestId?: string;
+  /** Where the acknowledgement is audited; `warden.audit_log` when absent. */
+  store?: AuditStore;
 }
 
 const COLUMNS = sql`id, taken_at as "takenAt", taken_by as "takenBy", model`;
@@ -72,15 +74,18 @@ export async function acknowledgeSchemaSnapshot(
       values (${actor.subject}, ${JSON.stringify(model)}::jsonb)
       returning ${COLUMNS}`.execute(trx);
     const snapshot = rows[0]!;
-    await sql`
-      insert into ${AUDIT_LOG}
-        (request_id, actor_subject, actor_email, actor_roles, action, entity, record_id,
-         before, after, diff)
-      values (${actor.requestId ?? null}, ${actor.subject}, ${actor.email ?? null},
-              ${[...actor.roles]}, 'acknowledge', 'warden.schema_snapshots', ${snapshot.id},
-              ${JSON.stringify({ baseline: latest.id })}::jsonb,
-              ${JSON.stringify({ baseline: snapshot.id })}::jsonb,
-              ${JSON.stringify(drift)}::jsonb)`.execute(trx);
+    await insertAuditEntry(trx, actor.store ?? { kind: 'warden' }, {
+      requestId: actor.requestId ?? null,
+      actorSubject: actor.subject,
+      actorEmail: actor.email ?? null,
+      actorRoles: [...actor.roles],
+      action: 'acknowledge',
+      entity: 'warden.schema_snapshots',
+      recordId: snapshot.id,
+      before: { baseline: latest.id },
+      after: { baseline: snapshot.id },
+      diff: drift,
+    });
     return snapshot;
   });
 }

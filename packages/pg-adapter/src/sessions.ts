@@ -1,10 +1,10 @@
 import { sql } from 'kysely';
+import { insertAuditEntry, storesField } from './audit.js';
 import type { Database } from './database.js';
 import { WARDEN_SCHEMA } from './introspect.js';
 import type { AssignmentActor } from './role-assignments.js';
 
 const SESSIONS = sql.id(WARDEN_SCHEMA, 'sessions');
-const AUDIT_LOG = sql.id(WARDEN_SCHEMA, 'audit_log');
 
 export interface SessionTimeouts {
   /** Session ends after this long without a request. */
@@ -151,16 +151,22 @@ export async function deleteSessionsForSubject(
     // Recorded so the audit log can say whose sessions they were.
     const email = rows.find((r) => r.email)?.email;
     if (count > 0) {
-      await sql`
-        insert into ${AUDIT_LOG}
-          (request_id, actor_subject, actor_email, actor_roles, action, entity, primary_key,
-           details)
-        values (${actor.requestId ?? null}, ${actor.subject}, ${actor.email ?? null},
-                ${[...actor.roles]}, 'revoke_sessions', 'warden.sessions',
-                ${JSON.stringify({ subject })}::jsonb,
-                ${JSON.stringify({ sessions: count, ...(email ? { email } : {}) })}::jsonb)`.execute(
-        trx,
-      );
+      const store = actor.store ?? { kind: 'warden' };
+      await insertAuditEntry(trx, store, {
+        requestId: actor.requestId ?? null,
+        actorSubject: actor.subject,
+        actorEmail: actor.email ?? null,
+        actorRoles: [...actor.roles],
+        action: 'revoke_sessions',
+        entity: 'warden.sessions',
+        primaryKey: { subject },
+        details: {
+          sessions: count,
+          ...(email ? { email } : {}),
+          // A store without a primary key column keeps the subject here instead.
+          ...(storesField(store, 'primaryKey') ? {} : { subject }),
+        },
+      });
     }
     return count;
   });

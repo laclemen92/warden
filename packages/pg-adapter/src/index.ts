@@ -39,14 +39,19 @@ export {
   type WriteResult,
 } from './writes.js';
 export {
+  AuditUnavailableError,
   AuditWriteError,
   auditHook,
+  auditTableAccess,
   insertActionEntry,
+  insertAuditEntry,
   listAuditEntries,
   recordExport,
   type AuditContext,
   type AuditPage,
   type AuditQuery,
+  type AuditTableAccess,
+  type AuditValues,
 } from './audit.js';
 export { isDataError, mapWriteError, type WriteErrorResult } from './errors.js';
 export {

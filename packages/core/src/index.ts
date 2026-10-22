@@ -62,3 +62,5 @@ export { defaultSortOf } from './sort.js';
 export { TIMESTAMP_COLUMNS, gridColumnOrder } from './grid-order.js';
 export type * from './reason.js';
 export { MAX_REASON_LENGTH, REASON_REQUIRED, checkReason, isReasonError } from './reason.js';
+export type * from './audit-store.js';
+export { WARDEN_AUDIT_COLUMNS, auditTableName, resolveAuditStore } from './audit-store.js';

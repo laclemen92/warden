@@ -404,4 +404,46 @@ describe('audit log page', () => {
     renderAt('/admin/audit?entity=gone');
     expect(await screen.findByRole('alert')).toHaveTextContent("Couldn't search: unknown entity.");
   });
+
+  it('shows who wrote each entry, and filters by it, when the audit table has a source', async () => {
+    const user = userEvent.setup({ delay: null });
+    const fetchMock = stubFetch(
+      (url) =>
+        url.pathname === '/api/audit'
+          ? page([entry('7', { source: 'billing' }), entry('6', { source: 'warden' })])
+          : undefined,
+      ['audit'],
+    );
+    renderAt('/admin/audit');
+    const app = await screen.findByRole('article', { name: 'update 7' });
+    expect(within(app).getByTitle('Source')).toHaveTextContent('billing');
+
+    const form = screen.getByRole('form', { name: 'Filter audit log' });
+    await user.type(within(form).getByLabelText('Source'), 'billing');
+    await user.click(within(form).getByRole('button', { name: 'Search' }));
+    await waitFor(() => expect(calls(fetchMock, '/api/audit')).toHaveLength(2));
+    expect(calls(fetchMock, '/api/audit')[1]!.searchParams.get('source')).toBe('billing');
+  });
+
+  it('has no source filter or badges for an audit log without one', async () => {
+    stubFetch((url) => (url.pathname === '/api/audit' ? page([entry('2')]) : undefined), ['audit']);
+    renderAt('/admin/audit');
+    const update = await screen.findByRole('article', { name: 'update 2' });
+    expect(within(update).queryByTitle('Source')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Source')).not.toBeInTheDocument();
+  });
+
+  it('says when the audit log is misconfigured', async () => {
+    stubFetch(
+      (url) =>
+        url.pathname === '/api/audit'
+          ? { status: 503, body: { message: 'the audit log is misconfigured' } }
+          : undefined,
+      ['audit'],
+    );
+    renderAt('/admin/audit');
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      "Couldn't load the audit log: the audit log is misconfigured.",
+    );
+  });
 });

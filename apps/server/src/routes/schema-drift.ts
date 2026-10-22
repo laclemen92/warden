@@ -1,5 +1,5 @@
 import type { WardenConfig } from '@wardenhq/config';
-import { adminAreas, diffSchema, type SchemaModel } from '@wardenhq/core';
+import { adminAreas, diffSchema, type AuditStore, type SchemaModel } from '@wardenhq/core';
 import {
   acknowledgeSchemaSnapshot,
   ensureSchemaSnapshot,
@@ -13,6 +13,8 @@ export interface SchemaDriftOptions {
   model: SchemaModel;
   config: WardenConfig;
   db: Database;
+  /** Where changes are audited; `warden.audit_log` when absent. */
+  audit?: AuditStore | undefined;
 }
 
 // Exactly what an unknown route returns, so the page can't be discovered by non-admins.
@@ -36,7 +38,7 @@ const baselineOf = ({ id, takenAt, takenBy }: SchemaSnapshot) => ({ id, takenAt,
  */
 export function registerSchemaDriftRoutes(
   app: FastifyInstance,
-  { model, config, db }: SchemaDriftOptions,
+  { model, config, db, audit }: SchemaDriftOptions,
 ) {
   const isSchemaAdmin = (req: FastifyRequest) =>
     adminAreas(config.roles, req.roles ?? []).includes('schema');
@@ -77,6 +79,7 @@ export function registerSchemaDriftRoutes(
           ...(session.email ? { email: session.email } : {}),
           roles: req.roles!,
           requestId: req.id,
+          ...(audit ? { store: audit } : {}),
         },
         // What the admin saw and accepted, for the audit log.
         drift: diffSchema(baseline.model, model, config),
