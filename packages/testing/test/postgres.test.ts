@@ -1,6 +1,6 @@
 import pg from 'pg';
 import { describe, expect, it } from 'vitest';
-import { SHARED_POSTGRES_ENV, startPostgres } from '../src/index.js';
+import { SHARED_POSTGRES_ENV, startPostgres, uniqueRoleName } from '../src/index.js';
 
 const adminUrl = () => process.env[SHARED_POSTGRES_ENV]!;
 
@@ -90,6 +90,24 @@ describe('with the global setup', () => {
     await db.stop();
     expect(await databaseExists(db.connectionString)).toBe(false);
   }, 30_000);
+
+  it('lets a role-creating file run twice against the same server', async () => {
+    // A rerun (e.g. in watch mode) evaluates the file again, so its role names are drawn anew.
+    const createRoleFromFreshRun = async () => {
+      const db = await startPostgres();
+      try {
+        const role = uniqueRoleName('app');
+        await db.exec(`create role ${role} login password 'x'`);
+        return role;
+      } finally {
+        await db.stop();
+      }
+    };
+    const first = await createRoleFromFreshRun();
+    const second = await createRoleFromFreshRun();
+    expect(first).toMatch(/^app_[0-9a-f]+$/);
+    expect(second).not.toBe(first);
+  });
 });
 
 describe('without the global setup', () => {

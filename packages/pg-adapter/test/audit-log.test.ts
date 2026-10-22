@@ -1,5 +1,5 @@
 import { readFile } from 'node:fs/promises';
-import { startPostgres, type TestDatabase } from '@wardenhq/testing';
+import { startPostgres, type TestDatabase, uniqueRoleName } from '@wardenhq/testing';
 import { sql } from 'kysely';
 import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -23,11 +23,16 @@ let appConnectionString: string;
 const DOCS = new URL('../../../docs/database.md', import.meta.url);
 
 /** The grant script exactly as docs/database.md shows it, so the docs can't drift. */
+const APP_ROLE = uniqueRoleName('warden_app');
+const MEMBER_ROLE = uniqueRoleName('warden_member');
+
+/** The documented grants, for `APP_ROLE` instead of the docs' `warden_app`. */
 async function documentedGrants(): Promise<string> {
   const doc = await readFile(DOCS, 'utf8');
   const match = /<!-- runtime-grants -->\s*```sql\n([\s\S]*?)```/.exec(doc);
   if (!match?.[1]) throw new Error('runtime grants block not found in docs/database.md');
-  return match[1];
+  if (!/\bwarden_app\b/.test(match[1])) throw new Error('runtime grants no longer name warden_app');
+  return match[1].replaceAll(/\bwarden_app\b/g, APP_ROLE);
 }
 
 // The append-only trigger also raises 42501, so match the message to prove the grants did it.
@@ -103,13 +108,13 @@ describe('documented runtime grants', () => {
 
   beforeAll(async () => {
     await migrate(handle.db);
-    await sql.raw(`create role warden_app login password 'app'`).execute(handle.db);
+    await sql.raw(`create role ${APP_ROLE} login password 'app'`).execute(handle.db);
     await sql.raw(await documentedGrants()).execute(handle.db);
     // Re-running after an upgrade must work too.
     await sql.raw(await documentedGrants()).execute(handle.db);
 
     const url = new URL(pgContainer.connectionString);
-    url.username = 'warden_app';
+    url.username = APP_ROLE;
     url.password = 'app';
     appConnectionString = url.href;
     app = new pg.Client({ connectionString: appConnectionString });
@@ -156,7 +161,7 @@ describe('documented runtime grants', () => {
     const { rows } = await sql<{ owner: string }>`select current_user as owner`.execute(handle.db);
     const appHandle = createDatabase({ connectionString: appConnectionString });
     try {
-      await sql.raw(`alter ${object} owner to warden_app`).execute(handle.db);
+      await sql.raw(`alter ${object} owner to ${APP_ROLE}`).execute(handle.db);
       expect(await canDisableAuditTriggers(appHandle.db)).toBe(true);
     } finally {
       await sql.raw(`alter ${object} owner to "${rows[0]!.owner}"`).execute(handle.db);
@@ -176,10 +181,10 @@ describe('documented runtime grants', () => {
     const { rows } = await sql<{ owner: string }>`
       select tableowner as owner from pg_tables
       where schemaname = 'warden' and tablename = 'audit_log'`.execute(handle.db);
-    await sql.raw(`create role warden_member login password 'm' nosuperuser`).execute(handle.db);
-    await sql.raw(`grant "${rows[0]!.owner}" to warden_member`).execute(handle.db);
+    await sql.raw(`create role ${MEMBER_ROLE} login password 'm' nosuperuser`).execute(handle.db);
+    await sql.raw(`grant "${rows[0]!.owner}" to ${MEMBER_ROLE}`).execute(handle.db);
     const url = new URL(pgContainer.connectionString);
-    url.username = 'warden_member';
+    url.username = MEMBER_ROLE;
     url.password = 'm';
     const memberHandle = createDatabase({ connectionString: url.href });
     try {

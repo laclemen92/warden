@@ -37,8 +37,8 @@ const DRAIN_TIMEOUT_MS = 5_000;
  * A fresh, empty database for one test file.
  *
  * Every file gets its own database on the one Postgres container the package's Vitest
- * `globalSetup` (`@wardenhq/testing/global-setup`) starts. Roles are cluster-wide, so give any role
- * a test creates a name no other test file uses.
+ * `globalSetup` (`@wardenhq/testing/global-setup`) starts. Roles are cluster-wide and outlive the
+ * database, so name any role a test creates with `uniqueRoleName()`.
  */
 export async function startPostgres({
   sql = [],
@@ -55,6 +55,14 @@ export async function startPostgres({
   };
   for (const script of sql) await exec(script);
   return { connectionString: db.connectionString, exec, stop: db.stop };
+}
+
+/**
+ * `base` plus a random suffix. The shared server outlives a single run of a test file (Vitest watch
+ * mode keeps it between reruns), so a fixed role name would already exist the second time.
+ */
+export function uniqueRoleName(base: string): string {
+  return `${base}_${randomBytes(6).toString('hex')}`;
 }
 
 /** Start a disposable Postgres container. Requires a running Docker daemon. */
