@@ -120,12 +120,19 @@ const effectList = () =>
   (globalThis as { __wardenActionEffects?: string[] }).__wardenActionEffects ?? [];
 beforeEach(() => void effectList().splice(0));
 
+// Actions require a reason by default. Requests that don't mention one give this; tests of
+// missing reasons send `reason: undefined`, which JSON drops.
+const REASON = 'checking the action';
 const send = async (method: 'GET' | 'POST', url: string, cookie: string, payload?: object) => {
+  const body =
+    payload && url.startsWith('/api/actions/') && !('reason' in payload)
+      ? { ...payload, reason: REASON }
+      : payload;
   const res = await app.inject({
     method,
     url,
     headers: { cookie },
-    ...(payload ? { payload } : {}),
+    ...(body ? { payload: body } : {}),
   });
   return { status: res.statusCode, body: res.body ? res.json() : undefined, raw: res.body };
 };
@@ -166,7 +173,8 @@ describe('GET /api/actions', () => {
       target: 'one',
       confirm: 'preview',
       destructive: false,
-      requireReason: false,
+      requireReason: true,
+      reasonMinLength: 10,
       hasDefaults: true,
       permissions: { users: ['update'], orders: ['update'] },
       inputSchema: {
@@ -438,7 +446,7 @@ describe('POST /api/actions/:name/run', () => {
     const res = await send('POST', '/api/actions/rename-companies/run', admin, {
       records: ['10', '11'],
       input: { suffix: ' (renamed)' },
-      reason: 'rebrand',
+      reason: 'rebrand for 2026',
     });
     expect(res.status, res.raw).toBe(200);
     expect(await query('select name from companies where id in (10, 11) order by id')).toEqual([
@@ -477,7 +485,7 @@ describe('POST /api/actions/:name/run', () => {
     });
     const before = await auditCount();
     for (const reason of [undefined, '  ']) {
-      const body = { records: [id], ...(reason !== undefined ? { reason } : {}) };
+      const body = { records: [id], reason };
       for (const res of [
         await run('drop-company', body, admin),
         await preview('drop-company', body, admin),
@@ -491,14 +499,14 @@ describe('POST /api/actions/:name/run', () => {
     expect(await query('select id from companies where id = $1', [id])).toHaveLength(1);
     expect(await auditCount()).toBe(before);
 
-    const res = await run('drop-company', { records: [id], reason: 'duplicate' }, admin);
+    const res = await run('drop-company', { records: [id], reason: 'duplicate entry' }, admin);
     expect(res.status, res.raw).toBe(200);
     expect(await query('select id from companies where id = $1', [id])).toHaveLength(0);
     const entries = await query(
       'select reason from warden.audit_log where id = $1 or parent_id = $1',
       [res.body.auditId],
     );
-    expect(entries.map((e) => e.reason)).toEqual(['duplicate', 'duplicate']);
+    expect(entries.map((e) => e.reason)).toEqual(['duplicate entry', 'duplicate entry']);
   });
 
   it.each([
@@ -515,7 +523,7 @@ describe('POST /api/actions/:name/run', () => {
     const repeated = await send('POST', '/api/actions/rename-companies/run', admin, {
       records: ['1', '1'],
       input: { suffix: 'x' },
-      reason: 'r',
+      reason: REASON,
     });
     expect(repeated.status).toBe(400);
   });
@@ -529,7 +537,7 @@ describe('POST /api/actions/:name/run', () => {
       const res = await send('POST', '/api/actions/rename-companies/run', admin, {
         records,
         input: { suffix: 'x' },
-        reason: 'r',
+        reason: REASON,
       });
       expect(res).toMatchObject({ status: 400, body: { message: 'records must not repeat' } });
     }
@@ -813,7 +821,7 @@ describe('concurrent runs', () => {
     try {
       await blocker.query('begin');
       await blocker.query('select id from companies where id = 14 for update');
-      const body = (records: string[]) => ({ records, input: { suffix: '!' }, reason: 'r' });
+      const body = (records: string[]) => ({ records, input: { suffix: '!' }, reason: REASON });
       const first = send('POST', '/api/actions/rename-companies/run', admin, body(['14', '15']));
       await lockWaiters(1);
       const second = send('POST', '/api/actions/rename-companies/run', admin, body(['15', '14']));
@@ -1161,5 +1169,133 @@ describe('loading WARDEN_ACTIONS', () => {
     expect((err as ActionsError).problems).toEqual([
       'action "log": target "one" needs records, but "logbook" has no primary key',
     ]);
+  });
+});
+
+describe('required reasons for actions', () => {
+  const source = `export default ({ defineAction, z }) => {
+    const add = (name, extra = {}) =>
+      defineAction({
+        name,
+        label: name,
+        on: 'companies',
+        target: 'none',
+        confirm: 'confirm',
+        permissions: { companies: ['create'] },
+        input: z.object({ name: z.string() }),
+        ...extra,
+        run: async ({ tx, input }) => {
+          await tx.create('companies', { name: input.name });
+        },
+      });
+    return [
+      add('by-default'),
+      add('own-off', { requireReason: false }),
+      add('config-off'),
+      add('config-on', { requireReason: false }),
+    ];
+  }`;
+  const config = `
+defaults: { reasonMinLength: 12 }
+roles:
+  admin: { grants: { '*': [read] }, actions: ['*'] }
+actions:
+  config-off: { requireReason: false }
+  config-on: { requireReason: true }
+access:
+  groups:
+    warden-admins: [admin]
+`;
+  let warden: Awaited<ReturnType<typeof createWarden>>;
+  let cookie: string;
+
+  beforeAll(async () => {
+    const file = join(mkdtempSync(join(tmpdir(), 'warden-actions-')), 'actions.mjs');
+    writeFileSync(file, source);
+    warden = await createWarden({
+      env: {
+        DATABASE_URL: db.connectionString,
+        WARDEN_CONFIG: writeConfig(config),
+        WARDEN_ACTIONS: file,
+        ...authEnv(idp),
+      },
+    });
+    cookie = await login(warden, 'admin');
+  }, 120_000);
+  afterAll(() => warden?.close());
+
+  const call = async (name: string, step: 'run' | 'preview', payload: object) => {
+    const res = await warden.inject({
+      method: 'POST',
+      url: `/api/actions/${name}/${step}`,
+      headers: { cookie },
+      payload: { input: { name: `Made by ${name}` }, ...payload },
+    });
+    return { status: res.statusCode, body: res.json(), raw: res.body };
+  };
+  const created = async (name: string) =>
+    (await query('select id from companies where name = $1', [`Made by ${name}`])).length;
+
+  it('reports which actions need one, and how long', async () => {
+    const res = await warden.inject({ method: 'GET', url: '/api/actions', headers: { cookie } });
+    const actions = res.json().actions as {
+      name: string;
+      requireReason: boolean;
+      reasonMinLength?: number;
+    }[];
+    expect(
+      Object.fromEntries(actions.map((a) => [a.name, [a.requireReason, a.reasonMinLength]])),
+    ).toEqual({
+      'by-default': [true, 12],
+      'own-off': [false, undefined],
+      'config-off': [false, undefined],
+      'config-on': [true, 12],
+    });
+  });
+
+  it.each([
+    ['missing', undefined, 'a reason is required for this change'],
+    ['whitespace', ' \n\t ', 'a reason is required for this change'],
+    [
+      'too short',
+      '   short one   ',
+      'a reason of at least 12 characters is required for this change',
+    ],
+  ])('refuses a %s reason by default, writing nothing', async (_, reason, message) => {
+    const before = await auditCount();
+    for (const name of ['by-default', 'config-on']) {
+      for (const step of ['run', 'preview'] as const) {
+        expect(await call(name, step, { reason })).toMatchObject({
+          status: 400,
+          body: { statusCode: 400, error: 'Bad Request', message },
+        });
+      }
+      expect(await created(name)).toBe(0);
+    }
+    expect(await auditCount()).toBe(before);
+  });
+
+  it('refuses a reason over the maximum, required or not', async () => {
+    const res = await call('own-off', 'run', { reason: 'x'.repeat(2001) });
+    expect(res.status).toBe(400);
+    expect(await created('own-off')).toBe(0);
+  });
+
+  it('runs with a long enough reason and records it', async () => {
+    const res = await call('by-default', 'run', { reason: '  customer asked for it  ' });
+    expect(res.status, res.raw).toBe(200);
+    expect(
+      await query('select reason from warden.audit_log where id = $1 or parent_id = $1', [
+        res.body.auditId,
+      ]),
+    ).toEqual([{ reason: 'customer asked for it' }, { reason: 'customer asked for it' }]);
+  });
+
+  it('runs without one when the action or config turns it off', async () => {
+    for (const name of ['own-off', 'config-off']) {
+      const res = await call(name, 'run', {});
+      expect(res.status, res.raw).toBe(200);
+      expect(await created(name)).toBe(1);
+    }
   });
 });

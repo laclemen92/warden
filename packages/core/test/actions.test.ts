@@ -88,7 +88,7 @@ describe('checkActionDefinitions', () => {
       permissions: { users: ['update'], orders: ['update'] },
       confirm: 'preview',
       destructive: false,
-      requireReason: false,
+      requireReason: true,
       maxAffectedRows: 1000,
       inputSchema: {
         type: 'object',
@@ -249,14 +249,40 @@ describe('resolveActionPolicy', () => {
     });
   });
 
+  it('requires a reason by default, with the configured minimum length', () => {
+    const action = (config: unknown, overrides = {}) =>
+      resolve(specs(definition(overrides)), config).actionPolicy.actions.get('move-user')!;
+    expect(action({})).toMatchObject({ requireReason: true, reasonMinLength: 10 });
+    expect(action({ defaults: { reasonMinLength: 4 } }).reasonMinLength).toBe(4);
+    // `defaults.requireReason` is for record writes; actions keep their own default.
+    expect(action({ defaults: { requireReason: [] } }).requireReason).toBe(true);
+    const off = action({}, { requireReason: false });
+    expect(off.requireReason).toBe(false);
+    expect(off).not.toHaveProperty('reasonMinLength');
+  });
+
+  it('lets config override the action either way', () => {
+    const required = (setting: boolean, own: boolean) =>
+      resolve(specs(definition({ requireReason: own })), {
+        actions: { 'move-user': { requireReason: setting } },
+      }).actionPolicy.actions.get('move-user')!.requireReason;
+    expect(required(false, true)).toBe(false);
+    expect(required(true, false)).toBe(true);
+  });
+
   it('requires a reason when a table requires one for a write the action may make', () => {
-    const required = (config: unknown) =>
-      resolve(specs(definition()), config).actionPolicy.actions.get('move-user')!.requireReason;
+    const required = (config: object) =>
+      resolve(specs(definition({ requireReason: false })), {
+        ...config,
+        actions: { 'move-user': { requireReason: false } },
+      }).actionPolicy.actions.get('move-user')!.requireReason;
     expect(required({})).toBe(false);
     expect(required({ tables: { orders: { requireReason: ['update'] } } })).toBe(true);
-    // Writes the action can't make don't count.
+    expect(required({ tables: { 'public.orders': { requireReason: ['update'] } } })).toBe(true);
+    // Writes the action can't make don't count, and neither does the default for record writes.
     expect(required({ tables: { orders: { requireReason: ['delete'] } } })).toBe(false);
     expect(required({ tables: { companies: { requireReason: ['update'] } } })).toBe(false);
+    expect(required({ defaults: { requireReason: ['update'] } })).toBe(false);
   });
 
   it.each([

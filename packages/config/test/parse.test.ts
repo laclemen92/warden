@@ -17,7 +17,14 @@ describe('parseConfig', () => {
   it('exposes everything, read-only, when the file is empty', () => {
     expect(parseConfig('', FILE)).toEqual({
       schemas: ['public'],
-      defaults: { expose: 'all', newColumns: 'visible', read: 'all', delete: 'none' },
+      defaults: {
+        expose: 'all',
+        newColumns: 'visible',
+        read: 'all',
+        delete: 'none',
+        requireReason: ['create', 'update', 'delete'],
+        reasonMinLength: 10,
+      },
       tables: {},
       roles: {},
       actions: {},
@@ -48,6 +55,8 @@ tables:
       newColumns: 'visible',
       read: 'all',
       delete: 'none',
+      requireReason: ['create', 'update', 'delete'],
+      reasonMinLength: 10,
     });
     expect(config.tables.users).toEqual({
       label: 'People',
@@ -185,6 +194,25 @@ tables:
     expect(() => parseConfig('tables: { users: { allowDelete: yes please } }', FILE)).toThrow(
       ConfigError,
     );
+  });
+
+  it('parses the required reason defaults and rejects out-of-range lengths', () => {
+    const config = parseConfig('defaults: { requireReason: [], reasonMinLength: 1 }', FILE);
+    expect(config.defaults.requireReason).toEqual([]);
+    expect(config.defaults.reasonMinLength).toBe(1);
+    expect(parseConfig('defaults: { requireReason: [delete] }', FILE).defaults).toMatchObject({
+      requireReason: ['delete'],
+      reasonMinLength: 10,
+    });
+    for (const bad of [
+      'defaults: { requireReason: [read] }',
+      'defaults: { requireReason: true }',
+      'defaults: { reasonMinLength: 0 }',
+      'defaults: { reasonMinLength: 2001 }',
+      'defaults: { reasonMinLength: 2.5 }',
+    ]) {
+      expect(() => parseConfig(bad, FILE), bad).toThrow(ConfigError);
+    }
   });
 
   it('parses custom action grants and settings', () => {

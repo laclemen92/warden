@@ -23,6 +23,8 @@ roles:
 ${ACCESS}`;
 
 const OPT_IN_CONFIG = `
+# Reasons are covered in require-reason.test.ts.
+defaults: { requireReason: [] }
 tables:
   users: { allowDelete: true }
   orders: { allowDelete: true, deny: [delete] }

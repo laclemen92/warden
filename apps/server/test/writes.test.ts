@@ -7,7 +7,8 @@ import { authEnv, login, startTestIdp } from './helpers/auth.js';
 import { exampleConfigDeletingCompanies } from './helpers/config.js';
 
 // Deleting companies needs allowDelete, which the example only sets on users.
-const CONFIG = exampleConfigDeletingCompanies();
+// Reasons are covered in require-reason.test.ts.
+const CONFIG = exampleConfigDeletingCompanies({ requireReason: [] });
 
 const FIXTURES = `
   create table order_tags (

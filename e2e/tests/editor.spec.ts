@@ -12,7 +12,7 @@ test('editor edits a user and the change appears in its history', async ({ page 
   await page.goto(`/entities/users/${user.id}`);
   await page.getByRole('link', { name: 'Edit' }).click();
   await page.getByLabel('Full name').fill(name);
-  await page.getByLabel('Reason').fill(reason);
+  await page.getByLabel('Internal note').fill(reason);
   await page.getByRole('button', { name: 'Save' }).click();
 
   // Back on the record, with the new value.

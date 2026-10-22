@@ -157,6 +157,7 @@ describe('record history tab', () => {
     const update = await screen.findByRole('article', { name: 'update 2' });
     expect(within(update).getByText('ada@example.com')).toHaveAttribute('title', 'sub-ada');
     expect(within(update).getByText('fix typo')).toBeInTheDocument();
+    expect(within(update).getByText('Internal note')).toBeInTheDocument();
     // In entity field order, not the diff's.
     expect(diffRows(update)).toEqual([
       ['Email', 'old@example.com', 'new@example.com'],

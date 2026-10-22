@@ -9,6 +9,7 @@ import {
 import { entityFor, type Entity, type Field, type Relation, type WriteMode } from '@wardenhq/core';
 import { Link } from 'react-router';
 import { FieldValue } from '@/components/field-value';
+import { InternalNote, noteProblem, rejectedNote } from '@/components/internal-note';
 import { RecordPicker } from '@/components/record-picker';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -34,7 +35,7 @@ import {
   type FormErrors,
   type FormField,
 } from '@/lib/form-fields';
-import { MAX_REASON_LENGTH, REASON_REQUIRED, type Row } from '@/lib/records';
+import { type Row } from '@/lib/records';
 
 // apps/server/src/routes/entities.ts: a stale version, as opposed to a constraint conflict.
 const STALE_MESSAGE = 'the record has changed since it was read';
@@ -79,8 +80,10 @@ export function RecordForm({
   const pickers = useMemo(() => pickerRelations(entity), [entity]);
   const [drafts, setDrafts] = useState<Drafts>(initial);
   const [reason, setReason] = useState('');
-  const [reasonError, setReasonError] = useState(false);
-  const reasonRequired = entity.requireReason?.includes(mode) ?? false;
+  const [reasonError, setReasonError] = useState<string | null>(null);
+  const reasonMinLength = entity.requireReason?.includes(mode)
+    ? (entity.reasonMinLength ?? 1)
+    : undefined;
   const [errors, setErrors] = useState<FormErrors>({});
   const [stale, setStale] = useState(false);
   const [pending, setPending] = useState(false);
@@ -124,9 +127,9 @@ export function RecordForm({
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     const result = formValues(entity, fields, drafts, mode, initial);
-    const missingReason = reasonRequired && reason.trim() === '';
-    setReasonError(missingReason);
-    if (!result.ok || missingReason) {
+    const badReason = noteProblem(reason, reasonMinLength);
+    setReasonError(badReason);
+    if (!result.ok || badReason) {
       setErrors(result.ok ? {} : place(result.errors));
       return;
     }
@@ -138,8 +141,9 @@ export function RecordForm({
       await onSubmit({ values: result.values, ...(trimmed ? { reason: trimmed } : {}) });
     } catch (error) {
       // Config changed since the schema was loaded.
-      if (error instanceof ApiError && error.message === REASON_REQUIRED) {
-        setReasonError(true);
+      const rejected = error instanceof ApiError ? rejectedNote(error.message) : null;
+      if (rejected) {
+        setReasonError(rejected);
         return;
       }
       const failure = describeFailure(error, mode);
@@ -194,36 +198,17 @@ export function RecordForm({
           );
         })}
 
-        <label htmlFor={`${formId}-reason`} className="pt-2 text-sm font-medium">
-          Reason
-          {reasonRequired && (
-            <span className="text-destructive" aria-hidden="true">
-              {' '}
-              *
-            </span>
-          )}
-        </label>
-        <div className="space-y-1">
-          <Input
+        <div className="sm:col-span-2">
+          <InternalNote
             id={`${formId}-reason`}
             value={reason}
-            maxLength={MAX_REASON_LENGTH}
-            aria-required={reasonRequired || undefined}
-            aria-invalid={reasonError || undefined}
-            aria-describedby={`${formId}-reason-help${reasonError ? ` ${formId}-reason-error` : ''}`}
-            onChange={(e) => {
-              setReason(e.target.value);
-              setReasonError(false);
+            minLength={reasonMinLength}
+            error={reasonError}
+            onChange={(value) => {
+              setReason(value);
+              setReasonError(null);
             }}
           />
-          <p id={`${formId}-reason-help`} className="text-xs text-muted-foreground">
-            {reasonRequired ? 'Required' : 'Optional'}. Saved in the audit log with this change.
-          </p>
-          {reasonError && (
-            <p id={`${formId}-reason-error`} className="text-xs text-destructive">
-              Say why you're making this change.
-            </p>
-          )}
         </div>
       </div>
 

@@ -188,11 +188,12 @@ export default ({ defineAction, z, ref, ActionError }) => [
     },
   }),
 
-  // Sets no requireReason of its own, but config requires a reason to delete companies.
+  // Turns reasons off, but config requires a reason to delete companies.
   defineAction({
     name: 'drop-company',
     label: 'Drop company',
     on: 'companies',
+    requireReason: false,
     permissions: { companies: ['delete'] },
     async run({ tx, record }) {
       await tx.delete('companies', record);

@@ -1,9 +1,11 @@
 import {
+  checkReason,
   decodeCursor,
   decodeRecordId,
   encodeCursor,
   encodeRecordId,
   isAllowed,
+  MAX_REASON_LENGTH,
   resolveSort,
   searchFilter,
   validateFilter,
@@ -63,9 +65,6 @@ const listQuerySchema = {
 } as const;
 
 const MAX_VERSION_LENGTH = 100;
-export const MAX_REASON_LENGTH = 2000;
-/** Sent when config requires a reason for the write and none (or only whitespace) was given. */
-export const REASON_REQUIRED = 'a reason is required for this change';
 
 /** Every write may say why; the reason is stored in the audit log. */
 interface WriteBody {
@@ -154,14 +153,16 @@ export function registerEntityRoutes(
       ? toItem(entity, row)
       : { id: encodeRecordId(entity, row) };
 
-  /** Whether config requires `action` on `entity` to give a reason, and none was given. */
-  const missingReason = (entity: Entity, action: WriteAction, body: WriteBody | null | undefined) =>
-    entity.requireReason?.includes(action) === true && !body?.reason?.trim();
+  /** The reason `body` gives for `action` on `entity`, checked against what config requires. */
+  const reasonFor = (entity: Entity, action: WriteAction, body: WriteBody | null | undefined) =>
+    checkReason(
+      body?.reason,
+      entity.requireReason?.includes(action) ? (entity.reasonMinLength ?? 1) : undefined,
+    );
 
   /** Records the write in the audit log, inside the write's transaction. */
-  const audited = (req: FastifyRequest, body: WriteBody | null | undefined): WriteOptions => {
+  const audited = (req: FastifyRequest, reason: string | undefined): WriteOptions => {
     const session = req.session!;
-    const reason = body?.reason?.trim();
     return {
       onWrite: auditHook({
         actor: {
@@ -276,12 +277,13 @@ export function registerEntityRoutes(
       const found = lookup(req, req.params.entity);
       if (!found) return notFound(reply);
       const { entity, view } = found;
-      if (missingReason(entity, 'create', req.body)) return badRequest(reply, REASON_REQUIRED);
+      const reason = reasonFor(entity, 'create', req.body);
+      if (!reason.ok) return badRequest(reply, reason.message);
       const record = validateRecord(view, req.body.values, 'create');
       if (!record.ok) return badRequest(reply, 'invalid record', record.errors);
       let row;
       try {
-        row = await createRow(db, entity, record.values, audited(req, req.body));
+        row = await createRow(db, entity, record.values, audited(req, reason.reason));
       } catch (err) {
         return writeFailed(reply, view, 'create', err);
       }
@@ -299,7 +301,8 @@ export function registerEntityRoutes(
       // A malformed id 404s like a missing row, whether or not a reason was given.
       const decoded = decodeRecordId(view, req.params.id);
       if (!decoded.ok) return notFound(reply);
-      if (missingReason(entity, 'update', req.body)) return badRequest(reply, REASON_REQUIRED);
+      const reason = reasonFor(entity, 'update', req.body);
+      if (!reason.ok) return badRequest(reply, reason.message);
       const record = validateRecord(view, req.body.values, 'update');
       if (!record.ok) return badRequest(reply, 'invalid record', record.errors);
       if (Object.keys(record.values).length === 0) return badRequest(reply, 'no fields to update');
@@ -308,7 +311,7 @@ export function registerEntityRoutes(
         result = await updateRow(db, entity, decoded.filter, record.values, {
           version: req.body.version,
           versionEntity: view,
-          ...audited(req, req.body),
+          ...audited(req, reason.reason),
         });
       } catch (err) {
         return writeFailed(reply, view, 'update', err);
@@ -328,13 +331,14 @@ export function registerEntityRoutes(
       // A malformed id 404s like a missing row, whether or not a reason was given.
       const decoded = decodeRecordId(view, req.params.id);
       if (!decoded.ok) return notFound(reply);
-      if (missingReason(entity, 'delete', req.body)) return badRequest(reply, REASON_REQUIRED);
+      const reason = reasonFor(entity, 'delete', req.body);
+      if (!reason.ok) return badRequest(reply, reason.message);
       const version = req.body?.version;
       let result;
       try {
         result = await deleteRow(db, entity, decoded.filter, {
           ...(version !== undefined ? { version, versionEntity: view } : {}),
-          ...audited(req, req.body),
+          ...audited(req, reason.reason),
         });
       } catch (err) {
         return writeFailed(reply, view, 'delete', err);

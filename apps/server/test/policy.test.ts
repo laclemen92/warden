@@ -9,7 +9,8 @@ import { authEnv, login, startTestIdp } from './helpers/auth.js';
 
 // Reading needs a grant here, so read is enforced like the write actions.
 const CONFIG = `
-defaults: { read: granted }
+# Reasons are covered in require-reason.test.ts.
+defaults: { read: granted, requireReason: [] }
 tables:
   companies: { hidden: true }
   users: { allowDelete: true }

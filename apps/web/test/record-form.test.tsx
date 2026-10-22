@@ -266,7 +266,7 @@ describe('creating a record', () => {
     await userEvent.type(screen.getByRole('textbox', { name: 'Metadata' }), '{{"a": 1}');
     await pickCompany('acm', 'Acme (7)');
     expect(screen.getByRole('combobox', { name: 'Company' })).toHaveTextContent('Acme');
-    await userEvent.type(screen.getByRole('textbox', { name: 'Reason' }), ' onboarding ');
+    await userEvent.type(screen.getByRole('textbox', { name: 'Internal note' }), ' onboarding ');
     await userEvent.click(screen.getByRole('button', { name: 'Create' }));
 
     await waitFor(() => expect(router.state.location.pathname).toBe('/entities/users/43'));
@@ -364,7 +364,7 @@ describe('when config requires a reason', () => {
     status: 200,
     body: {
       entities: schema.entities.map((e) =>
-        e.key === 'users' ? { ...e, requireReason: actions } : e,
+        e.key === 'users' ? { ...e, requireReason: actions, reasonMinLength: 10 } : e,
       ),
     },
   });
@@ -380,7 +380,7 @@ describe('when config requires a reason', () => {
     const router = renderAt('/entities/users/-/new');
     await userEvent.type(await screen.findByRole('textbox', { name: 'Email' }), 'g@x.io');
     await choose(screen.getByRole('combobox', { name: 'Role' }), 'member');
-    const reason = screen.getByRole('textbox', { name: 'Reason' });
+    const reason = screen.getByRole('textbox', { name: 'Internal note' });
     expect(reason).toHaveAttribute('aria-required', 'true');
     await userEvent.type(reason, '  ');
     await userEvent.click(screen.getByRole('button', { name: 'Create' }));
@@ -388,20 +388,27 @@ describe('when config requires a reason', () => {
     expect(reason).toHaveAttribute('aria-invalid', 'true');
     expect(writes(fetchMock, 'POST')).toHaveLength(0);
 
+    // Too short once trimmed; the note is kept so it can be finished.
     await userEvent.type(reason, 'new hire');
     expect(screen.queryByText("Say why you're making this change.")).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: 'Create' }));
+    expect(await screen.findByText('Write at least 10 characters.')).toBeInTheDocument();
+    expect(writes(fetchMock, 'POST')).toHaveLength(0);
+    expect(reason).toHaveValue('  new hire');
+
+    await userEvent.type(reason, ' for Q3');
+    await userEvent.click(screen.getByRole('button', { name: 'Create' }));
     await waitFor(() => expect(writes(fetchMock, 'POST')).toHaveLength(1));
-    expect(writes(fetchMock, 'POST')[0]!.body).toMatchObject({ reason: 'new hire' });
+    expect(writes(fetchMock, 'POST')[0]!.body).toMatchObject({ reason: 'new hire for Q3' });
     await waitFor(() => expect(router.state.location.pathname).toBe('/entities/users/43'));
   });
 
   it('only requires it for the configured action', async () => {
     stubFetch((url) => (url.pathname === '/api/schema' ? requiring(['create']) : undefined));
     renderAt('/entities/users/42/edit');
-    const reason = await screen.findByRole('textbox', { name: 'Reason' });
+    const reason = await screen.findByRole('textbox', { name: 'Internal note' });
     expect(reason).not.toHaveAttribute('aria-required');
-    expect(screen.getByText('Optional. Saved in the audit log with this change.')).toBeVisible();
+    expect(screen.getByText(/^Optional\. Say why\./)).toBeVisible();
   });
 
   it('shows a server rejection for a missing reason on the reason field', async () => {

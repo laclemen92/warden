@@ -9,6 +9,8 @@ const tableKey = z.string().regex(/^[^.]+(\.[^.]+)?$/, 'Expected "table" or "sch
 export const ACTIONS = ['read', 'create', 'update', 'delete', 'export'] as const;
 const actions = z.array(z.enum(ACTIONS));
 export const WRITE_ACTIONS = ['create', 'update', 'delete'] as const;
+/** The longest reason a write or action may give. */
+export const MAX_REASON_LENGTH = 2000;
 
 /**
  * Warden administration areas a role can be given. `schema`: the schema drift page. `audit`: the
@@ -57,7 +59,10 @@ const roleConfigSchema = z.strictObject({
 const actionConfigSchema = z.strictObject({
   /** Nobody may run it, whatever their roles grant. */
   disabled: z.boolean().optional(),
-  /** Running it must say why, even if the action doesn't require it. */
+  /**
+   * Whether running it must say why. Overrides the action's own `requireReason` either way; a
+   * table's `requireReason` covering a write the action may make still requires one.
+   */
   requireReason: z.boolean().optional(),
   /** Overrides the action's own label. */
   label: name.optional(),
@@ -130,7 +135,10 @@ const tableConfigSchema = z
      * for this table either way; a `deny` that includes `delete` still wins.
      */
     allowDelete: z.boolean().optional(),
-    /** Writes that must say why; the reason is stored in the audit log. */
+    /**
+     * Writes that must say why; the reason is stored in the audit log. Overrides
+     * `defaults.requireReason` for this table either way (`[]` turns it off).
+     */
     requireReason: z.array(z.enum(WRITE_ACTIONS)).optional(),
     /**
      * Let updates change primary key columns. Off by default: a new key gives the row a new
@@ -225,6 +233,13 @@ export const wardenConfigSchema = z
          * `delete` either way.
          */
         delete: z.enum(['none', 'granted']).default('none'),
+        /**
+         * Writes that must say why (an internal note, stored in the audit log), on tables that
+         * don't set their own `requireReason`. `[]` makes reasons optional.
+         */
+        requireReason: z.array(z.enum(WRITE_ACTIONS)).default([...WRITE_ACTIONS]),
+        /** The shortest required reason, after trimming, so "." or "fix" doesn't count. */
+        reasonMinLength: z.number().int().min(1).max(MAX_REASON_LENGTH).default(10),
       })
       .prefault({}),
     tables: z.record(tableKey, tableConfigSchema).default({}),

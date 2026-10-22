@@ -411,7 +411,7 @@ describe('deleting a record', () => {
               status: 200,
               body: {
                 entities: schema.entities.map((e) =>
-                  e.key === 'users' ? { ...e, requireReason: ['delete'] } : e,
+                  e.key === 'users' ? { ...e, requireReason: ['delete'], reasonMinLength: 10 } : e,
                 ),
               },
             }
@@ -430,11 +430,14 @@ describe('deleting a record', () => {
       const router = renderAt('/entities/users/42');
       const dialog = await openDialog();
       const confirm = within(dialog).getByRole('button', { name: 'Delete' });
-      const reason = within(dialog).getByRole('textbox', { name: 'Reason' });
+      const reason = within(dialog).getByRole('textbox', { name: 'Internal note' });
       expect(reason).toHaveAttribute('aria-required', 'true');
       expect(confirm).toBeDisabled();
       await userEvent.type(reason, '   ');
       expect(confirm).toBeDisabled();
+      await userEvent.type(reason, 'dupe');
+      expect(confirm).toBeDisabled();
+      await userEvent.clear(reason);
       await userEvent.type(reason, 'left the company ');
       await userEvent.click(confirm);
       await waitFor(() => expect(router.state.location.pathname).toBe('/entities/users'));
@@ -453,11 +456,12 @@ describe('deleting a record', () => {
       );
       renderAt('/entities/users/42');
       const dialog = await openDialog();
-      // This schema doesn't require one, so there's no prompt; the server's config does.
-      expect(within(dialog).queryByRole('textbox', { name: 'Reason' })).not.toBeInTheDocument();
+      // This schema doesn't require one, so the note is optional; the server's config does.
+      const note = within(dialog).getByRole('textbox', { name: 'Internal note' });
+      expect(note).not.toHaveAttribute('aria-required');
       await userEvent.click(within(dialog).getByRole('button', { name: 'Delete' }));
       expect(await within(dialog).findByRole('alert')).toHaveTextContent(
-        'Give a reason for deleting this record.',
+        "Say why you're making this change.",
       );
     });
   });

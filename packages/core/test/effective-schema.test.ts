@@ -150,10 +150,31 @@ describe('resolveSchema with config', () => {
   it('lists the writes that require a reason, in canonical order', () => {
     const config = { tables: { users: { requireReason: ['delete', 'create', 'delete'] } } };
     expect(entity(config, 'users').requireReason).toEqual(['create', 'delete']);
-    expect(entity(config, 'companies')).not.toHaveProperty('requireReason');
-    expect(entity({ tables: { users: { requireReason: [] } } }, 'users')).not.toHaveProperty(
-      'requireReason',
-    );
+    expect(entity(config, 'users').reasonMinLength).toBe(10);
+  });
+
+  it('requires a reason for every write by default', () => {
+    expect(entity({}, 'users')).toMatchObject({
+      requireReason: ['create', 'update', 'delete'],
+      reasonMinLength: 10,
+    });
+  });
+
+  it("lets a table's requireReason override the default either way", () => {
+    const off = { tables: { users: { requireReason: [] } } };
+    expect(entity(off, 'users')).not.toHaveProperty('requireReason');
+    expect(entity(off, 'users')).not.toHaveProperty('reasonMinLength');
+    expect(entity(off, 'companies').requireReason).toEqual(['create', 'update', 'delete']);
+
+    const on = {
+      defaults: { requireReason: [], reasonMinLength: 3 },
+      tables: { users: { requireReason: ['update'] } },
+    };
+    expect(entity(on, 'users')).toMatchObject({ requireReason: ['update'], reasonMinLength: 3 });
+    expect(entity(on, 'companies')).not.toHaveProperty('requireReason');
+    expect(entity({ defaults: { requireReason: ['delete'] } }, 'users').requireReason).toEqual([
+      'delete',
+    ]);
   });
 
   it('drops relations whose FK columns are hidden', () => {

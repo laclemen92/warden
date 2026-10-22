@@ -255,6 +255,12 @@ export async function createWarden({
         'the database role Warden runs as owns warden.audit_log, the warden schema, or the audit trigger function (or is a superuser), so it could disable the append-only triggers; run Warden as a separate role (see docs/database.md)',
       );
     }
+    if (config.defaults.requireReason.length > 0) {
+      app.log.info(
+        { requireReason: config.defaults.requireReason },
+        'writes without a reason (internal note) get a 400; set defaults.requireReason: [] to make reasons optional',
+      );
+    }
     if (config.access?.allowAll) {
       app.log.warn(
         'access.allowAll is on: everyone the identity provider authenticates can sign in and read per defaults.read',

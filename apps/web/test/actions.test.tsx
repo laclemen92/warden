@@ -76,6 +76,7 @@ const deactivate: ActionDescriptor = {
   confirm: 'confirm',
   destructive: true,
   requireReason: true,
+  reasonMinLength: 10,
   inputSchema: { properties: {} },
 };
 
@@ -261,6 +262,10 @@ describe('actions on the record page', () => {
     expect(within(dialog).getByText('Can change: Users (update)')).toBeInTheDocument();
     // A boolean with a default is a checkbox, starting at the default.
     expect(within(dialog).getByRole('checkbox', { name: 'Notify them' })).not.toBeChecked();
+    // This action turns reasons off, so the note is optional.
+    expect(within(dialog).getByRole('textbox', { name: 'Internal note' })).not.toHaveAttribute(
+      'aria-required',
+    );
     await pickGlobex(user, dialog);
     await user.click(within(dialog).getByRole('button', { name: 'Preview' }));
 
@@ -350,9 +355,14 @@ describe('actions on the grid', () => {
     const dialog = await screen.findByRole('alertdialog', { name: 'Deactivate' });
     expect(dialog).toHaveTextContent('2 records selected.');
     const run = within(dialog).getByRole('button', { name: 'Run' });
-    // A required reason must be given first.
+    // A required reason must be given first, at least reasonMinLength characters once trimmed.
     expect(run).toBeDisabled();
-    await user.type(within(dialog).getByRole('textbox', { name: 'Reason' }), 'left the company');
+    const note = within(dialog).getByRole('textbox', { name: 'Internal note' });
+    expect(note).toHaveAttribute('aria-required', 'true');
+    await user.type(note, '  left   ');
+    expect(run).toBeDisabled();
+    await user.clear(note);
+    await user.type(note, 'left the company');
     await user.click(run);
     expect(await within(dialog).findByRole('status')).toHaveTextContent('Deactivated 2 user(s)');
     expect(posts(fetchMock, '/api/actions/deactivate-users/run')).toEqual([

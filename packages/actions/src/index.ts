@@ -136,7 +136,11 @@ export interface ActionDefinition<
   confirm?: 'preview' | 'confirm';
   /** Styles the button and confirmation as destructive. */
   destructive?: boolean;
-  /** Require a reason, as configurable writes do. Config can also turn this on. */
+  /**
+   * Require a reason (an internal note in the audit log). Default true. `actions.<name>` config
+   * overrides it either way, and a table that requires a reason for a write the action may make
+   * requires one too.
+   */
   requireReason?: boolean;
   /** Max rows `run` may change; exceeding it fails the action. Default 1000. */
   maxAffectedRows?: number;

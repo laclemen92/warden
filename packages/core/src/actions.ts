@@ -50,6 +50,7 @@ export interface ActionSpec {
   permissions: Record<string, WriteAction[]>;
   confirm: 'preview' | 'confirm';
   destructive: boolean;
+  /** The definition's own setting (default true); config and tables can change it. */
   requireReason: boolean;
   maxAffectedRows: number;
   timeoutMs?: number;
@@ -242,7 +243,7 @@ export function checkActionDefinitions(definitions: unknown): ActionDefinitionCh
       defaults,
       run,
     } = definition;
-    const { confirm = 'preview', destructive = false, requireReason = false } = definition;
+    const { confirm = 'preview', destructive = false, requireReason = true } = definition;
     const { maxAffectedRows = DEFAULT_MAX_AFFECTED_ROWS, timeoutMs, deadlineMs } = definition;
     if (typeof label !== 'string' || !label.trim()) problem('label is required');
     if (description !== undefined && typeof description !== 'string') {
@@ -324,6 +325,8 @@ export interface ResolvedAction extends Omit<ActionSpec, 'on' | 'permissions' | 
   /** Entity key → writes `run` may make. */
   permissions: Record<string, WriteAction[]>;
   refs: InputRef[];
+  /** The shortest a required reason may be, once trimmed; present when `requireReason` is. */
+  reasonMinLength?: number;
 }
 
 export interface ActionPolicy {
@@ -358,6 +361,14 @@ export function resolveActionPolicy(
   const byTable = new Map(schema.entities.map((e) => [`${e.schema}.${e.name}`, e]));
   const entityOf = (tableKey: string) =>
     byTable.get(tableKey.includes('.') ? tableKey : `${defaultSchema}.${tableKey}`);
+  // Only a table's own `requireReason` binds actions; `defaults.requireReason` is for record
+  // writes, and actions have their own default.
+  const tableReasons = new Map(
+    Object.entries(config.tables).map(([key, table]) => [
+      key.includes('.') ? key : `${defaultSchema}.${key}`,
+      table.requireReason ?? [],
+    ]),
+  );
 
   const actions = new Map<string, ResolvedAction>();
   for (const spec of specs) {
@@ -385,7 +396,8 @@ export function resolveActionPolicy(
     for (const [table, writes] of Object.entries(spec.permissions)) {
       const entity = entityOf(table)!;
       permissions[entity.key] = [...new Set([...(permissions[entity.key] ?? []), ...writes])];
-      if (writes.some((w) => entity.requireReason?.includes(w))) tableRequiresReason = true;
+      const required = tableReasons.get(`${entity.schema}.${entity.name}`) ?? [];
+      if (writes.some((w) => required.includes(w))) tableRequiresReason = true;
     }
     // `tx` can't see tables config denies reading, so it couldn't write them either.
     const unreadable = Object.keys(permissions).filter((key) =>
@@ -425,10 +437,12 @@ export function resolveActionPolicy(
       );
       continue;
     }
+    const requireReason = (settings?.requireReason ?? spec.requireReason) || tableRequiresReason;
     actions.set(spec.name, {
       ...spec,
       label: settings?.label ?? spec.label,
-      requireReason: spec.requireReason || settings?.requireReason === true || tableRequiresReason,
+      requireReason,
+      ...(requireReason ? { reasonMinLength: config.defaults.reasonMinLength } : {}),
       on: on.key,
       permissions,
       refs: spec.refs.map((r) => ({ ...r, entity: entityOf(r.entity)!.key })),

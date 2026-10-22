@@ -10,6 +10,8 @@ import { createWarden } from '../src/warden.js';
 import { authEnv, login, startTestIdp } from './helpers/auth.js';
 
 const CONFIG = `
+# Reasons are covered in require-reason.test.ts.
+defaults: { requireReason: [] }
 tables:
   users:
     displayField: email

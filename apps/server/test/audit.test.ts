@@ -2,13 +2,14 @@ import type { MockOidc } from '@wardenhq/mock-oidc';
 import { readExampleSql, startPostgres, type TestDatabase } from '@wardenhq/testing';
 import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { MAX_REASON_LENGTH } from '../src/routes/entities.js';
+import { MAX_REASON_LENGTH } from '@wardenhq/core';
 import { createWarden } from '../src/warden.js';
 import { authEnv, login, startTestIdp } from './helpers/auth.js';
 import { exampleConfigDeletingCompanies } from './helpers/config.js';
 
 // Deleting companies needs allowDelete, which the example only sets on users.
-const CONFIG = exampleConfigDeletingCompanies();
+// Reasons are covered in require-reason.test.ts.
+const CONFIG = exampleConfigDeletingCompanies({ requireReason: [] });
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 interface Item {

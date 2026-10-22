@@ -18,6 +18,10 @@ roles:
 # with allowDelete: true (and a role is granted delete on it by name; '*' never grants delete).
 defaults:
   delete: none
+  # Every create, update and delete must say why (an "Internal note" in the UI, kept in the audit
+  # log), in at least reasonMinLength characters. A table's own requireReason overrides this.
+  requireReason: [create, update, delete]
+  reasonMinLength: 10
 
 # Hide anything people shouldn't see before inviting them, for example:
 # tables:
