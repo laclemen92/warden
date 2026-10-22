@@ -272,6 +272,7 @@ describe('sort menu', SLOW, () => {
         mine: true,
         owner: 'Ada',
         canEdit: true,
+        canDelete: true,
         state: { sort: '-total,status' },
         updatedAt: '2026-01-01 00:00:00+00',
       },

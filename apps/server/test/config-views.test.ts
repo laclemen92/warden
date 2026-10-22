@@ -135,6 +135,7 @@ describe('config views', () => {
       mine: false,
       owner: null,
       canEdit: false,
+      canDelete: false,
       key: 'active-users',
       sidebar: true,
       default: true,
@@ -294,6 +295,7 @@ describe('defaults.sharedViews: config', () => {
       origin: 'shared',
       notInConfig: true,
       canEdit: false,
+      canDelete: true,
       state: { sort: '-created_at' },
     });
     expect((await list('config', 'admin'))[0]!.id).toBe('config:active-users');

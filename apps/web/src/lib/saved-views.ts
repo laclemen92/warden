@@ -14,6 +14,7 @@ export interface SavedView {
   mine: boolean;
   owner: string | null;
   canEdit: boolean;
+  canDelete: boolean;
   /** Null when the view uses a field the user can't see; it can only be replaced or deleted. */
   state: ViewState | null;
   updatedAt?: string;
@@ -64,7 +65,7 @@ export function useViewList(entity: string) {
 /** Config views pinned to the sidebar, of every table. */
 export function useSidebarViews() {
   return useQuery({
-    queryKey: ['views', 'sidebar'],
+    queryKey: ['view-sidebar'],
     queryFn: async () => (await apiFetch<{ views: SavedView[] }>(`${VIEWS_URL}/sidebar`)).views,
   });
 }

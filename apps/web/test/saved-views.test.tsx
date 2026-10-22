@@ -23,6 +23,7 @@ const savedView = (view: Partial<SavedView> & Pick<SavedView, 'id' | 'name'>): S
   mine: true,
   owner: 'Ada',
   canEdit: true,
+  canDelete: true,
   state: {},
   updatedAt: '2026-01-01 00:00:00+00',
   ...view,
@@ -35,6 +36,7 @@ let rowRequests: URL[];
 let writes: { method: string; path: string; body: unknown }[];
 
 beforeEach(() => {
+  schema.entities = [orders];
   views = [];
   admin = [];
   canShareOverride = undefined;
@@ -260,7 +262,14 @@ describe('saved views', SLOW, () => {
 
   it("offers no changes to shared views the user can't edit", async () => {
     views = [
-      savedView({ id: '2', name: 'Team', shared: true, mine: false, canEdit: false }),
+      savedView({
+        id: '2',
+        name: 'Team',
+        shared: true,
+        mine: false,
+        canEdit: false,
+        canDelete: false,
+      }),
       savedView({ id: '3', name: 'Broken', state: null }),
     ];
     renderAt('/entities/orders');
@@ -288,6 +297,7 @@ const configView = (view: Partial<SavedView> & Pick<SavedView, 'key' | 'name'>):
     mine: false,
     owner: null,
     canEdit: false,
+    canDelete: false,
     ...view,
   });
 
@@ -324,6 +334,21 @@ describe('config views', SLOW, () => {
     expect(writeText).toHaveBeenCalledWith(
       `${window.location.origin}/entities/orders?view=config:paid-orders`,
     );
+  });
+
+  it("keeps a table named sidebar apart from the sidebar's views", async () => {
+    schema.entities.push({ ...orders, key: 'sidebar', name: 'sidebar', label: 'Sidebar' });
+    views = [
+      { ...paid(), sidebar: true },
+      savedView({ id: '5', entity: 'sidebar', name: 'Sidebar view' }),
+    ];
+    renderAt('/entities/sidebar');
+    await screen.findByRole('table', { name: 'Sidebar' });
+    const nav = await screen.findByRole('navigation', { name: 'Queues' });
+    const dialog = await openViews();
+    const mine = await within(dialog).findByRole('list', { name: 'My views' });
+    expect(within(mine).getByRole('button', { name: /^Sidebar view/ })).toBeInTheDocument();
+    expect(within(nav).getByRole('link', { name: 'Paid orders' })).toBeInTheDocument();
   });
 
   it('opens a config view link, then shows when the grid no longer matches it', async () => {
@@ -408,7 +433,10 @@ describe('config views', SLOW, () => {
         id: '9',
         name: 'Legacy',
         shared: true,
+        mine: false,
+        owner: 'Eve',
         canEdit: false,
+        canDelete: true,
         notInConfig: true,
         state: { q: 'x' },
       }),
@@ -420,6 +448,9 @@ describe('config views', SLOW, () => {
     const dialog = await openViews();
     const shared = await within(dialog).findByRole('list', { name: 'Shared views' });
     expect(within(shared).getByText('Not in config')).toBeInTheDocument();
+    // A views admin can delete another user's leftover view, though not change it.
+    expect(within(shared).getByRole('button', { name: 'Delete Legacy' })).toBeEnabled();
+    expect(within(shared).queryByRole('button', { name: /^Update Legacy/ })).toBeNull();
     expect(within(dialog).queryByText('Share with everyone')).not.toBeInTheDocument();
 
     await userEvent.click(within(dialog).getByRole('button', { name: 'Export current grid' }));

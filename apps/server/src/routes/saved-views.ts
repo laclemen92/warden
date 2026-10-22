@@ -54,8 +54,10 @@ export interface SavedViewItem {
   mine: boolean;
   /** Who saved it, for shared views of other users. */
   owner: string | null;
-  /** Whether the current user may change or delete it. */
+  /** Whether the current user may change it. */
   canEdit: boolean;
+  /** Whether the current user may delete it. */
+  canDelete: boolean;
   /**
    * Null when the view names a field the current user can't see (dropped, hidden since, or
    * restricted by `readableBy`). Only users who may delete such a view are shown it at all, and
@@ -176,6 +178,7 @@ export function registerSavedViewRoutes(
       mine,
       owner: view.ownerName,
       canEdit: mayEdit(req, view),
+      canDelete: mayDelete(req, view),
       state: state.ok ? state.state : null,
       updatedAt: view.updatedAt,
       ...(configOnly && view.shared ? { notInConfig: true as const } : {}),
@@ -198,6 +201,7 @@ export function registerSavedViewRoutes(
       mine: false,
       owner: null,
       canEdit: false,
+      canDelete: false,
       state: view.state,
       key: view.key,
       ...(view.sidebar ? { sidebar: true as const } : {}),

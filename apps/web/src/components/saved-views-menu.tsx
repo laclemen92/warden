@@ -57,10 +57,6 @@ function ViewRow({
     setTimeout(() => setCopied(false), 2000);
   };
   const stale = view.state === null;
-  // Owners can always delete; the server says whether they can still change it. Config views
-  // change only through config.
-  const canDelete = view.origin !== 'config' && (view.canEdit || view.mine);
-
   return (
     <li className="group flex items-center gap-1">
       <Button
@@ -139,7 +135,7 @@ function ViewRow({
           <Users className={view.shared ? 'text-foreground' : undefined} />
         </Button>
       )}
-      {canDelete && (
+      {view.canDelete && (
         <Button
           variant="ghost"
           size="icon-xs"
