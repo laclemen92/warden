@@ -5,6 +5,7 @@ import { sql } from 'kysely';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   auditHook,
+  createActionTx,
   createDatabase,
   introspect,
   listRows,
@@ -260,5 +261,27 @@ describe('listing a soft-deleting entity', () => {
       expect(exported.total).toBe(expected.length);
       expect(rows.map((r) => r.id)).toEqual(expected);
     }
+  });
+});
+
+describe('custom actions on a soft-deleting entity', () => {
+  it('see deleted rows from list, locked or not, and get alike', async () => {
+    const deleted = await insert('certificates', `(name, deleted_at) values ('tx gone', now())`);
+    const all = (await ids(certificates, 'include')).map(String);
+    expect(all).toContain(String(deleted));
+    await handle.db.transaction().execute(async (trx) => {
+      const { tx } = createActionTx(trx, {
+        action: 'test-action',
+        resolve: (table) => (table === 'certificates' ? certificates : undefined),
+        permissions: {},
+        maxAffectedRows: 100,
+        onWrite: async () => {},
+      });
+      for (const lock of [false, true]) {
+        const listed = await tx.list('certificates', { sort: 'id', limit: 500, lock });
+        expect(listed.map((r) => r.id)).toEqual(all);
+      }
+      expect((await tx.get('certificates', String(deleted)))?.id).toBe(String(deleted));
+    });
   });
 });

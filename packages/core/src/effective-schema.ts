@@ -198,6 +198,12 @@ export function resolveSchema(model: SchemaModel, config: WardenConfig): Resolve
       );
       if (softDelete) {
         entity.softDelete = softDelete;
+        // Only delete and restore write them, so a plain update can't stand in for a delete.
+        for (const field of fields) {
+          if (field.name !== softDelete.column && field.name !== softDelete.by) continue;
+          field.readOnly = true;
+          delete field.createOnly;
+        }
         if (softDelete.by && !config.actor) {
           warn(`${path}.softDelete.by`, 'is always set to null: `actor` is not configured');
         }
@@ -356,6 +362,14 @@ function resolveSoftDelete(
   // Restoring clears them.
   if (kind === 'timestamp' && !column.nullable) {
     warn(`${path}.column`, `column "${column.name}" is not nullable; ${fallback}`);
+    return undefined;
+  }
+  // Create can't set it, so a new row needs a way to start live.
+  if (kind === 'boolean' && !column.nullable && !column.hasDefault) {
+    warn(
+      `${path}.column`,
+      `column "${column.name}" is not nullable and has no default; ${fallback}`,
+    );
     return undefined;
   }
   if (by && !by.nullable) {

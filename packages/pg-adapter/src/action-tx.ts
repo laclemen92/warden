@@ -254,9 +254,11 @@ export function createActionTx(trx: Database, options: ActionTxOptions): ActionT
         const rows = await lockRows(trx, entity, filter, limit, sort.sort);
         return rows.map((row) => toRecordRef(entity, row));
       }
+      // Like `get` and locked lists, actions see soft-deleted rows too.
       const { rows } = await listRows(trx, entity, {
         sort: sort.sort,
         limit,
+        deleted: 'include',
         ...(filter ? { filter } : {}),
       });
       return rows.map((row) => toRecordRef(entity, row));

@@ -65,6 +65,7 @@ const model: SchemaModel = {
       ts('stamp_generated', { generated: true }),
       ts('stamp'),
       col('by_not_null', { nullable: false }),
+      col('flag_no_default', { dataType: 'bool', formattedType: 'boolean', nullable: false }),
     ]),
   ],
 };
@@ -100,6 +101,30 @@ describe('resolving softDelete', () => {
     expect(resolve(config).warnings).toEqual([]);
   });
 
+  it('makes its columns read-only, so only delete and restore write them', () => {
+    const config = {
+      actor: ACTOR,
+      tables: {
+        certificates: { softDelete: { column: 'deleted_at', by: 'deleted_by' } },
+        notes: { softDelete: { column: 'is_deleted' } },
+      },
+    };
+    const readOnly = (key: string) =>
+      Object.fromEntries(entity(config, key).fields.map((f) => [f.name, f.readOnly]));
+    expect(readOnly('certificates')).toEqual({
+      id: false,
+      name: false,
+      deleted_at: true,
+      deleted_by: true,
+    });
+    expect(readOnly('notes')).toMatchObject({ is_deleted: true, body: false });
+    // Without soft delete they stay ordinary columns.
+    expect(readOnly('plain')).toEqual({ id: false, name: false });
+    expect(
+      Object.fromEntries(entity({}, 'certificates').fields.map((f) => [f.name, f.readOnly])),
+    ).toMatchObject({ deleted_at: false, deleted_by: false });
+  });
+
   it('never detects a deleted_at column on its own', () => {
     expect(entity({}, 'certificates').softDelete).toBeUndefined();
   });
@@ -114,6 +139,11 @@ describe('resolving softDelete', () => {
       [{ column: 'id' }, 'column', 'column "id" is part of the primary key'],
       [{ column: 'stamp', by: 'nope' }, 'by', 'column "nope" does not exist'],
       [{ column: 'stamp', by: 'by_not_null' }, 'by', 'column "by_not_null" is not nullable'],
+      [
+        { column: 'flag_no_default' },
+        'column',
+        'column "flag_no_default" is not nullable and has no default',
+      ],
     ];
     for (const [softDelete, key, message] of cases) {
       const { schema, warnings } = resolve({ actor: ACTOR, tables: { odd: { softDelete } } });

@@ -25,6 +25,7 @@ const SCHEMA = `
   );
   -- Soft delete is configured with a column that can't hold it, so it falls back to hard delete.
   create table drafts (id serial primary key, body text, deleted_at text);
+  create table archives (id serial primary key, name text, deleted_at timestamptz);
   create table lines (
     id              serial primary key,
     certificate_id  int references certificates (id) on delete cascade
@@ -46,12 +47,14 @@ tables:
   staff: { hidden: true }
   certificates:
     softDelete: { column: deleted_at, by: deleted_by }
-    columns: { deleted_at: { readOnly: true }, deleted_by: { readOnly: true } }
   notes:
     softDelete: { column: is_deleted }
     requireReason: []
   drafts:
     softDelete: { column: deleted_at }
+  archives:
+    softDelete: { column: deleted_at }
+    deny: [delete]
   lines:
     deny: [delete]
 actor: { table: staff, matchColumn: email, idColumn: id }
@@ -62,6 +65,7 @@ roles:
       '*': [read]
       certificates: [delete]
       notes: [delete]
+      archives: [delete]
       lines: [delete]
   admin:
     grants:
@@ -69,6 +73,7 @@ roles:
       certificates: [delete]
       notes: [delete]
       drafts: [delete]
+      archives: [delete]
     admin: [audit]
 ${ACCESS}`;
 
@@ -334,6 +339,60 @@ describe('the deny paths', () => {
     expect(await rowOf('lines', id)).toBeDefined();
   });
 
+  it('lets a table deny beat the grant on a soft-deleting table', async () => {
+    const id = await insert(`insert into archives (name) values ('kept')`);
+    for (const user of ['editor', 'admin'] as const) {
+      const res = await remove(user, 'archives', id);
+      expect(res.statusCode).toBe(403);
+      expect(res.json()).toEqual(FORBIDDEN);
+    }
+    expect(await rowOf('archives', id)).toMatchObject({ deleted_at: null });
+    expect(await auditOf('archives', id)).toEqual([]);
+  });
+
+  it('refuses writing the soft delete columns through create and update', async () => {
+    const id = await insert(`insert into certificates (name) values ('untouched')`);
+    const write = (method: 'POST' | 'PATCH', url: string, values: object) =>
+      app.inject({
+        method,
+        url,
+        headers: { cookie: cookies.admin, ...json },
+        payload: { values, reason: REASON },
+      });
+    for (const values of [
+      { deleted_at: '2026-01-01T00:00:00Z' },
+      { deleted_by: '999' },
+      { name: 'renamed', deleted_at: '2026-01-01T00:00:00Z', deleted_by: '999' },
+    ]) {
+      const res = await write('PATCH', `/api/entities/certificates/${id}`, values);
+      expect(res.statusCode, res.body).toBe(400);
+    }
+    // A table that denies delete can't be soft-deleted through update either.
+    const archived = await insert(`insert into archives (name) values ('kept')`);
+    const viaUpdate = await write('PATCH', `/api/entities/archives/${archived}`, {
+      deleted_at: '2026-01-01T00:00:00Z',
+    });
+    expect(viaUpdate.statusCode, viaUpdate.body).toBe(400);
+    expect(await rowOf('archives', archived)).toMatchObject({ deleted_at: null });
+
+    const created = await write('POST', '/api/entities/certificates', {
+      name: 'born deleted',
+      deleted_at: '2026-01-01T00:00:00Z',
+    });
+    expect(created.statusCode, created.body).toBe(400);
+
+    expect(await rowOf('certificates', id)).toMatchObject({
+      name: 'untouched',
+      deleted_at: null,
+      deleted_by: null,
+    });
+    expect(await auditOf('certificates', id)).toEqual([]);
+    const { rows } = await sqlPool.query(
+      `select count(*)::int as n from certificates where name = 'born deleted'`,
+    );
+    expect(rows[0].n).toBe(0);
+  });
+
   it('falls back to no delete at all when the column does not fit, with a warning', async () => {
     const id = await insert(`insert into drafts (body) values ('draft')`);
     const res = await remove('admin', 'drafts', id);
@@ -373,6 +432,7 @@ describe('the deny paths', () => {
     const { entities } = res.json<{ entities: Record<string, { actions: string[] }> }>();
     expect(entities.certificates?.actions).toEqual(['read', 'delete']);
     expect(entities.drafts?.actions).toEqual(['read']);
+    expect(entities.archives?.actions).toEqual(['read']);
   });
 
   it("doesn't warn about the cascade a soft delete never runs", () => {
@@ -381,9 +441,10 @@ describe('the deny paths', () => {
 
   it('fails startup when config hides the soft delete column', async () => {
     const hidden = CONFIG.replace(
-      'columns: { deleted_at: { readOnly: true }, deleted_by: { readOnly: true } }',
-      'columns: { deleted_at: { hidden: true } }',
+      'softDelete: { column: deleted_at, by: deleted_by }',
+      'softDelete: { column: deleted_at, by: deleted_by }\n    columns: { deleted_at: { hidden: true } }',
     );
+    expect(hidden).not.toBe(CONFIG);
     await expect(
       createWarden({
         env: {
