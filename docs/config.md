@@ -167,7 +167,7 @@ Each key is a table, as `table` (in the default schema) or `schema.table`. Warde
 
 **`displayField`** is the column used to represent a row elsewhere, such as foreign key links and pickers. Without it, Warden picks the first visible column named `name`, `title`, `label`, `display_name`, `username`, or `email`, then a text column with a single-column unique constraint, then the first primary key column, then the first visible column.
 
-**`defaultSort`** is the grid's initial sort, and the order of API lists and exports that don't name one. Without it, a table with a primary key is sorted newest first by the first visible timestamp column named `created_at`, `createdAt`, `inserted_at`, or `insertedAt` (`desc`); otherwise rows are in primary key order. The primary key is always added as a final tie-breaker.
+**`defaultSort`** is the grid's initial sort, and the order of API lists and exports that don't name one. Without it, a table with a primary key is sorted newest first by the first visible timestamp column named `created_at`, `createdAt`, `inserted_at`, or `insertedAt` (`desc`); otherwise rows are in primary key order. The primary key is always added as a final tie-breaker. Tables without a primary key have no default order.
 
 **`columnOrder`** lists the columns the grid shows first, left to right. The rest follow in the default order: the primary key columns in key order, then the `displayField`, then the timestamp columns `created_at`, `updated_at`, `inserted_at`, and `modified_at` (and their camelCase forms), then everything else in table order. Tables without a primary key show columns in table order. It only orders columns; which ones are visible is up to the user's column picker and saved views. A column can't be listed twice.
 
