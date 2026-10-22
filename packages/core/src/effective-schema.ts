@@ -23,6 +23,8 @@ export interface Entity {
   /** Field used to represent a row elsewhere (FK links, pickers). */
   displayField: string;
   defaultSort?: { column: string; direction: 'asc' | 'desc' };
+  /** Columns the grid shows first, from config; absent when not configured. See `gridColumnOrder`. */
+  columnOrder?: string[];
   searchable: string[];
   /** Writes that must give a reason (stored in the audit log); absent when none must. */
   requireReason?: WriteAction[];
@@ -155,6 +157,10 @@ export function resolveSchema(model: SchemaModel, config: WardenConfig): Resolve
     }
     const sort = tableConfig?.defaultSort;
     if (sort && usable(sort.column, `${path}.defaultSort.column`)) entity.defaultSort = sort;
+    const columnOrder = tableConfig?.columnOrder?.filter((c, i) =>
+      usable(c, `${path}.columnOrder.${i}`),
+    );
+    if (columnOrder?.length) entity.columnOrder = columnOrder;
 
     exposedTables.push(table);
     entities.push(entity);

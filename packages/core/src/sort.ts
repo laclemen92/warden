@@ -26,11 +26,32 @@ export const parseSortFields = (input: string): string[] =>
     .map((p) => p.trim().replace(/^[-+]/, ''))
     .filter(Boolean);
 
+const CREATION_COLUMNS = ['created_at', 'createdAt', 'inserted_at', 'insertedAt'];
+
+/**
+ * The sort a grid opens with when the request doesn't name one: the configured `defaultSort`, or
+ * else newest first by a `created_at`-style column. Tables without a primary key get neither
+ * heuristic, since there's no tie-breaker to make the order total.
+ */
+export function defaultSortOf(entity: Entity): SortTerm | undefined {
+  if (entity.defaultSort) {
+    return { field: entity.defaultSort.column, direction: entity.defaultSort.direction };
+  }
+  if (entity.primaryKey.length === 0) return undefined;
+  for (const name of CREATION_COLUMNS) {
+    const f = entity.fields.find((x) => x.name === name);
+    if (f && !f.isArray && isSortable(f) && fieldCategory(f) === 'temporal') {
+      return { field: name, direction: 'desc' };
+    }
+  }
+  return undefined;
+}
+
 export type SortResolution = { ok: true; sort: SortTerm[] } | { ok: false; message: string };
 
 /**
  * Resolve a sort string like `-created_at,email` (`-` for descending) against an entity, falling
- * back to the configured default sort. Primary key columns are appended as tie-breakers so the
+ * back to `defaultSortOf`. Primary key columns are appended as tie-breakers so the
  * order is total, which keyset pagination relies on.
  */
 export function resolveSort(entity: Entity, input?: string): SortResolution {
@@ -52,8 +73,9 @@ export function resolveSort(entity: Entity, input?: string): SortResolution {
       }
       terms.push({ field: name, direction });
     }
-  } else if (entity.defaultSort) {
-    terms.push({ field: entity.defaultSort.column, direction: entity.defaultSort.direction });
+  } else {
+    const fallback = defaultSortOf(entity);
+    if (fallback) terms.push(fallback);
   }
 
   for (const key of entity.primaryKey) {

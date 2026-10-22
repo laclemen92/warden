@@ -42,6 +42,8 @@ tables:
 
   orders:
     defaultSort: { column: placed_at, direction: desc }
+    # Columns the grid shows first; the rest follow (key, display field, timestamps, table order).
+    columnOrder: [status, placed_at]
     columns:
       placed_at: { readOnly: true }
     # Nobody may create or delete orders, whatever their role grants.

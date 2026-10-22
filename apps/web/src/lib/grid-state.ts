@@ -1,4 +1,4 @@
-import type { Entity, SortTerm, ViewState } from '@wardenhq/core';
+import { defaultSortOf, type Entity, type SortTerm, type ViewState } from '@wardenhq/core';
 
 export const PAGE_SIZES = [25, 50, 100, 200] as const;
 export const DEFAULT_PAGE_SIZE = 50;
@@ -12,7 +12,7 @@ export interface GridState {
   /** Raw JSON filter AST from the URL; the server validates it. */
   filter?: string;
   q: string;
-  /** Visible columns, in the entity's order; all of them when unset. */
+  /** Visible columns, in the entity's field order; all of them when unset. */
   columns?: string[];
   /** 1-based. */
   page: number;
@@ -42,18 +42,14 @@ function positiveInt(value: string | null): number | undefined {
 
 export function readGridState(params: URLSearchParams, entity: Entity): GridState {
   const sort = parseSort(params.get('sort'));
+  const fallback = defaultSortOf(entity);
   const pageSize = positiveInt(params.get('pageSize'));
   const filter = params.get('filter');
   // Names the entity doesn't have (renamed or hidden since the link was made) are ignored.
   const listed = new Set(params.get('columns')?.split(',') ?? []);
   const columns = entity.fields.filter((f) => listed.has(f.name)).map((f) => f.name);
   return {
-    sort:
-      sort.length > 0
-        ? sort
-        : entity.defaultSort
-          ? [{ field: entity.defaultSort.column, direction: entity.defaultSort.direction }]
-          : [],
+    sort: sort.length > 0 ? sort : fallback ? [fallback] : [],
     ...(filter ? { filter } : {}),
     q: params.get('q') ?? '',
     ...(columns.length > 0 && columns.length < entity.fields.length ? { columns } : {}),

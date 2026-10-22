@@ -307,7 +307,8 @@ export function schemaFor(
       continue;
     }
     changed = true;
-    const { defaultSort, ...rest } = entity;
+    const { defaultSort, columnOrder, ...rest } = entity;
+    const readableOrder = columnOrder?.filter((c) => visible.has(c));
     narrowed.set(entity.key, {
       ...rest,
       fields,
@@ -317,6 +318,7 @@ export function schemaFor(
         : (entity.primaryKey[0] ?? fields[0]?.name ?? ''),
       searchable: entity.searchable.filter((f) => visible.has(f)),
       ...(defaultSort && visible.has(defaultSort.column) ? { defaultSort } : {}),
+      ...(readableOrder?.length ? { columnOrder: readableOrder } : {}),
     });
   }
   if (!changed) return schema;
