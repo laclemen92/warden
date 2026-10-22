@@ -14,12 +14,13 @@ export interface Policy {
   roles: Map<string, RoleGrants>;
   /**
    * Per entity, actions nobody may perform: the table's `deny`, plus `delete` wherever hard delete
-   * isn't enabled.
+   * isn't enabled and the entity doesn't soft-delete.
    */
   denied: Map<string, Set<Action>>;
   /**
-   * Entities whose `delete` is denied only because hard delete isn't enabled there (no
-   * `allowDelete`, and `defaults.delete` is `none`), as opposed to by the table's `deny`.
+   * Entities where hard delete isn't enabled (no `allowDelete`, and `defaults.delete` is `none`)
+   * and the table doesn't deny delete. Their `delete` is denied unless they soft-delete; custom
+   * actions may never hard-delete there.
    */
   deleteOff: Set<string>;
   /** Per entity and field, the roles that may read or write it, where config restricts them. */
@@ -98,8 +99,10 @@ export function resolvePolicy(schema: EffectiveSchema, config: WardenConfig): Re
         });
       }
     } else if (!allowDelete) {
-      addAll(denied, entity.key, ['delete']);
       deleteOff.add(entity.key);
+      // Its delete only sets a column, so the grant stands.
+      if (entity.softDelete) continue;
+      addAll(denied, entity.key, ['delete']);
       for (const [role, { grants }] of Object.entries(config.roles)) {
         for (const [tableKey, actions] of Object.entries(grants)) {
           if (tableKey === '*' || !actions.includes('delete')) continue;
@@ -177,9 +180,11 @@ export function deleteCascadeWarnings(
   const warnings: SchemaWarning[] = [];
   for (const entity of schema.entities) {
     if (policy.denied.get(entity.key)?.has('delete')) continue;
+    // A role's delete on a soft-deleting entity removes nothing; a custom action's still does.
     const granted =
       actionDeletes.has(entity.key) ||
-      [...policy.roles.values()].some((g) => g.byEntity.get(entity.key)?.has('delete'));
+      (!entity.softDelete &&
+        [...policy.roles.values()].some((g) => g.byEntity.get(entity.key)?.has('delete')));
     if (!granted) continue;
     const affected = cascadeTargets(model, entity.schema, entity.name);
     if (affected.length === 0) continue;

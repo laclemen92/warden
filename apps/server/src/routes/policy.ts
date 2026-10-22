@@ -3,6 +3,8 @@ import type { FastifyInstance } from 'fastify';
 import type { Views } from '../views.js';
 
 const ENTITY_ROUTE_PREFIX = '/api/entities/';
+/** Restoring a soft-deleted row changes it, so it needs `update`, not `create`. */
+export const RESTORE_ROUTE = '/api/entities/:entity/:id/restore';
 
 /** Methods with no action here are denied, so a new kind of route can't slip past the policy. */
 const METHOD_ACTIONS: Partial<Record<string, Action>> = {
@@ -29,7 +31,12 @@ export function registerPolicy(app: FastifyInstance, policy: Policy, views: View
     if (typeof entity !== 'string' || !views(roles).entities.has(entity)) {
       return reply.code(404).send({ statusCode: 404, error: 'Not Found', message: 'Not Found' });
     }
-    const action = METHOD_ACTIONS[req.method];
+    const action =
+      req.routeOptions.url === RESTORE_ROUTE
+        ? req.method === 'POST'
+          ? 'update'
+          : undefined
+        : METHOD_ACTIONS[req.method];
     if (!action || !isAllowed(policy, roles, entity, action)) {
       req.log.info({ entity, action: action ?? req.method }, 'denied by policy');
       return reply.code(403).send({ statusCode: 403, error: 'Forbidden', message: 'Forbidden' });

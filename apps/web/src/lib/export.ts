@@ -3,8 +3,8 @@ import { ApiError } from './api';
 import type { GridState } from './grid-state';
 
 /**
- * The export endpoint URL for a grid: the same filter, search, and sort as its list request,
- * and its visible columns, over every matching row. Sort is left out when it is the entity's
+ * The export endpoint URL for a grid: the same filter, search, sort, and soft-deleted rows as its
+ * list request, and its visible columns, over every matching row. Sort is left out when it is the entity's
  * default, which the server applies anyway.
  */
 export function exportUrl(entity: Entity, state: GridState, explicitSort: string | null): string {
@@ -13,6 +13,7 @@ export function exportUrl(entity: Entity, state: GridState, explicitSort: string
   if (state.q.trim()) params.set('q', state.q.trim());
   if (explicitSort?.trim()) params.set('sort', explicitSort.trim());
   if (state.columns) params.set('columns', state.columns.join(','));
+  if (state.showDeleted) params.set('deleted', 'include');
   const query = params.toString();
   return `/api/export/${encodeURIComponent(entity.key)}${query ? `?${query}` : ''}`;
 }

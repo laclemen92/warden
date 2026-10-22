@@ -1,10 +1,17 @@
 import { createHash } from 'node:crypto';
-import { entityFor, type Entity, type Field, type Filter, type SortTerm } from '@wardenhq/core';
-import { sql } from 'kysely';
+import {
+  entityFor,
+  type Entity,
+  type Field,
+  type Filter,
+  type SoftDeleteDetails,
+  type SortTerm,
+} from '@wardenhq/core';
+import { sql, type RawBuilder, type SqlBool } from 'kysely';
 import { setActorSettings, type TransactionActor } from './actor.js';
 import type { Database } from './database.js';
 import { compileFilter } from './filter.js';
-import { entityTable, orderBy, type Row } from './rows.js';
+import { deletedCondition, entityTable, orderBy, type Row } from './rows.js';
 
 export type WriteAction = 'create' | 'update' | 'delete';
 
@@ -20,6 +27,8 @@ export interface WriteChange {
    * `after` are the database's own doing (defaults, triggers, generated columns).
    */
   written?: string[];
+  /** Recorded with the audit entry. */
+  details?: SoftDeleteDetails;
 }
 
 /**
@@ -135,11 +144,20 @@ export async function insertIn(
   return row;
 }
 
-/** Lock the row a primary-key filter (from `decodeRecordId`) addresses. */
-export async function lockRow(trx: Database, entity: Entity, filter: Filter) {
+/**
+ * Lock the row a primary-key filter (from `decodeRecordId`) addresses, provided it also meets
+ * `condition`.
+ */
+export async function lockRow(
+  trx: Database,
+  entity: Entity,
+  filter: Filter,
+  condition?: RawBuilder<SqlBool>,
+) {
   const { rows } = await sql<Row>`
     select ${selection(entity)} from ${entityRows(entity)}
-    where ${compileFilter(filter, ALIAS)} limit 1 for update`.execute(trx);
+    where ${compileFilter(filter, ALIAS)} ${condition ? sql`and ${condition}` : sql``}
+    limit 1 for update`.execute(trx);
   return rows[0];
 }
 
@@ -256,4 +274,105 @@ export async function deleteIn(
   await sql`delete from ${entityRows(entity)} where ${compileFilter(filter, ALIAS)}`.execute(trx);
   await onWrite?.(trx, { action: 'delete', entity, before, after: null });
   return { ok: true, row: before };
+}
+
+export interface SoftDeleteOptions extends WriteOptions, Partial<VersionCheck> {
+  /** Written to the entity's `softDelete.by` column, if it has one. */
+  by?: string | null;
+}
+
+/**
+ * Soft-delete the live row a primary-key filter addresses: set its soft-delete column (and `by`)
+ * instead of removing it. A row that is already deleted is not found. The write hook sees a
+ * `delete` with the row before and after, flagged in its details.
+ */
+export async function softDeleteRow(
+  db: Database,
+  entity: Entity,
+  filter: Filter,
+  options: SoftDeleteOptions = {},
+): Promise<WriteResult> {
+  return writeTransaction(db, options.actor, (trx) => softDeleteIn(trx, entity, filter, options));
+}
+
+/** Soft-delete a row inside an open transaction. */
+export async function softDeleteIn(
+  trx: Database,
+  entity: Entity,
+  filter: Filter,
+  { by = null, ...options }: SoftDeleteOptions = {},
+): Promise<WriteResult> {
+  const softDelete = entity.softDelete;
+  if (!softDelete) throw new Error(`"${entity.key}" does not soft-delete`);
+  const set = [
+    sql`${sql.id(softDelete.column)} = ${softDelete.kind === 'boolean' ? sql`true` : sql`now()`}`,
+    ...(softDelete.by ? [sql`${sql.id(softDelete.by)} = ${by}`] : []),
+  ];
+  return setDeleted(trx, entity, filter, 'delete', set, options);
+}
+
+/**
+ * Restore the soft-deleted row a primary-key filter addresses: clear its soft-delete column (to
+ * null, or false for a boolean) and `by`. A row that isn't deleted is not found. The write hook
+ * sees an `update` of those columns, flagged in its details.
+ */
+export async function restoreRow(
+  db: Database,
+  entity: Entity,
+  filter: Filter,
+  options: WriteOptions & Partial<VersionCheck> = {},
+): Promise<WriteResult> {
+  return writeTransaction(db, options.actor, (trx) => restoreIn(trx, entity, filter, options));
+}
+
+/** Restore a soft-deleted row inside an open transaction. */
+export async function restoreIn(
+  trx: Database,
+  entity: Entity,
+  filter: Filter,
+  options: WriteOptions & Partial<VersionCheck> = {},
+): Promise<WriteResult> {
+  const softDelete = entity.softDelete;
+  if (!softDelete) throw new Error(`"${entity.key}" does not soft-delete`);
+  const set = [
+    sql`${sql.id(softDelete.column)} = ${softDelete.kind === 'boolean' ? sql`false` : sql`null`}`,
+    ...(softDelete.by ? [sql`${sql.id(softDelete.by)} = null`] : []),
+  ];
+  return setDeleted(trx, entity, filter, 'restore', set, options);
+}
+
+async function setDeleted(
+  trx: Database,
+  entity: Entity,
+  filter: Filter,
+  change: SoftDeleteDetails['softDelete'],
+  set: RawBuilder<unknown>[],
+  { version, versionEntity = entity, onWrite }: WriteOptions & Partial<VersionCheck>,
+): Promise<WriteResult> {
+  const softDelete = entity.softDelete!;
+  const before = await lockRow(
+    trx,
+    entity,
+    filter,
+    deletedCondition(entity, change === 'delete' ? 'exclude' : 'only', ALIAS),
+  );
+  if (!before) return { ok: false, reason: 'notFound' };
+  if (version !== undefined && rowVersion(versionEntity, before) !== version) {
+    return { ok: false, reason: 'conflict' };
+  }
+  const { rows } = await sql<Row>`
+    update ${entityRows(entity)} set ${sql.join(set)}
+    where ${compileFilter(filter, ALIAS)} ${returning(entity)}`.execute(trx);
+  const after = rows[0]!;
+  await onWrite?.(trx, {
+    action: change === 'delete' ? 'delete' : 'update',
+    entity,
+    before,
+    after,
+    ...(change === 'restore'
+      ? { written: [softDelete.column, ...(softDelete.by ? [softDelete.by] : [])] }
+      : {}),
+    details: { softDelete: change },
+  });
+  return { ok: true, row: after };
 }
