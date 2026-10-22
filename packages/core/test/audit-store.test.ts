@@ -175,7 +175,7 @@ describe('resolveAuditStore', () => {
       'column "why" (reason) does not exist in "public.change_log"',
       'column "fields" (written) is jsonb, expected a text array',
       'column "parent" (parentId) is uuid, expected an integer',
-      'source column "origin" is int4, expected text',
+      'source column "origin" is int4, expected text without a length limit',
       'column "tenant_id" is not null without a default, and isn\'t mapped',
     ]);
   });
@@ -211,5 +211,66 @@ describe('resolveSchema with an audit table', () => {
   it('exposes it like any table with the warden store', () => {
     const { schema } = resolveSchema(model, config({}));
     expect(schema.entities.map((e) => e.key)).toEqual(['users', 'change_log']);
+  });
+});
+
+describe('resolveAuditStore column checks', () => {
+  it('rejects an id whose default is a plain value, not an identity or sequence', () => {
+    const { store, problems } = resolveAuditStore(
+      config({ store: 'table', table: 'change_log', columns: MINIMAL }),
+      table('change_log', [
+        col('id', 'int8', { ...notNull, hasDefault: true }),
+        ...minimalTable().columns.slice(1),
+      ]),
+    );
+    expect(store).toEqual({ kind: 'unavailable' });
+    expect(problems).toEqual([
+      'audit table "public.change_log": column "id" (id) needs an identity or sequence default',
+    ]);
+  });
+
+  it('accepts an identity id without a sequence default', () => {
+    const { problems } = resolveAuditStore(
+      config({ store: 'table', table: 'change_log', columns: MINIMAL }),
+      table('change_log', [
+        col('id', 'int8', { ...notNull, hasDefault: true, identity: 'byDefault' }),
+        ...minimalTable().columns.slice(1),
+      ]),
+    );
+    expect(problems).toEqual([]);
+  });
+
+  it('rejects text columns with a length limit', () => {
+    const limited = (name: string, length: number, extra: Partial<Column> = {}) =>
+      col(name, 'varchar', {
+        formattedType: `character varying(${length})`,
+        maxLength: length,
+        ...extra,
+      });
+    const { store, problems } = resolveAuditStore(
+      config({
+        store: 'table',
+        table: 'change_log',
+        columns: { ...MINIMAL, actorRoles: 'roles' },
+        source: { column: 'source', value: 'warden' },
+      }),
+      table('change_log', [
+        ...minimalTable().columns.filter((c) => c.name !== 'record_id'),
+        limited('record_id', 36),
+        col('roles', 'varchar', {
+          ...notNull,
+          isArray: true,
+          formattedType: 'character varying(20)[]',
+          maxLength: 20,
+        }),
+        limited('source', 10),
+      ]),
+    );
+    expect(store).toEqual({ kind: 'unavailable' });
+    expect(problems.map((p) => p.replace('audit table "public.change_log": ', ''))).toEqual([
+      'column "roles" (actorRoles) is character varying(20)[], expected no length limit',
+      'column "record_id" (recordId) is character varying(36), expected no length limit',
+      'source column "source" is character varying(10), expected text without a length limit',
+    ]);
   });
 });

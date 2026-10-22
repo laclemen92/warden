@@ -49,9 +49,9 @@ const SCHEMA = `
   create table change_log (
     log_id        serial primary key,
     created_at    timestamp not null default now(),
-    actor_sub     varchar(200) not null,
+    actor_sub     varchar not null,
     "Actor Email" text,
-    action        varchar(50) not null,
+    action        varchar not null,
     table_name    text not null,
     record_id     text,
     diff          json,
@@ -412,6 +412,19 @@ describe('a configured audit table', () => {
     expect([...first.entries, ...next.entries].map((e) => e.id)).toEqual(
       (await listAuditEntries(handle.db, { visible, limit: 50 }, minimal)).entries.map((e) => e.id),
     );
+  });
+
+  it('reads a timestamp without time zone back as an instant, with its offset', async () => {
+    const start = Date.now();
+    await writeEverything(minimal);
+    const { entries } = await listAuditEntries(handle.db, { visible, limit: 1 }, minimal);
+    const occurredAt = entries[0]!.occurredAt;
+    expect(occurredAt).toMatch(/(Z|[+-]\d\d(:\d\d)?)$/);
+    expect(Math.abs(Date.parse(occurredAt) - start)).toBeLessThan(60_000);
+    const { rows } = await sql<{ at: string }>`
+      select to_json(created_at::timestamptz) #>> '{}' as at
+      from change_log order by log_id desc limit 1`.execute(handle.db);
+    expect(occurredAt).toBe(rows[0]!.at);
   });
 
   it("keeps the application's update of a hidden field out of History", async () => {

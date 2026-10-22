@@ -113,10 +113,13 @@ export function resolveAuditStore(
     const spec = FIELD_SPECS[field];
     if (!isKind(column, spec.kind)) {
       problems.push(`${where} is ${column.formattedType}, expected ${KIND_TYPES[spec.kind].label}`);
+    } else if (column.maxLength !== undefined) {
+      // An overlong value would fail the insert as a data error, blamed on the user's request.
+      problems.push(`${where} is ${column.formattedType}, expected no length limit`);
     }
     if (field === 'id') {
       // Warden never writes the id; the database generates it, in increasing order.
-      if (!column.hasDefault || column.generated) {
+      if ((!column.identity && !column.sequenceDefault) || column.generated) {
         problems.push(`${where} needs an identity or sequence default`);
       }
     } else {
@@ -131,8 +134,8 @@ export function resolveAuditStore(
     const column = byName.get(source.column);
     const where = `source column "${source.column}"`;
     if (!column) problems.push(`${where} does not exist in "${label}"`);
-    else if (!isKind(column, 'text')) {
-      problems.push(`${where} is ${column.formattedType}, expected text`);
+    else if (!isKind(column, 'text') || column.maxLength !== undefined) {
+      problems.push(`${where} is ${column.formattedType}, expected text without a length limit`);
     } else if (!writable(column)) problems.push(`${where} is generated and can't be written`);
   }
   // Every insert would fail on a column Warden doesn't fill and the database can't.

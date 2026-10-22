@@ -457,12 +457,12 @@ audit:
   source: { column: source, value: warden }
 ```
 
-With `audit.columns`, only the fields listed are written; the others are dropped. The first eight below are required, since History and the audit log need them to show each user only what they may see. Each column must have a compatible type, and a field Warden sometimes leaves empty needs a nullable column:
+With `audit.columns`, only the fields listed are written; the others are dropped. The first eight below are required, since History and the audit log need them to show each user only what they may see. Each column must have a compatible type, and a field Warden sometimes leaves empty needs a nullable column. Text columns can't have a length limit (`varchar`, not `varchar(n)`), since a long value would make the write fail:
 
 | Field                        | Column type                                            | Holds                                                                                                   |
 | ---------------------------- | ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------- |
 | `audit.columns.id`           | `int2`/`int4`/`int8` with identity or sequence default | Required. Increasing entry id; Warden never writes it. Pages and parent links use it.                   |
-| `audit.columns.occurredAt`   | `timestamptz` or `timestamp`                           | Required. The write's transaction start (`now()`).                                                      |
+| `audit.columns.occurredAt`   | `timestamptz` or `timestamp`                           | Required. The write's transaction start (`now()`); a `timestamp` holds it in the session's time zone.   |
 | `audit.columns.actorSubject` | `text`/`varchar`                                       | Required. OIDC subject of the user.                                                                     |
 | `audit.columns.action`       | `text`/`varchar`                                       | Required. `create`, `update`, `delete`, `export`, a custom action's name, ...                           |
 | `audit.columns.entity`       | `text`/`varchar`                                       | Required. Entity key.                                                                                   |

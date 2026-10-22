@@ -360,7 +360,9 @@ function auditRelation(store: AuditStore): RawBuilder<unknown> {
   };
   const source = store.source ? sql`${sql.id('t', store.source.column)}::text` : sql`null::text`;
   return sql`(select
-    ${column('id')} as id, ${column('occurredAt')} as occurred_at,
+    ${column('id')} as id,
+    -- A timestamp without time zone holds now() in the session time zone; read it back with an offset.
+    ${column('occurredAt')}::timestamptz as occurred_at,
     ${as('requestId', 'text', 'request_id')}, ${as('actorSubject', 'text', 'actor_subject')},
     ${as('actorEmail', 'text', 'actor_email')}, ${as('actorRoles', 'text[]', 'actor_roles')},
     ${as('action', 'text', 'action')}, ${as('entity', 'text', 'entity')},
