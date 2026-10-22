@@ -4,6 +4,7 @@ import {
   isSoftDeleteDetails,
   parseSortFields,
   type ActionDetails,
+  type HttpActionOutcome,
   type Entity,
   type ExportDetails,
   type RevokeSessionsDetails,
@@ -119,10 +120,44 @@ function AccessSummary({ entry }: { entry: AuditEntry }) {
   return <p className="text-sm">{summary}</p>;
 }
 
+const OUTCOME_TEXT = {
+  ok: 'succeeded',
+  rejected: 'was rejected',
+  failed: 'failed',
+  partial: 'partly succeeded',
+} as const;
+
+/** What an HTTP action's API answered, from the entry Warden writes after calling it. */
+function OutcomeSummary({ outcome }: { outcome: HttpActionOutcome }) {
+  const failures = outcome.records?.filter((r) => r.result !== 'ok') ?? [];
+  return (
+    <div className="space-y-1 text-sm">
+      <p>
+        The API call {OUTCOME_TEXT[outcome.result]}
+        {outcome.status !== undefined && ` (HTTP ${outcome.status})`}
+        {outcome.message && `: ${outcome.message}`}
+      </p>
+      <p className="font-mono text-xs break-all text-muted-foreground">{outcome.endpoint}</p>
+      {failures.length > 0 && (
+        <ul className="list-disc pl-5 text-muted-foreground">
+          {failures.map((r) => (
+            <li key={r.id}>
+              Record {r.id}: {OUTCOME_TEXT[r.result]}
+              {r.status !== undefined && ` (HTTP ${r.status})`}
+              {r.message && `: ${r.message}`}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 /** A custom action's entry: what it was asked to do, and a link to the rows it changed. */
 function ActionSummary({ entry, details }: { entry: AuditEntry; details: ActionDetails }) {
   const canViewLog = useCanViewAuditLog();
   const input = Object.entries(details.input);
+  if (details.outcome) return <OutcomeSummary outcome={details.outcome} />;
   return (
     <div className="space-y-2 text-sm">
       {input.length > 0 && (

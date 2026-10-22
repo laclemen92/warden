@@ -5,6 +5,7 @@ import {
   type ActionResult,
   type Actor,
   type AnyActionDefinition,
+  type HttpContext,
   type Logger,
   type RecordRef,
 } from '@wardenhq/actions';
@@ -13,6 +14,7 @@ import {
   MAX_REASON_LENGTH,
   auditDiff,
   canRunAction,
+  checkActionUrl,
   checkReason,
   decodeRecordId,
   encodeRecordId,
@@ -51,6 +53,14 @@ import {
   type Row,
 } from '@wardenhq/pg-adapter';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import {
+  SignInAgainError,
+  contextActor,
+  runHttpAction,
+  type Credentials,
+  type HttpActions,
+  type HttpRequestPlan,
+} from '../http-actions.js';
 import { createSlots } from '../slots.js';
 import type { Views } from '../views.js';
 import { NO_NUL } from './schemas.js';
@@ -96,6 +106,8 @@ export interface ActionRouteOptions {
   sessionSecret: string;
   /** Where changes are audited; `warden.audit_log` when absent. */
   audit?: AuditStore | undefined;
+  /** HTTP actions' credentials, checked at startup. */
+  http?: HttpActions | undefined;
 }
 
 /** What `GET /api/actions` says about an action, so the UI can offer it and build its form. */
@@ -212,6 +224,10 @@ interface Outcome {
   changes: ActionChange[];
   token: string;
   afterCommit: (() => Promise<void>)[];
+  /** For an HTTP action: the requests to make once the action's entry is committed. */
+  plans?: HttpRequestPlan[];
+  /** For an HTTP action on one record: its row, for the follow-up entry. */
+  record?: Row | undefined;
 }
 
 /** Only the documented parts of what `run` returned, so nothing else reaches the client. */
@@ -237,7 +253,7 @@ const pick = <T>(values: Record<string, T> | null, fields: ReadonlySet<string>) 
  */
 export function registerActionRoutes(app: FastifyInstance, options: ActionRouteOptions) {
   const { db, schema, policy, views, actionPolicy, definitions, defaultSchema } = options;
-  const { startTransaction, audit: store = { kind: 'warden' } } = options;
+  const { startTransaction, audit: store = { kind: 'warden' }, http } = options;
   const { deadlineMs, ...caps } = { ...DEFAULT_ACTION_LIMITS, ...options.limits };
   const acquire = createSlots(caps);
   const byTable = new Map(schema.entities.map((e) => [`${e.schema}.${e.name}`, e]));
@@ -355,6 +371,41 @@ export function registerActionRoutes(app: FastifyInstance, options: ActionRouteO
   );
 
   /**
+   * The requests an HTTP action makes: one, or one per record with `perRecord`. `url` and `body`
+   * are the module's; only validated ids and input reach them.
+   */
+  const planRequests = (
+    action: ResolvedAction,
+    definition: AnyActionDefinition,
+    input: Record<string, unknown>,
+    resolved: Record<string, unknown>,
+    refs: RecordRef[],
+    actor: Actor,
+    reason: string | undefined,
+  ): HttpRequestPlan[] => {
+    const call = definition.http!;
+    const groups = action.http!.perRecord ? refs.map((r) => [r]) : [refs];
+    return groups.map((group) => {
+      const ctx: HttpContext<Record<string, unknown>> = {
+        input: resolved,
+        record: action.target === 'one' || action.http!.perRecord ? group[0] : undefined,
+        records: action.target === 'many' ? group : undefined,
+        actor,
+        ...(reason ? { reason } : {}),
+      } as HttpContext<Record<string, unknown>>;
+      const records = group.map((r) => r.id);
+      const url: unknown = typeof call.url === 'function' ? call.url(ctx) : call.url;
+      if (typeof url !== 'string') {
+        throw new Error(`action "${action.name}": http.url must return a string`);
+      }
+      const bad = checkActionUrl(url, http?.allowHttp ?? false);
+      if (bad) throw new Error(`action "${action.name}": http.url ${bad}`);
+      const value: unknown = call.body ? call.body(ctx) : { input, records };
+      return { url, body: value === undefined ? '' : JSON.stringify(value), records };
+    });
+  };
+
+  /**
    * Validate the request, then run the action in one transaction: lock the target records,
    * insert the parent audit entry, call `run` (each write audits its row under the parent), and
    * commit, or roll back for a preview, a stale preview token, or any error.
@@ -368,6 +419,12 @@ export function registerActionRoutes(app: FastifyInstance, options: ActionRouteO
     const definition = definitions.get(action.name)!;
     const entity = entities.get(action.on)!;
     const body = req.body ?? {};
+    if (action.http && mode === 'preview') {
+      return badRequest(reply, "this action calls an API, so it can't be previewed");
+    }
+    if (action.http && body.previewToken !== undefined) {
+      return badRequest(reply, 'this action has no preview');
+    }
     const ids = body.records ?? [];
     const rawInput = body.input ?? {};
     const checked = checkReason(
@@ -494,6 +551,11 @@ export function registerActionRoutes(app: FastifyInstance, options: ActionRouteO
         resolved[ref.field] = ref.many ? loaded : loaded[0];
       }
       if (refErrors.length > 0) throw new Answer((r) => badRequest(r, 'invalid input', refErrors));
+      const refs = rows.map((row) => toRecordRef(entity, row));
+      // Built before the entry, so a module bug (or an ActionError) leaves no attempt behind.
+      const plans = action.http
+        ? planRequests(action, definition, input, resolved, refs, actor, reason)
+        : [];
 
       const auditId = await insertActionEntry(trx, {
         actor,
@@ -509,6 +571,17 @@ export function registerActionRoutes(app: FastifyInstance, options: ActionRouteO
           refs: Object.fromEntries(action.refs.map((r) => [r.field, r.entity])),
         },
       });
+      if (action.http) {
+        return {
+          auditId,
+          result: {},
+          changes: [],
+          token: '',
+          afterCommit: [],
+          plans,
+          record: rows[0],
+        };
+      }
       const audit = auditHook({
         actor,
         store,
@@ -539,12 +612,11 @@ export function registerActionRoutes(app: FastifyInstance, options: ActionRouteO
         },
       });
       txHandle = handle;
-      const refs = rows.map((row) => toRecordRef(entity, row));
       const afterCommit: (() => Promise<void>)[] = [];
       let returned: unknown;
       let thrown: { error: unknown } | undefined;
       try {
-        returned = await definition.run({
+        returned = await definition.run!({
           input: resolved,
           record: action.target === 'one' ? refs[0] : undefined,
           records: action.target === 'many' ? refs : undefined,
@@ -590,7 +662,31 @@ export function registerActionRoutes(app: FastifyInstance, options: ActionRouteO
 
     const release = acquire(actor.subject);
     if (!release) return tooMany(reply);
+    const httpAction = action.http ? http?.actions.get(action.name) : undefined;
+    let credentials: Credentials = {};
+    if (action.http) {
+      try {
+        // Startup refuses HTTP actions it couldn't prepare.
+        if (!httpAction) throw new Error(`action "${action.name}" has no prepared credentials`);
+        // Before the entry is written: no credentials, no attempt.
+        credentials = await httpAction.authenticator.credentials(req);
+      } catch (err) {
+        release();
+        if (err instanceof SignInAgainError) {
+          return reply
+            .code(401)
+            .send({ statusCode: 401, error: 'Unauthorized', message: err.message });
+        }
+        req.log.error({ err, action: action.name }, 'could not get credentials for the action API');
+        return reply.code(502).send({
+          statusCode: 502,
+          error: 'Bad Gateway',
+          message: 'the API this action calls failed; try again later',
+        });
+      }
+    }
     let outcome: Outcome;
+    let holdSlot = false;
     let transaction: DetachedTransaction | undefined;
     let timer: NodeJS.Timeout | undefined;
     try {
@@ -603,6 +699,8 @@ export function registerActionRoutes(app: FastifyInstance, options: ActionRouteO
       outcome = await Promise.race([work(transaction.trx), deadline]);
       clearTimeout(timer);
       await transaction.commit();
+      // An HTTP action keeps its slot while it calls the API.
+      holdSlot = outcome.plans !== undefined;
     } catch (err) {
       clearTimeout(timer);
       if (err instanceof TookTooLong) {
@@ -618,7 +716,55 @@ export function registerActionRoutes(app: FastifyInstance, options: ActionRouteO
       await transaction?.rollback().catch(() => {});
       return failed(req, reply, err);
     } finally {
-      release();
+      if (!holdSlot) release();
+    }
+
+    if (outcome.plans) {
+      try {
+        const called = await runHttpAction({
+          req,
+          action: httpAction!,
+          method: action.http!.method,
+          plans: outcome.plans,
+          credentials,
+          auditId: outcome.auditId,
+          context: {
+            action: action.name,
+            auditId: outcome.auditId,
+            requestId,
+            actor: contextActor(actor),
+            ...(reason ? { reason } : {}),
+          },
+          log: req.log,
+        });
+        // The log is append-only, so the API's answer goes in an entry of its own.
+        await insertActionEntry(db, {
+          actor,
+          store,
+          requestId,
+          action: action.name,
+          entity,
+          ...(action.target === 'one' ? { record: outcome.record! } : {}),
+          details: {
+            input: {},
+            records: outcome.plans.flatMap((p) => p.records),
+            refs: {},
+            outcome: { attempt: outcome.auditId, ...called.outcome },
+          },
+        }).catch((err: unknown) =>
+          req.log.error(
+            { err, action: action.name, auditId: outcome.auditId },
+            'could not audit the API outcome',
+          ),
+        );
+        req.log.info(
+          { action: action.name, auditId: outcome.auditId, result: called.outcome.result },
+          'action run',
+        );
+        return reply.code(called.statusCode).send(called.body);
+      } finally {
+        release();
+      }
     }
 
     for (const fn of outcome.afterCommit) {

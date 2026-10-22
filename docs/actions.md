@@ -11,6 +11,7 @@ A custom action is a typed, multi-step operation, such as "move this user to ano
 - [Input forms](#input-forms)
 - [Preview](#preview)
 - [Errors](#errors)
+- [Calling your API](#calling-your-api)
 - [Audit log](#audit-log)
 - [HTTP API](#http-api)
 
@@ -62,9 +63,10 @@ A module may import its own local files. To use npm packages, bundle it first, f
 
 ## Loading it
 
-| Variable         | Default | Description                                                                |
-| ---------------- | ------- | -------------------------------------------------------------------------- |
-| `WARDEN_ACTIONS` | none    | Path to the actions module, relative to the working directory. Must exist. |
+| Variable                   | Default | Description                                                                                                  |
+| -------------------------- | ------- | ------------------------------------------------------------------------------------------------------------ |
+| `WARDEN_ACTIONS`           | none    | Path to the actions module, relative to the working directory. Must exist.                                   |
+| `WARDEN_ACTION_ALLOW_HTTP` | `false` | Let [HTTP actions](#calling-your-api) call plain `http` URLs off loopback. Leave it off outside development. |
 
 The module is loaded once at startup, after the config and the database schema. In Docker, mount it next to the config:
 
@@ -74,14 +76,15 @@ docker run -v ./actions:/actions:ro -e WARDEN_ACTIONS=/actions/index.js ...
 
 As with config, mistakes in code fail startup and mismatches with the database only warn:
 
-| Problem                                                                                                                                                  | Result                               |
-| -------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------ |
-| The module is missing, throws on import, its default export isn't a function or doesn't return a list, or it exports an `apiVersion` newer than Warden's | Startup fails (`ActionsError`)       |
-| A definition is invalid: duplicate or malformed `name`, unknown key, unknown `permissions` write, unsupported input field                                | Startup fails, listing every problem |
-| `target: 'one'` or `'many'` on a table without a primary key                                                                                             | Startup fails                        |
-| `on`, `permissions` or a `ref()` names a table that is hidden or doesn't exist                                                                           | Warning; the action is disabled      |
-| `permissions` includes a write that a table `deny` forbids, or a table whose `deny` includes `read`                                                      | Warning; the action is disabled      |
-| Config grants or configures an action the module doesn't define                                                                                          | Warning                              |
+| Problem                                                                                                                                                                   | Result                               |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------ |
+| The module is missing, throws on import, its default export isn't a function or doesn't return a list, or it exports an `apiVersion` newer than Warden's                  | Startup fails (`ActionsError`)       |
+| A definition is invalid: duplicate or malformed `name`, unknown key, unknown `permissions` write, unsupported input field                                                 | Startup fails, listing every problem |
+| `target: 'one'` or `'many'` on a table without a primary key                                                                                                              | Startup fails                        |
+| An enabled [HTTP action](#calling-your-api)'s secret variable isn't set, its fixed `url` or `tokenUrl` isn't https, or it uses `user` auth that this Warden can't provide | Startup fails                        |
+| `on`, `permissions` or a `ref()` names a table that is hidden or doesn't exist                                                                                            | Warning; the action is disabled      |
+| `permissions` includes a write that a table `deny` forbids, or a table whose `deny` includes `read`                                                                       | Warning; the action is disabled      |
+| Config grants or configures an action the module doesn't define                                                                                                           | Warning                              |
 
 ## Trust model
 
@@ -113,7 +116,7 @@ Within `tx`, a few things deliberately differ from what a user could do through 
 | `description`     | string                                     | none         | Shown in the dialog.                                                                                                                                                                      |
 | `on`              | table key (`users`, `billing.invoices`)    | required     | The entity whose pages offer the action.                                                                                                                                                  |
 | `target`          | `one`, `many`, `none`                      | `one`        | What it runs against (below).                                                                                                                                                             |
-| `permissions`     | map of table key to writes                 | required     | Everything `run` may write. Checked at startup and at every write, and shown to the user before they run it.                                                                              |
+| `permissions`     | map of table key to writes                 | required     | Everything `run` may write. HTTP actions take none. Checked at startup and at every write, and shown to the user before they run it.                                                      |
 | `input`           | `z.object({...})`                          | no input     | The form. See [Input forms](#input-forms).                                                                                                                                                |
 | `defaults`        | `({ record, actor }) => values`            | none         | Prefills the form when the dialog opens.                                                                                                                                                  |
 | `confirm`         | `preview`, `confirm`                       | `preview`    | `preview` shows the change set before running; `confirm` asks for a plain confirmation.                                                                                                   |
@@ -122,7 +125,8 @@ Within `tx`, a few things deliberately differ from what a user could do through 
 | `maxAffectedRows` | positive integer                           | `1000`       | Changing more rows than this fails the action.                                                                                                                                            |
 | `timeoutMs`       | positive integer                           | the pool's   | Statement timeout for the action's transaction.                                                                                                                                           |
 | `deadlineMs`      | positive integer                           | the server's | How long a run or preview may take in all. See [Limits](#limits).                                                                                                                         |
-| `run`             | `async (ctx) => ({ message?, redirect? })` | required     | Does the work.                                                                                                                                                                            |
+| `http`            | object                                     | none         | Call your API instead of `run`. See [Calling your API](#calling-your-api).                                                                                                                |
+| `run`             | `async (ctx) => ({ message?, redirect? })` | required     | Does the work. Give either `run` or `http`.                                                                                                                                               |
 
 | `target` | Offered on                               | `run` gets              | The request carries |
 | -------- | ---------------------------------------- | ----------------------- | ------------------- |
@@ -203,7 +207,7 @@ Every array field takes at most 500 items unless its schema sets its own bound w
 
 ## Preview
 
-Preview runs the action for real and rolls it back: it takes the same locks, writes the same rows and audit entries, and calls `run` with the same context, then reports every row that would change and undoes it all. `run` can't tell that it's being previewed, which is what makes the preview trustworthy, so **put side effects outside the database (emails, webhooks) in `afterCommit`**, which only runs after a real run commits. Its errors are logged, not returned.
+Preview runs the action for real and rolls it back: it takes the same locks, writes the same rows and audit entries, and calls `run` with the same context, then reports every row that would change and undoes it all. `run` can't tell that it's being previewed, which is what makes the preview trustworthy, so **put side effects outside the database (emails, webhooks) in `afterCommit`**, which only runs after a real run commits. Its errors are logged, not returned. When the side effect is the point of the action, and the user must see whether it worked, make it an [HTTP action](#calling-your-api), which is never previewed.
 
 Preview is the UI's step, not the API's: a run doesn't need one (see [Trust model](#trust-model)). A preview returns a token that signs what it would change. Running with the token checks that the run would change exactly the same thing; if the data changed in between, the run rolls back with `409` (`error: "preview_stale"`) and the UI asks to preview again. Creates are compared by the values `run` gave, since a rolled-back preview still uses up sequence values.
 
@@ -241,9 +245,164 @@ Actions run on a pool of their own, so however many are running, stalled or slow
 
 `run` runs in Warden's own process. A synchronous loop (heavy CPU work, a `while` that never yields) blocks the event loop, and with it every request to that server, and no deadline can interrupt it. Keep `run` asynchronous and its work proportionate; move heavy computation out of process.
 
+## Calling your API
+
+Some operations belong to your application, not to Warden. Resolving a fraud-held payout, say, changes a payout item, a certificate's resolution status and the account's fraud flags together, and that logic lives in your API. Rebuilding it as `tx` writes duplicates it. Calling the API from `run` doesn't work either: preview runs `run` for real, so the API would be called on every preview, and `afterCommit` hides failures.
+
+An HTTP action delegates to an endpoint instead:
+
+```js
+defineAction({
+  name: 'review-payout',
+  label: 'Resolve review',
+  on: 'policy_admin.payout_items',
+  target: 'one',
+  input: z.object({ decision: z.enum(['fraudulent', 'not_fraudulent']) }),
+  http: {
+    url: (ctx) =>
+      `${process.env.SPOT_API_URL}/internal/payout-items/${ctx.record.values.id}/review`,
+    method: 'POST',
+    body: ({ input, reason }) => ({ decision: input.decision, note: reason }),
+    auth: { type: 'hmac', secretEnv: 'WARDEN_API_SECRET' },
+    timeoutMs: 10_000,
+  },
+});
+```
+
+| `http` key    | Type                             | Default              | Description                                                                                            |
+| ------------- | -------------------------------- | -------------------- | ------------------------------------------------------------------------------------------------------ |
+| `url`         | string, or `(ctx) => string`     | required             | The endpoint. `https` only, except on loopback, unless `WARDEN_ACTION_ALLOW_HTTP=true`.                |
+| `method`      | `POST`, `PUT`, `PATCH`, `DELETE` | `POST`               |                                                                                                        |
+| `body`        | `(ctx) => value`                 | `{ input, records }` | The JSON body. By default, the input (record ids for `ref` fields) and the target records' Warden ids. |
+| `auth`        | object                           | required             | How Warden authenticates (below).                                                                      |
+| `timeoutMs`   | positive integer, at most 60000  | `10000`              | Per request.                                                                                           |
+| `perRecord`   | boolean                          | `false`              | `target: 'many'` only: one request per record instead of one for all.                                  |
+| `concurrency` | positive integer, at most 16     | `4`                  | With `perRecord`, how many requests are in flight at once.                                             |
+
+`url` and `body` get `{ input, record, records, actor, reason }`, with picked records and target records loaded as for `run` (with `perRecord`, `record` is that request's record). An HTTP action has no `run` and no `permissions`, since it writes nothing through `tx`; defining `run` too fails startup.
+
+### What happens on a run
+
+- **No preview.** An HTTP action is always `confirm: 'confirm'` (setting `preview` fails startup), the UI offers only a confirmation, and `POST /preview` is a `400`. The endpoint is never called during a preview.
+- **Audit first, then call once.** Warden validates the request, loads the target records, writes the action's audit entry (who, input, reason, records) and commits it, then calls the endpoint once. A `url` or `body` that throws, or a URL that isn't allowed, fails the run before the entry is written, and nothing is called. `ActionError`s thrown there are `400`s, as in `run`.
+- **The answer:**
+
+| API answers                               | User gets                                                                                                                           |
+| ----------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `2xx`                                     | `200`. `message` from a JSON body is shown, and an `id` is recorded in the audit log.                                               |
+| `4xx`                                     | `400` with the body's `message` (or `error`, or a `text/plain` body), tags and control characters stripped, at most 300 characters. |
+| `401` or `403`                            | `403` with that message, or "not allowed" when there is none (an HTML page isn't a message).                                        |
+| `5xx`, a redirect, timeout, network error | `502` (`504` for a timeout) with a generic message. Details go to the log, never to the user.                                       |
+
+Redirects are never followed. Only the first 64 KiB of a response is read. Error responses carry the `auditId` too.
+
+- **Idempotency.** Every request carries `Idempotency-Key`: the action entry's id (with `perRecord`, `<id>.<n>` for the nth record). Make your endpoint apply a key once, so a retried request can't apply twice.
+- **Many records.** By default one request carries every record id. Its `2xx` body may report each one as `records: [{ id, ok, message? }]` (Warden's ids, as sent), and the UI lists those that failed. With `perRecord: true` Warden sends one request per record, at most `concurrency` at a time, and answers `200` with `result.records` saying how each went; a `5xx` for one record gets the generic message.
+- **Limits.** A run holds one of the user's action slots (see [Limits](#limits)) while it calls the API, but no database connection.
+
+### Who's calling: `X-Warden-Context`
+
+Every request carries `X-Warden-Context`, base64url JSON naming who ran what and why:
+
+```json
+{
+  "action": "review-payout",
+  "auditId": "1042",
+  "requestId": "6c4a…",
+  "actor": { "subject": "auth0|abc", "email": "ana@example.com", "userId": "17", "roles": ["ops"] },
+  "reason": "Customer sent proof of address",
+  "records": ["5531"]
+}
+```
+
+With `hmac` auth (or `client_credentials` with `secretEnv`) it is signed with the body, so your API can trust it and record who did what. With `user` auth the bearer token says who the user is; the context header is unsigned.
+
+### `http.auth`
+
+Users never paste tokens. Pick one mode per action:
+
+| `type`               | Keys                                                                              | Sends                                                                                                 |
+| -------------------- | --------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `hmac`               | `secretEnv`                                                                       | `X-Warden-Timestamp` and `X-Warden-Signature` over the request (below).                               |
+| `client_credentials` | `tokenUrl`, `clientIdEnv`, `clientSecretEnv`, `audience?`, `scope?`, `secretEnv?` | `Authorization: Bearer <M2M token>` from your IdP; with `secretEnv`, the HMAC signature too.          |
+| `user`               | `audience`                                                                        | `Authorization: Bearer <the signed-in user's access token>`, so your API applies its own permissions. |
+
+- Secrets are read from the named environment variables at startup. A variable that isn't set fails startup, as does a `tokenUrl` that isn't https (with the same loopback exception).
+- `client_credentials` posts `grant_type=client_credentials` with the client id and secret (and `audience`, `scope`) to `tokenUrl`, caches the token until a minute before it expires, and on a `401` from your API fetches a new one and retries once.
+- `user` needs Warden to request and keep the user's API token at sign-in. Until that's configured, an action using it fails startup, and so does one whose `audience` login doesn't request. When the token can't be had or refreshed, the run is a `401` "Sign in again to continue" and the API isn't called.
+- Tokens and secrets are never sent to the browser, logged, or written to the audit log.
+
+### Verifying the signature
+
+The signature is `v1=` and the hex HMAC-SHA256, keyed with the secret, of these lines joined with `\n`:
+
+```
+v1
+<METHOD>
+<path and query, as requested>
+<X-Warden-Timestamp, Unix seconds>
+<X-Warden-Context, as sent>
+<hex SHA-256 of the raw body>
+```
+
+[`docs/examples/verify-warden-request.mjs`](examples/verify-warden-request.mjs) is a reference verifier with no dependencies: copy it into your API. It rejects a tampered body, path, method or context, a timestamp more than five minutes off, and the wrong secret, and returns the context. Verify against the raw body, before JSON parsing, and the path as Warden requested it (behind a proxy that rewrites paths, the original one). Within the five minutes a captured request could be replayed, so dedupe on `Idempotency-Key`.
+
+Express:
+
+```js
+import express from 'express';
+import { wardenAuth } from './verify-warden-request.mjs';
+
+const app = express();
+app.use(express.json({ verify: (req, _res, buf) => void (req.rawBody = buf) }));
+app.post(
+  '/internal/payout-items/:id/review',
+  wardenAuth(process.env.WARDEN_API_SECRET),
+  async (req, res) => {
+    const { actor, reason } = req.warden;
+    const review = await resolveReview(req.params.id, req.body.decision, {
+      by: actor.email,
+      note: reason,
+      idempotencyKey: req.get('Idempotency-Key'),
+    });
+    res.json({ message: 'Review resolved', id: review.id });
+  },
+);
+```
+
+NestJS: create the app with `NestFactory.create(AppModule, { rawBody: true })` and check the request in a guard:
+
+```ts
+import { CanActivate, ExecutionContext, Injectable, UnauthorizedException } from '@nestjs/common';
+import { verifyWardenRequest } from './verify-warden-request.mjs';
+
+@Injectable()
+export class WardenGuard implements CanActivate {
+  canActivate(context: ExecutionContext): boolean {
+    const req = context.switchToHttp().getRequest();
+    try {
+      req.warden = verifyWardenRequest({
+        secret: process.env.WARDEN_API_SECRET!,
+        method: req.method,
+        path: req.originalUrl,
+        headers: req.headers,
+        rawBody: req.rawBody ?? '',
+      });
+      return true;
+    } catch {
+      throw new UnauthorizedException('invalid Warden signature');
+    }
+  }
+}
+```
+
+### In the audit log
+
+The action's own entry is written before the call, and the log is append-only, so the API's answer goes in a second entry for the same action and record, with no input. Its `details.outcome` holds `attempt` (the first entry's id), `endpoint` (method, origin and path; the query is left out, since it may hold secrets), `result` (`ok`, `rejected`, `failed`, or `partial` for `perRecord`), the HTTP `status`, the message the user was shown and the `id` a `2xx` named, and with many records each record's result. A `5xx`'s body is only logged. Both entries are shown to the same people as any action entry (see [Audit log](#audit-log)).
+
 ## Audit log
 
-A run writes one entry for the action itself (its `action` is the action's name, with the input and target record ids, sensitive fields redacted, and the actor, roles, reason and request id) and one entry per changed row, exactly like a CRUD write, linked to it by `parent_id`. The action's entry is written before `run` and records what was asked; the log is append-only, so the result isn't added afterwards (it is in the response and the server log). A record's History shows its rows' entries "as part of" the action, and the action's own entry when the action targeted that record; on the audit log page, an action's entry links to the rows it changed (`/api/audit?parent=<id>`). History shows the action's own entry (its input and reason) only to users who could run the action now and to audit admins; to everyone else it, and the action's name on the rows it changed, doesn't exist. Input that picks records from a table the user can't read is left out for everyone. See [Audit log](config.md#audit-log). Failed runs leave no entry, since they roll back; they are logged with the request id.
+A run writes one entry for the action itself (its `action` is the action's name, with the input and target record ids, sensitive fields redacted, and the actor, roles, reason and request id) and one entry per changed row, exactly like a CRUD write, linked to it by `parent_id`. The action's entry is written before `run` and records what was asked; the log is append-only, so the result isn't added afterwards (it is in the response and the server log). An [HTTP action](#calling-your-api) writes a second entry with its API's answer. A record's History shows its rows' entries "as part of" the action, and the action's own entry when the action targeted that record; on the audit log page, an action's entry links to the rows it changed (`/api/audit?parent=<id>`). History shows the action's own entry (its input and reason) only to users who could run the action now and to audit admins; to everyone else it, and the action's name on the rows it changed, doesn't exist. Input that picks records from a table the user can't read is left out for everyone. See [Audit log](config.md#audit-log). Failed runs leave no entry, since they roll back; they are logged with the request id.
 
 The action's transaction also carries the `warden.actor_id`, `warden.actor_sub` and `warden.actor_email` settings, set before the target records are loaded, so your triggers can attribute the rows `run` changes (see [`actor`](config.md#actor)).
 
@@ -251,11 +410,11 @@ The action's transaction also carries the `warden.actor_id`, `warden.actor_sub` 
 
 All routes require a session. An action the user may not run gets the same `404` as one that doesn't exist, before the request is validated.
 
-| Method & path                     | Body / query                                   | Response                                              |
-| --------------------------------- | ---------------------------------------------- | ----------------------------------------------------- |
-| `GET /api/actions`                |                                                | `{ actions: [...] }`: the actions the user may run    |
-| `GET /api/actions/:name/defaults` | `?record=<id>` (`target: 'one'`)               | `{ values }`                                          |
-| `POST /api/actions/:name/preview` | `{ records?, input?, reason? }`                | `{ changes, total, truncated, result, previewToken }` |
-| `POST /api/actions/:name/run`     | `{ records?, input?, reason?, previewToken? }` | `{ auditId, result }`                                 |
+| Method & path                     | Body / query                                   | Response                                                                                    |
+| --------------------------------- | ---------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `GET /api/actions`                |                                                | `{ actions: [...] }`: the actions the user may run                                          |
+| `GET /api/actions/:name/defaults` | `?record=<id>` (`target: 'one'`)               | `{ values }`                                                                                |
+| `POST /api/actions/:name/preview` | `{ records?, input?, reason? }`                | `{ changes, total, truncated, result, previewToken }`; `400` for an HTTP action             |
+| `POST /api/actions/:name/run`     | `{ records?, input?, reason?, previewToken? }` | `{ auditId, result }`; an HTTP action's `result` may have `records: [{ id, ok, message? }]` |
 
 Each descriptor in `GET /api/actions` has `name`, `label`, `description`, `on`, `target`, `confirm`, `destructive`, `requireReason`, `reasonMinLength` (when a reason is required), `hasDefaults`, `inputSchema` (JSON Schema) and `permissions`. `GET /api/capabilities` lists, per entity, the names of the actions the user may run on it (`customActions`). Preview returns at most 200 changes, with `total` counting them all.

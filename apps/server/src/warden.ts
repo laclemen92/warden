@@ -32,6 +32,7 @@ import { buildApp, type AppOptions } from './app.js';
 import { createOidcClient } from './auth/oidc.js';
 import { createSessions } from './auth/session.js';
 import { parseAuthSettings, parseDuration } from './auth/settings.js';
+import { parseAllowHttp, prepareHttpActions, type UserTokenProvider } from './http-actions.js';
 import type { ActionLimits } from './routes/actions.js';
 import type { ExportLimits } from './routes/export.js';
 
@@ -40,6 +41,8 @@ export interface WardenOptions {
   cwd?: string;
   webDir?: string;
   logger?: AppOptions['logger'];
+  /** Signed-in users' API tokens, for HTTP actions with `auth: { type: 'user' }`. */
+  userTokens?: UserTokenProvider;
 }
 
 /** `WARDEN_MIGRATE`: on by default; off when a separate, privileged role runs migrations. */
@@ -154,6 +157,7 @@ export async function createWarden({
   cwd = process.cwd(),
   webDir,
   logger = false,
+  userTokens,
 }: WardenOptions = {}) {
   const connectionString = env.DATABASE_URL;
   if (!connectionString) throw new Error('DATABASE_URL is required');
@@ -162,6 +166,7 @@ export async function createWarden({
   const bodyLimit = parseBodyLimit(env.WARDEN_BODY_LIMIT);
   const dbSettings = parseDatabaseSettings(env);
   const version = env.WARDEN_VERSION?.trim() || 'dev';
+  const allowHttp = parseAllowHttp(env.WARDEN_ACTION_ALLOW_HTTP);
 
   const loaded = await loadConfig({ cwd, env });
   requireAccess(loaded);
@@ -237,13 +242,20 @@ export async function createWarden({
       policy,
       config,
     );
-    if (actionErrors.length > 0) throw new ActionsError(env.WARDEN_ACTIONS!, actionErrors);
+    const { http, problems: httpProblems } = prepareHttpActions(
+      loadedActions,
+      actionPolicy.actions,
+      { env, allowHttp, userTokens },
+    );
+    const startupErrors = [...actionErrors, ...httpProblems];
+    if (startupErrors.length > 0) throw new ActionsError(env.WARDEN_ACTIONS!, startupErrors);
     const actions = {
       actionPolicy,
       definitions: new Map(loadedActions.map((a) => [a.spec.name, a.definition])),
       defaultSchema: config.schemas[0] ?? 'public',
       startTransaction: () => startDetachedTransaction(actionDb.pool),
       limits: dbSettings.actions,
+      http,
     };
     const actionDeletes = new Set(
       [...actionPolicy.actions.values()].flatMap((a) =>

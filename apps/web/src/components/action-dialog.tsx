@@ -179,13 +179,40 @@ function ActionSteps({
   };
 
   if (step.kind === 'done') {
-    const { message, redirect } = step.run.result;
+    const { message, redirect, records: outcomes } = step.run.result;
     const target = redirect && entities.get(redirect.entity);
+    const failures = outcomes?.filter((r) => !r.ok) ?? [];
+    const onEntity = entities.get(action.on);
     return (
       <>
         <p role="status" className="text-sm">
           {message ?? 'Done.'}
         </p>
+        {failures.length > 0 && (
+          <div className="space-y-1 text-sm">
+            <p className="font-medium text-destructive">
+              Failed for {failures.length} record{failures.length === 1 ? '' : 's'}:
+            </p>
+            <ul className="list-disc space-y-1 pl-5">
+              {failures.map((r) => (
+                <li key={r.id}>
+                  {onEntity ? (
+                    <Link
+                      to={recordPath(onEntity, r.id)}
+                      onClick={onClose}
+                      className="underline underline-offset-4"
+                    >
+                      {r.id}
+                    </Link>
+                  ) : (
+                    r.id
+                  )}
+                  {r.message && `: ${r.message}`}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
         <AlertDialogFooter>
           {target && redirect && (
             <Button variant="outline" asChild>

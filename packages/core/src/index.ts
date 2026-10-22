@@ -78,3 +78,16 @@ export {
   viewsConfigYaml,
 } from './config-view.js';
 export { isSoftDeleteDetails } from './audit.js';
+export {
+  DEFAULT_HTTP_CONCURRENCY,
+  DEFAULT_HTTP_TIMEOUT_MS,
+  HTTP_METHODS,
+  MAX_HTTP_CONCURRENCY,
+  MAX_HTTP_TIMEOUT_MS,
+} from './actions.js';
+export {
+  MAX_API_MESSAGE_LENGTH,
+  apiBodyMessage,
+  checkActionUrl,
+  cleanApiMessage,
+} from './http-action.js';
