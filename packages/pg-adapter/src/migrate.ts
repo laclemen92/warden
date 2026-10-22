@@ -167,6 +167,15 @@ export const MIGRATIONS: readonly Migration[] = [
       update warden.sessions set id_token = null;
     `,
   },
+  {
+    version: '0011_actor_user_id',
+    sql: `
+      -- The internal user id config's \`actor\` mapped the user to at sign-in, as text whatever the
+      -- users table's id type. Null without a mapping or a match.
+      alter table warden.sessions add column actor_user_id text;
+      alter table warden.audit_log add column actor_user_id text;
+    `,
+  },
 ];
 
 // Arbitrary constant shared by every Warden instance, so replicas don't migrate concurrently.

@@ -7,6 +7,12 @@ export {
   type DetachedTransaction,
 } from './database.js';
 export { compileFilter, escapeLike } from './filter.js';
+export {
+  lookupActorUserId,
+  setActorSettings,
+  type ActorLookup,
+  type TransactionActor,
+} from './actor.js';
 export { introspect, WARDEN_SCHEMA, type IntrospectOptions } from './introspect.js';
 export {
   getRow,

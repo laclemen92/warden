@@ -5,6 +5,7 @@ import {
   getTable,
   resolveActionPolicy,
   resolveAuditStore,
+  resolveActor,
   resolvePolicy,
   resolveSchema,
   sessionEmail,
@@ -17,6 +18,7 @@ import {
   createDatabase,
   ensureSchemaSnapshot,
   introspect,
+  lookupActorUserId,
   migrate,
   pendingMigrations,
   refreshSessionEmails,
@@ -216,6 +218,8 @@ export async function createWarden({
     );
     const { schema, warnings: schemaWarnings } = resolveSchema(model, config);
     const { policy, warnings: policyWarnings } = resolvePolicy(schema, config);
+    // Against the introspected model, not the effective schema: the users table may be hidden.
+    const actor = resolveActor(model, config);
     // Loaded after config and the schema, so its tables can be checked, and before routes.
     // Without a module there are no actions, and config granting some only warns.
     const loadedActions = env.WARDEN_ACTIONS ? await loadActions(env.WARDEN_ACTIONS, cwd) : [];
@@ -249,6 +253,7 @@ export async function createWarden({
       ...policyWarnings,
       ...actionWarnings,
       ...deleteCascadeWarnings(model, schema, policy, actionDeletes),
+      ...actor.warnings,
     ];
     // The first start records the schema drift baseline.
     await ensureSchemaSnapshot(db, model);
@@ -260,6 +265,16 @@ export async function createWarden({
       ...(config.access ? { access: config.access } : {}),
       roles: config.roles,
       assignedRoles: (email: string) => assignedRoles(db, email),
+      ...(config.actor
+        ? {
+            actor: {
+              required: actor.required,
+              ...(actor.mapping
+                ? { lookup: (email: string) => lookupActorUserId(db, actor.mapping!, email) }
+                : {}),
+            },
+          }
+        : {}),
     };
     const app = await buildApp({
       schema,
@@ -312,6 +327,11 @@ export async function createWarden({
       app.log.info(
         { requireReason: config.defaults.requireReason },
         'writes without a reason (internal note) get a 400; set defaults.requireReason: [] to make reasons optional',
+      );
+    }
+    if (actor.required && !actor.mapping) {
+      app.log.warn(
+        'actor.required is on but the actor mapping does not match the database, so nobody can sign in',
       );
     }
     if (config.access?.allowAll) {

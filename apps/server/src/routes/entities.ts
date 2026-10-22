@@ -162,16 +162,21 @@ export function registerEntityRoutes(
       entity.requireReason?.includes(action) ? (entity.reasonMinLength ?? 1) : undefined,
     );
 
-  /** Records the write in the audit log, inside the write's transaction. */
+  /**
+   * Records the write in the audit log, inside the write's transaction, which also carries the
+   * actor's `warden.actor_*` settings.
+   */
   const audited = (req: FastifyRequest, reason: string | undefined): WriteOptions => {
     const session = req.session!;
+    const actor = {
+      subject: session.subject,
+      ...(session.email ? { email: session.email } : {}),
+      ...(session.userId ? { userId: session.userId } : {}),
+    };
     return {
+      actor,
       onWrite: auditHook({
-        actor: {
-          subject: session.subject,
-          ...(session.email ? { email: session.email } : {}),
-          roles: req.roles ?? [],
-        },
+        actor: { ...actor, roles: req.roles ?? [] },
         requestId: req.id,
         ...(reason ? { reason } : {}),
         store: audit,

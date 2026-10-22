@@ -1,7 +1,7 @@
 import fastifyCookie from '@fastify/cookie';
 import type { AccessConfig, WardenConfig } from '@wardenhq/config';
 import { adminAreas, assignmentEmail, resolveRoles, sessionEmail } from '@wardenhq/core';
-import type { Session } from '@wardenhq/pg-adapter';
+import type { ActorLookup, Session } from '@wardenhq/pg-adapter';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { LoginChecks, OidcClient } from '../auth/oidc.js';
 import type { Sessions } from '../auth/session.js';
@@ -25,6 +25,12 @@ export interface AuthOptions {
   roles?: WardenConfig['roles'];
   /** Roles assigned in the app to a (lowercased) email; without it, only config gives roles. */
   assignedRoles?: (email: string) => Promise<string[]>;
+  /**
+   * Config `actor`: `lookup` finds a (lowercased, verified) email's internal user id; it is
+   * absent when the mapping doesn't match the database. With `required`, users without an id
+   * can't sign in or use their session.
+   */
+  actor?: { required: boolean; lookup?: (email: string) => Promise<ActorLookup> };
 }
 
 const LOGIN_TTL_SECONDS = 600;
@@ -102,7 +108,15 @@ function csrfRejection(req: FastifyRequest): { status: number; message: string }
 
 export async function registerAuth(
   app: FastifyInstance,
-  { sessionSecret, sessions, oidc, access, roles: roleConfig = {}, assignedRoles }: AuthOptions,
+  {
+    sessionSecret,
+    sessions,
+    oidc,
+    access,
+    roles: roleConfig = {},
+    assignedRoles,
+    actor,
+  }: AuthOptions,
 ) {
   await app.register(fastifyCookie, { secret: sessionSecret });
 
@@ -114,6 +128,25 @@ export async function registerAuth(
       : [];
     return resolveRoles(access, claims, assigned);
   };
+  /**
+   * The user's internal id, looked up by their verified email like role assignments, so nobody
+   * can claim another user's row by setting an unverified address at the IdP.
+   */
+  const userIdFor = async (req: FastifyRequest, claims: Record<string, unknown>) => {
+    const email = actor?.lookup ? assignmentEmail(access, claims) : undefined;
+    if (!email) return undefined;
+    try {
+      const found = await actor!.lookup!(email);
+      if (found.userId === undefined && found.matches === 'many') {
+        req.log.warn({ sub: claims.sub }, 'actor: several users match the email; no user id');
+      }
+      return found.userId;
+    } catch (err) {
+      // E.g. the table or a column was dropped since startup.
+      req.log.warn({ err }, 'actor: could not look up the user id');
+      return undefined;
+    }
+  };
   const login = sessions.cookie('warden_login', LOGIN_TTL_SECONDS);
 
   app.decorateRequest('session', null);
@@ -124,13 +157,15 @@ export async function registerAuth(
       // Roles are re-resolved from the stored claims and current assignments, so a restart with
       // stricter rules or a removed assignment applies to existing sessions too.
       const roles = session ? await rolesFor(session.claims) : undefined;
-      if (!session || !roles) {
+      // An id stored before the mapping was removed or broke isn't trusted.
+      const userId = actor?.lookup ? (session?.userId ?? null) : null;
+      if (!session || !roles || (actor?.required && userId === null)) {
         return reply
           .code(401)
           .send({ statusCode: 401, error: 'Unauthorized', message: 'Unauthorized' });
       }
       // Same for the email, which every audit entry attributes the request to.
-      req.session = { ...session, email: sessionEmail(access, session.claims) ?? null };
+      req.session = { ...session, email: sessionEmail(access, session.claims) ?? null, userId };
       req.roles = roles;
     }
     const rejection = csrfRejection(req);
@@ -183,10 +218,17 @@ export async function registerAuth(
       return reply.redirect(ACCESS_DENIED);
     }
 
+    const userId = await userIdFor(req, claims);
+    if (actor?.required && userId === undefined) {
+      req.log.warn({ sub: claims.sub }, 'login denied: no user matches actor mapping');
+      return reply.redirect(ACCESS_DENIED);
+    }
+
     const email = sessionEmail(access, claims);
     await sessions.start(req, reply, {
       subject: claims.sub,
       ...(email ? { email } : {}),
+      ...(userId !== undefined ? { userId } : {}),
       ...(typeof claims.name === 'string' ? { name: claims.name } : {}),
       claims: { ...claims },
       idToken,

@@ -40,7 +40,7 @@ let links: Entity;
 let logs: Entity;
 
 const CONTEXT: AuditContext = {
-  actor: { subject: 'sub-1', email: 'ed@example.com', roles: ['ops', 'viewer'] },
+  actor: { subject: 'sub-1', email: 'ed@example.com', userId: 'u-7', roles: ['ops', 'viewer'] },
   requestId: 'req-1',
   reason: 'ticket 42',
 };
@@ -66,7 +66,8 @@ type Entry = Record<string, unknown>;
 const entries = async (where = sql`true`) =>
   (
     await sql<Entry>`
-      select request_id, actor_subject, actor_email, actor_roles, action, entity, record_id,
+      select request_id, actor_subject, actor_email, actor_user_id, actor_roles, action, entity,
+             record_id,
              primary_key, before, after, diff, reason, written, parent_id,
              occurred_at::text as occurred_at
       from warden.audit_log where ${where} order by id`.execute(handle.db)
@@ -95,6 +96,7 @@ describe('auditHook', () => {
       request_id: 'req-1',
       actor_subject: 'sub-1',
       actor_email: 'ed@example.com',
+      actor_user_id: 'u-7',
       actor_roles: ['ops', 'viewer'],
       action: 'create',
       entity: 'accounts',
@@ -131,6 +133,7 @@ describe('auditHook', () => {
       action: 'update',
       actor_subject: 'sub-2',
       actor_email: null,
+      actor_user_id: null,
       actor_roles: [],
       request_id: null,
       reason: null,

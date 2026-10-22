@@ -195,6 +195,7 @@ export function registerExportRoutes(
           actor: {
             subject: session.subject,
             ...(session.email ? { email: session.email } : {}),
+            ...(session.userId ? { userId: session.userId } : {}),
             roles,
           },
           requestId: req.id,

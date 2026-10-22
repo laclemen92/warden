@@ -102,3 +102,12 @@ audit:
   # columns: { id: id, occurredAt: created_at, actorSubject: actor_sub, action: action,
   #            entity: table_name, recordId: record_id, diff: diff, details: details }
   # source: { column: source, value: warden }
+
+# Map each signed-in user to their row in `users` by verified email. The id is recorded on audit
+# entries, passed to actions as actor.userId, and set as warden.actor_id in every write
+# transaction for triggers. The mock IdP's users have no row here, so they get no id.
+actor:
+  table: users
+  matchColumn: email
+  idColumn: id
+  required: false

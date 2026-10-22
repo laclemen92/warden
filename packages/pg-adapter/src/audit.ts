@@ -20,7 +20,8 @@ import type { WriteHook } from './writes.js';
 
 /** Who made a write and why, recorded with every audit entry. */
 export interface AuditContext {
-  actor: { subject: string; email?: string; roles: readonly string[] };
+  /** `userId`: the internal user id config's `actor` mapped them to at sign-in. */
+  actor: { subject: string; email?: string; userId?: string; roles: readonly string[] };
   /** Correlates the entry with the server's request logs. */
   requestId?: string;
   reason?: string;
@@ -149,6 +150,7 @@ const actorValues = (actor: AuditContext['actor'], requestId: string | undefined
   requestId: requestId ?? null,
   actorSubject: actor.subject,
   actorEmail: actor.email ?? null,
+  actorUserId: actor.userId ?? null,
   actorRoles: [...actor.roles],
 });
 
@@ -276,7 +278,7 @@ export interface AuditQuery {
   includeAccessEntries?: boolean;
   entity?: string;
   recordId?: string;
-  /** Case-insensitive substring of the actor's email or subject. */
+  /** Case-insensitive substring of the actor's email or subject, or their exact user id. */
   actor?: string;
   action?: string;
   /** Inclusive lower bound on `occurred_at`, as a timestamp Postgres accepts. */
@@ -303,6 +305,7 @@ interface AuditRow {
   request_id: string | null;
   actor_subject: string;
   actor_email: string | null;
+  actor_user_id: string | null;
   actor_roles: string[] | null;
   action: string;
   entity: string;
@@ -364,7 +367,8 @@ function auditRelation(store: AuditStore): RawBuilder<unknown> {
     -- A timestamp without time zone holds now() in the session time zone; read it back with an offset.
     ${column('occurredAt')}::timestamptz as occurred_at,
     ${as('requestId', 'text', 'request_id')}, ${as('actorSubject', 'text', 'actor_subject')},
-    ${as('actorEmail', 'text', 'actor_email')}, ${as('actorRoles', 'text[]', 'actor_roles')},
+    ${as('actorEmail', 'text', 'actor_email')}, ${as('actorUserId', 'text', 'actor_user_id')},
+    ${as('actorRoles', 'text[]', 'actor_roles')},
     ${as('action', 'text', 'action')}, ${as('entity', 'text', 'entity')},
     ${as('recordId', 'text', 'record_id')}, ${as('reason', 'text', 'reason')},
     ${object('primaryKey', 'primary_key')}, ${object('before', 'before')},
@@ -410,7 +414,8 @@ export async function listAuditEntries(
   if (actor !== undefined) {
     const pattern = `%${escapeLike(actor)}%`;
     conditions.push(
-      sql<SqlBool>`(a.actor_email ilike ${pattern} or a.actor_subject ilike ${pattern})`,
+      sql<SqlBool>`(a.actor_email ilike ${pattern} or a.actor_subject ilike ${pattern}
+        or a.actor_user_id = ${actor})`,
     );
   }
   if (action !== undefined) conditions.push(sql<SqlBool>`a.action = ${action}`);
@@ -424,7 +429,7 @@ export async function listAuditEntries(
 
   const { rows } = await sql<AuditRow>`
     select a.id::text as id, to_json(a.occurred_at) #>> '{}' as occurred_at, a.request_id,
-           a.actor_subject, a.actor_email, a.actor_roles, a.action, a.entity, a.record_id,
+           a.actor_subject, a.actor_email, a.actor_user_id, a.actor_roles, a.action, a.entity, a.record_id,
            a.reason, a.before, a.after, a.diff, a.details, a.primary_key, a.written,
            a.parent_id::text as parent_id, p.action as parent_action
            ${withSource ? sql`, a.source` : sql``}
@@ -443,6 +448,7 @@ export async function listAuditEntries(
         actor: {
           subject: row.actor_subject,
           email: row.actor_email,
+          ...(row.actor_user_id !== null ? { userId: row.actor_user_id } : {}),
           // Unknown, rather than none, in a store that doesn't keep them.
           ...(row.actor_roles !== null ? { roles: row.actor_roles } : {}),
         },
