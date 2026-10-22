@@ -104,6 +104,14 @@ describe('web shell', () => {
     );
   });
 
+  // jsdom has no layout, so this pins the class that keeps a wide grid from widening the page
+  // beside the sidebar (it scrolls inside its own container instead).
+  it('lets the main column shrink below its content width', async () => {
+    renderAt('/entities/orders');
+    await screen.findByRole('heading', { name: 'Orders' });
+    expect(document.querySelector('[data-slot="sidebar-inset"]')).toHaveClass('min-w-0');
+  });
+
   it('shows not found for an entity that is not exposed', async () => {
     renderAt('/entities/secrets');
     expect(await screen.findByRole('heading', { name: 'Not found' })).toBeInTheDocument();
