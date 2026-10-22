@@ -20,6 +20,7 @@ export interface SessionUser {
   idToken?: string;
   /** From config's `actor` mapping. */
   userId?: string;
+  actorMapping?: string;
 }
 
 export interface Sessions {

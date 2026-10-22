@@ -171,8 +171,9 @@ export const MIGRATIONS: readonly Migration[] = [
     version: '0011_actor_user_id',
     sql: `
       -- The internal user id config's \`actor\` mapped the user to at sign-in, as text whatever the
-      -- users table's id type. Null without a mapping or a match.
-      alter table warden.sessions add column actor_user_id text;
+      -- users table's id type. Null without a mapping or a match. \`actor_mapping\` identifies the
+      -- mapping it was resolved under, so the id is ignored once \`actor\` points elsewhere.
+      alter table warden.sessions add column actor_user_id text, add column actor_mapping text;
       alter table warden.audit_log add column actor_user_id text;
     `,
   },

@@ -331,6 +331,46 @@ describe('actor mapping', () => {
   });
 });
 
+describe('a repointed actor mapping', () => {
+  const MEMBERS = 'actor: { table: members, matchColumn: email, idColumn: id }';
+
+  beforeAll(async () => {
+    await sqlPool.query(`create table members (id int primary key, email text)`);
+    await sqlPool.query(`insert into members values (42, 'admin@example.com')`);
+  });
+
+  it('ignores ids resolved under the old mapping until the user signs in again', async () => {
+    const admin = await login(app, 'admin');
+    const repointed = await start(MEMBERS);
+    try {
+      const res = await send(repointed, admin, 'POST', '/api/entities/notes', {
+        values: { body: 'stale' },
+      });
+      expect(res.statusCode, res.body).toBe(201);
+      expect(await lastAudit('create')).toEqual({ actor_subject: 'admin', actor_user_id: null });
+      expect((await noteLog()).at(-1)).toMatchObject({ actor_sub: 'admin', actor_id: null });
+
+      const fresh = await login(repointed, 'admin');
+      await send(repointed, fresh, 'POST', '/api/entities/notes', { values: { body: 'new' } });
+      expect(await lastAudit('create')).toEqual({ actor_subject: 'admin', actor_user_id: '42' });
+    } finally {
+      await repointed.close();
+    }
+  });
+
+  it('rejects a session whose id came from another id column when required', async () => {
+    const admin = await login(app, 'admin');
+    const strict = await start(
+      'actor: { table: staff, matchColumn: email, idColumn: secret, required: true }',
+    );
+    try {
+      expect((await send(strict, admin, 'GET', '/api/me')).statusCode).toBe(401);
+    } finally {
+      await strict.close();
+    }
+  });
+});
+
 describe('actor.required', () => {
   const REQUIRED = 'actor: { table: staff, matchColumn: email, idColumn: id, required: true }';
 

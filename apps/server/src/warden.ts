@@ -4,6 +4,7 @@ import {
   deleteCascadeWarnings,
   getTable,
   resolveActionPolicy,
+  actorMappingKey,
   resolveAuditStore,
   resolveActor,
   resolvePolicy,
@@ -270,7 +271,10 @@ export async function createWarden({
             actor: {
               required: actor.required,
               ...(actor.mapping
-                ? { lookup: (email: string) => lookupActorUserId(db, actor.mapping!, email) }
+                ? {
+                    lookup: (email: string) => lookupActorUserId(db, actor.mapping!, email),
+                    mapping: actorMappingKey(actor.mapping),
+                  }
                 : {}),
             },
           }

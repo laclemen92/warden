@@ -28,9 +28,14 @@ export interface AuthOptions {
   /**
    * Config `actor`: `lookup` finds a (lowercased, verified) email's internal user id; it is
    * absent when the mapping doesn't match the database. With `required`, users without an id
-   * can't sign in or use their session.
+   * can't sign in or use their session. `mapping` (`actorMappingKey`) is stored with the id, and
+   * a session's id is only trusted while it matches.
    */
-  actor?: { required: boolean; lookup?: (email: string) => Promise<ActorLookup> };
+  actor?: {
+    required: boolean;
+    lookup?: (email: string) => Promise<ActorLookup>;
+    mapping?: string;
+  };
 }
 
 const LOGIN_TTL_SECONDS = 600;
@@ -157,8 +162,11 @@ export async function registerAuth(
       // Roles are re-resolved from the stored claims and current assignments, so a restart with
       // stricter rules or a removed assignment applies to existing sessions too.
       const roles = session ? await rolesFor(session.claims) : undefined;
-      // An id stored before the mapping was removed or broke isn't trusted.
-      const userId = actor?.lookup ? (session?.userId ?? null) : null;
+      // An id stored under another mapping, or before it was removed or broke, isn't trusted.
+      const userId =
+        actor?.mapping !== undefined && session?.actorMapping === actor.mapping
+          ? session.userId
+          : null;
       if (!session || !roles || (actor?.required && userId === null)) {
         return reply
           .code(401)
@@ -228,7 +236,9 @@ export async function registerAuth(
     await sessions.start(req, reply, {
       subject: claims.sub,
       ...(email ? { email } : {}),
-      ...(userId !== undefined ? { userId } : {}),
+      ...(userId !== undefined && actor?.mapping !== undefined
+        ? { userId, actorMapping: actor.mapping }
+        : {}),
       ...(typeof claims.name === 'string' ? { name: claims.name } : {}),
       claims: { ...claims },
       idToken,

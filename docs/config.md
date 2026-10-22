@@ -526,7 +526,7 @@ actor:
 - At sign-in, Warden looks for the row whose **`matchColumn`** equals the user's `email` claim, ignoring case, and takes its **`idColumn`** as text. The email must be verified, exactly as for [role assignments](#role-assignments) (unless [`access.requireVerifiedEmail`](#access) is `false`), and ASCII, as must the stored value (see [non-ASCII emails](#non-ascii-emails)). `matchColumn` must be a text column (`text`, `varchar`, `char`, or `citext`).
 - No matching row, several, or a null id gives the user no id; several also log a warning. Make `matchColumn` unique to avoid that.
 - The table may be [hidden](#tables): Warden still looks the user up, reading only those two columns, and the table stays absent from the API and UI. The database role Warden runs as needs `select` on both columns.
-- The id is stored on the session, so it is as of sign-in: a change to the user's row, or to `actor`, applies when they next sign in. Removing or breaking the mapping stops existing sessions' ids being used at the next restart.
+- The id is stored on the session, so it is as of sign-in: a change to the user's row applies when they next sign in. Changing `actor`'s `table`, `matchColumn`, or `idColumn`, or removing or breaking the mapping, stops existing sessions' ids being used at the next restart; those users have no id until they sign in again (and with `required`, must sign in again).
 - With **`required: true`**, a user without an id can't sign in (`/login?error=access_denied`), and a session without one (from before the mapping was required) gets a `401`.
 - A table or column that doesn't exist is a startup [warning](#errors-and-warnings), not an error: nobody gets an id, and with `required: true` nobody can sign in.
 

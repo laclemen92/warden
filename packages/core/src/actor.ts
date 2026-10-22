@@ -25,6 +25,14 @@ export interface ResolvedActor {
 const MATCH_TYPES = new Set(['text', 'varchar', 'bpchar', 'citext']);
 
 /**
+ * Identifies a mapping, so an id stored on a session under one mapping isn't trusted under
+ * another (a different table's id 42 is a different person).
+ */
+export function actorMappingKey(mapping: ActorMapping): string {
+  return JSON.stringify([mapping.schema, mapping.table, mapping.matchColumn, mapping.idColumn]);
+}
+
+/**
  * Resolve config's `actor` against the introspected schema. Like `resolveSchema`, a mismatch is a
  * warning, never a throw: the mapping is left out, so nobody gets an id (and with `required`,
  * nobody can sign in).
