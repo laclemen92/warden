@@ -89,3 +89,16 @@ access:
     warden-admins: [admin]
   emailDomains:
     example.com: [viewer]
+
+# Where the audit log is written: warden.audit_log (the default), or a table you own. With
+# `store: table`, columns map each audit field to your column (left out, warden.audit_log's names
+# are used), and source tags Warden's entries in a table your application writes to as well. The
+# table is never exposed, and if it doesn't match, changes are refused until it does
+# (docs/config.md#audit, docs/database.md#writing-the-audit-log-to-your-own-table).
+audit:
+  store: warden
+  # store: table
+  # table: public.change_log
+  # columns: { id: id, occurredAt: created_at, actorSubject: actor_sub, action: action,
+  #            entity: table_name, recordId: record_id, diff: diff, details: details }
+  # source: { column: source, value: warden }

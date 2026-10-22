@@ -1,15 +1,18 @@
 import {
   ACCESS_AUDIT_ACTIONS,
+  WARDEN_AUDIT_COLUMNS,
   auditDiff,
   encodeRecordId,
   projectAuditEntry,
   type AuditEntry,
+  type AuditField,
+  type AuditStore,
   type Entity,
   type ExportDetails,
   type RevokeSessionsDetails,
   type StoredActionDetails,
 } from '@wardenhq/core';
-import { sql, type Expression, type SqlBool } from 'kysely';
+import { sql, type Expression, type RawBuilder, type SqlBool } from 'kysely';
 import type { Database } from './database.js';
 import { escapeLike } from './filter.js';
 import { WARDEN_SCHEMA } from './introspect.js';
@@ -23,6 +26,8 @@ export interface AuditContext {
   reason?: string;
   /** The custom action's entry this write is part of. */
   parentId?: string;
+  /** Where the entry goes; `warden.audit_log` when absent. */
+  store?: AuditStore;
 }
 
 /**
@@ -37,6 +42,27 @@ export class AuditWriteError extends Error {
 }
 
 /**
+ * The configured audit table doesn't match the database, so nothing that has to be audited may
+ * happen, and there is no log to read. The message is safe to show: the details are logged at
+ * startup.
+ */
+export class AuditUnavailableError extends Error {
+  readonly statusCode = 503;
+  constructor() {
+    super(
+      'the audit log is misconfigured: changes are disabled and the log is unreadable until it is fixed',
+    );
+    this.name = 'AuditUnavailableError';
+  }
+}
+
+const WARDEN_STORE: AuditStore = { kind: 'warden' };
+
+/** Whether entries written to `store` keep `field`. */
+export const storesField = (store: AuditStore = WARDEN_STORE, field: AuditField) =>
+  store.kind === 'warden' || (store.kind === 'table' && store.columns[field] !== undefined);
+
+/**
  * JSON text for a jsonb audit column. `json` columns can hold strings with NUL characters, which
  * jsonb rejects; failing the audit insert would leave such rows unwritable, so each NUL is
  * recorded as the six characters `\u0000` instead. In the JSON text, `\u0000` is a NUL escape
@@ -48,12 +74,96 @@ const json = (value: unknown) =>
     ? null
     : JSON.stringify(value).replace(/(?<!\\)((?:\\\\)*)\\u0000/g, '$1\\\\u0000');
 
+/** An entry's values by field. Warden sets `id` and `occurredAt` itself. */
+export type AuditValues = { [F in Exclude<AuditField, 'id' | 'occurredAt'>]?: unknown };
+
+const JSON_FIELDS: ReadonlySet<AuditField> = new Set([
+  'primaryKey',
+  'before',
+  'after',
+  'diff',
+  'details',
+]);
+
+function storeTable(store: AuditStore): {
+  table: RawBuilder<unknown>;
+  columns: Partial<Record<AuditField, string>>;
+  source?: { column: string; value: string };
+} {
+  switch (store.kind) {
+    case 'warden':
+      return { table: sql`${sql.id(WARDEN_SCHEMA, 'audit_log')}`, columns: WARDEN_AUDIT_COLUMNS };
+    case 'table':
+      return {
+        table: sql`${sql.id(store.schema, store.name)}`,
+        columns: store.columns,
+        ...(store.source ? { source: store.source } : {}),
+      };
+    case 'unavailable':
+      throw new AuditUnavailableError();
+  }
+}
+
 /**
- * Write hook that appends an entry to `warden.audit_log` in the write's own transaction, so a
+ * Insert an entry into `store` and return its id. Fields the store doesn't map are dropped.
+ * Column names come from the store, which was checked against the database; values are always
+ * bind parameters, typed by the column they go into.
+ */
+export async function insertAuditEntry(
+  db: Database,
+  store: AuditStore,
+  values: AuditValues,
+): Promise<string> {
+  const { table, columns, source } = storeTable(store);
+  const names: RawBuilder<unknown>[] = [];
+  const exprs: RawBuilder<unknown>[] = [];
+  const add = (column: string, value: RawBuilder<unknown>) => {
+    names.push(sql.id(column));
+    exprs.push(value);
+  };
+  // The write's transaction start, as `warden.audit_log`'s default.
+  if (columns.occurredAt) add(columns.occurredAt, sql`now()`);
+  for (const [field, value] of Object.entries(values) as [AuditField, unknown][]) {
+    const column = columns[field];
+    if (column === undefined || value === undefined) continue;
+    add(column, sql`${JSON_FIELDS.has(field) ? json(value) : value}`);
+  }
+  if (source) add(source.column, sql`${source.value}`);
+  const { rows } = await sql<{ id: string }>`
+    insert into ${table} (${sql.join(names)}) values (${sql.join(exprs)})
+    returning ${sql.id(columns.id!)}::text as id`.execute(db);
+  return rows[0]!.id;
+}
+
+/** `insertAuditEntry` for writes: a failure is an `AuditWriteError`, a bad store isn't. */
+async function writeEntry(db: Database, store: AuditStore, values: AuditValues) {
+  if (store.kind === 'unavailable') throw new AuditUnavailableError();
+  try {
+    return await insertAuditEntry(db, store, values);
+  } catch (err) {
+    throw new AuditWriteError(err);
+  }
+}
+
+const actorValues = (actor: AuditContext['actor'], requestId: string | undefined) => ({
+  requestId: requestId ?? null,
+  actorSubject: actor.subject,
+  actorEmail: actor.email ?? null,
+  actorRoles: [...actor.roles],
+});
+
+/**
+ * Write hook that appends an entry to the audit store in the write's own transaction, so a
  * write and its entry commit or roll back together. Rows only hold exposed fields, so hidden
  * column values never reach the log.
  */
-export function auditHook({ actor, requestId, reason, parentId }: AuditContext): WriteHook {
+export function auditHook({
+  actor,
+  requestId,
+  reason,
+  parentId,
+  store = WARDEN_STORE,
+}: AuditContext): WriteHook {
   return async (trx, { action, entity, before, after, written }) => {
     // The row as it now is; on delete, as it was. An update that changes the key is filed under
     // the new id.
@@ -62,20 +172,19 @@ export function auditHook({ actor, requestId, reason, parentId }: AuditContext):
       entity.primaryKey.length > 0
         ? Object.fromEntries(entity.primaryKey.map((key) => [key, row[key] ?? null]))
         : null;
-    try {
-      await sql`
-        insert into ${sql.id(WARDEN_SCHEMA, 'audit_log')}
-          (request_id, actor_subject, actor_email, actor_roles, action, entity, record_id,
-           primary_key, before, after, diff, reason, written, parent_id)
-        values (
-          ${requestId ?? null}, ${actor.subject}, ${actor.email ?? null}, ${[...actor.roles]},
-          ${action}, ${entity.key}, ${encodeRecordId(entity, row)},
-          ${json(primaryKey)}::jsonb, ${json(before)}::jsonb, ${json(after)}::jsonb,
-          ${json(auditDiff(before, after))}::jsonb, ${reason ?? null},
-          ${written ? [...written] : null}::text[], ${parentId ?? null}::bigint)`.execute(trx);
-    } catch (err) {
-      throw new AuditWriteError(err);
-    }
+    await writeEntry(trx, store, {
+      ...actorValues(actor, requestId),
+      action,
+      entity: entity.key,
+      recordId: encodeRecordId(entity, row),
+      primaryKey,
+      before,
+      after,
+      diff: auditDiff(before, after),
+      reason: reason ?? null,
+      written: written ? [...written] : null,
+      parentId: parentId ?? null,
+    });
   };
 }
 
@@ -95,6 +204,7 @@ export async function insertActionEntry(
     entity,
     record,
     details,
+    store = WARDEN_STORE,
   }: Omit<AuditContext, 'parentId'> & {
     /** The action's name. */
     action: string;
@@ -108,19 +218,15 @@ export async function insertActionEntry(
     record && entity.primaryKey.length > 0
       ? Object.fromEntries(entity.primaryKey.map((key) => [key, record[key] ?? null]))
       : null;
-  try {
-    const { rows } = await sql<{ id: string }>`
-      insert into ${sql.id(WARDEN_SCHEMA, 'audit_log')}
-        (request_id, actor_subject, actor_email, actor_roles, action, entity, record_id,
-         primary_key, details, reason)
-      values (${requestId ?? null}, ${actor.subject}, ${actor.email ?? null}, ${[...actor.roles]},
-              ${action}, ${entity.key}, ${record ? encodeRecordId(entity, record) : null},
-              ${json(primaryKey)}::jsonb, ${json(details)}::jsonb, ${reason ?? null})
-      returning id::text as id`.execute(trx);
-    return rows[0]!.id;
-  } catch (err) {
-    throw new AuditWriteError(err);
-  }
+  return writeEntry(trx, store, {
+    ...actorValues(actor, requestId),
+    action,
+    entity: entity.key,
+    recordId: record ? encodeRecordId(entity, record) : null,
+    primaryKey,
+    details,
+    reason: reason ?? null,
+  });
 }
 
 /**
@@ -134,20 +240,18 @@ export async function recordExport(
     requestId,
     entity,
     details,
+    store = WARDEN_STORE,
   }: Omit<AuditContext, 'reason'> & {
     entity: Entity;
     details: ExportDetails;
   },
 ): Promise<void> {
-  try {
-    await sql`
-      insert into ${sql.id(WARDEN_SCHEMA, 'audit_log')}
-        (request_id, actor_subject, actor_email, actor_roles, action, entity, details)
-      values (${requestId ?? null}, ${actor.subject}, ${actor.email ?? null}, ${[...actor.roles]},
-              'export', ${entity.key}, ${JSON.stringify(details)}::jsonb)`.execute(db);
-  } catch (err) {
-    throw new AuditWriteError(err);
-  }
+  await writeEntry(db, store, {
+    ...actorValues(actor, requestId),
+    action: 'export',
+    entity: entity.key,
+    details,
+  });
 }
 
 export interface AuditQuery {
@@ -183,6 +287,8 @@ export interface AuditQuery {
   parentId?: string;
   /** Only entries older than this entry id (the previous page's last id). */
   before?: string;
+  /** Only entries tagged with this source value; needs a store with `source`. */
+  source?: string;
   limit: number;
 }
 
@@ -197,7 +303,7 @@ interface AuditRow {
   request_id: string | null;
   actor_subject: string;
   actor_email: string | null;
-  actor_roles: string[];
+  actor_roles: string[] | null;
   action: string;
   entity: string;
   record_id: string | null;
@@ -210,6 +316,7 @@ interface AuditRow {
   written: string[] | null;
   parent_id: string | null;
   parent_action: string | null;
+  source?: string | null;
 }
 
 const accessEntry = sql<SqlBool>`(a.entity, a.action) in (${sql.join(
@@ -218,16 +325,63 @@ const accessEntry = sql<SqlBool>`(a.entity, a.action) in (${sql.join(
   ),
 )})`;
 
-/** A `revoke_sessions` entry keeps the user's subject as its primary key. */
-const revokeDetails = (row: AuditRow): RevokeSessionsDetails => ({
-  subject: String(row.primary_key?.subject ?? ''),
-  ...(row.details as { sessions: number; email?: string }),
-});
+/**
+ * A `revoke_sessions` entry keeps the user's subject as its primary key, or in its details in a
+ * store without one.
+ */
+const revokeDetails = (row: AuditRow): RevokeSessionsDetails => {
+  const details = row.details as { sessions: number; email?: string; subject?: string };
+  return { ...details, subject: String(row.primary_key?.subject ?? details.subject ?? '') };
+};
+
+/**
+ * The store's entries as `warden.audit_log` columns. A configured table's columns are cast to the
+ * types Warden reads, unmapped fields are null, and JSON that isn't an object (which only the
+ * application could have written) is read as null, so its rows read like Warden's.
+ */
+function auditRelation(store: AuditStore): RawBuilder<unknown> {
+  if (store.kind === 'unavailable') throw new AuditUnavailableError();
+  if (store.kind === 'warden') return sql`${sql.id(WARDEN_SCHEMA, 'audit_log')}`;
+  const column = (field: AuditField) => {
+    const name = store.columns[field];
+    return name === undefined ? undefined : sql.id('t', name);
+  };
+  const as = (field: AuditField, type: 'text' | 'text[]' | 'bigint', alias: string) => {
+    const c = column(field);
+    return c
+      ? sql`${c}::${sql.raw(type)} as ${sql.id(alias)}`
+      : sql`null::${sql.raw(type)} as ${sql.id(alias)}`;
+  };
+  const object = (field: AuditField, alias: string) => {
+    const c = column(field);
+    return c
+      ? sql`case when jsonb_typeof(${c}::jsonb) = 'object' then ${c}::jsonb end as ${sql.id(alias)}`
+      : sql`null::jsonb as ${sql.id(alias)}`;
+  };
+  const source = store.source ? sql`${sql.id('t', store.source.column)}::text` : sql`null::text`;
+  return sql`(select
+    ${column('id')} as id, ${column('occurredAt')} as occurred_at,
+    ${as('requestId', 'text', 'request_id')}, ${as('actorSubject', 'text', 'actor_subject')},
+    ${as('actorEmail', 'text', 'actor_email')}, ${as('actorRoles', 'text[]', 'actor_roles')},
+    ${as('action', 'text', 'action')}, ${as('entity', 'text', 'entity')},
+    ${as('recordId', 'text', 'record_id')}, ${as('reason', 'text', 'reason')},
+    ${object('primaryKey', 'primary_key')}, ${object('before', 'before')},
+    ${object('after', 'after')}, ${object('diff', 'diff')}, ${object('details', 'details')},
+    ${as('written', 'text[]', 'written')}, ${as('parentId', 'bigint', 'parent_id')},
+    ${source} as source
+    from ${sql.id(store.schema, store.name)} as t)`;
+}
 
 /** Audit entries matching `query`, newest first. */
-export async function listAuditEntries(db: Database, query: AuditQuery): Promise<AuditPage> {
+export async function listAuditEntries(
+  db: Database,
+  query: AuditQuery,
+  store: AuditStore = WARDEN_STORE,
+): Promise<AuditPage> {
   const { visible, actions, includeAccessEntries, entity, recordId, actor, action } = query;
-  const { from, to, parentId, before, limit } = query;
+  const { from, to, parentId, before, source, limit } = query;
+  const relation = auditRelation(store);
+  const withSource = store.kind === 'table' && store.source !== undefined;
   const fields = sql`${JSON.stringify(visible)}::jsonb`;
   const readable = new Set(Object.keys(visible));
   const entityEntry = sql<SqlBool>`(${fields} ? a.entity and
@@ -262,14 +416,18 @@ export async function listAuditEntries(db: Database, query: AuditQuery): Promise
   if (to !== undefined) conditions.push(sql<SqlBool>`a.occurred_at < ${to}::timestamptz`);
   if (parentId !== undefined) conditions.push(sql<SqlBool>`a.parent_id = ${parentId}::bigint`);
   if (before !== undefined) conditions.push(sql<SqlBool>`a.id < ${before}::bigint`);
+  if (source !== undefined) {
+    conditions.push(withSource ? sql<SqlBool>`a.source = ${source}` : sql<SqlBool>`false`);
+  }
 
   const { rows } = await sql<AuditRow>`
     select a.id::text as id, to_json(a.occurred_at) #>> '{}' as occurred_at, a.request_id,
            a.actor_subject, a.actor_email, a.actor_roles, a.action, a.entity, a.record_id,
            a.reason, a.before, a.after, a.diff, a.details, a.primary_key, a.written,
            a.parent_id::text as parent_id, p.action as parent_action
-    from ${sql.id(WARDEN_SCHEMA, 'audit_log')} as a
-    left join ${sql.id(WARDEN_SCHEMA, 'audit_log')} as p on p.id = a.parent_id
+           ${withSource ? sql`, a.source` : sql``}
+    from ${relation} as a
+    left join ${relation} as p on p.id = a.parent_id
     where ${sql.join(conditions, sql` and `)}
     order by a.id desc
     limit ${limit + 1}`.execute(db);
@@ -280,7 +438,12 @@ export async function listAuditEntries(db: Database, query: AuditQuery): Promise
         id: row.id,
         occurredAt: row.occurred_at,
         requestId: row.request_id,
-        actor: { subject: row.actor_subject, email: row.actor_email, roles: row.actor_roles },
+        actor: {
+          subject: row.actor_subject,
+          email: row.actor_email,
+          // Unknown, rather than none, in a store that doesn't keep them.
+          ...(row.actor_roles !== null ? { roles: row.actor_roles } : {}),
+        },
         action: row.action,
         entity: row.entity,
         recordId: row.record_id,
@@ -294,6 +457,7 @@ export async function listAuditEntries(db: Database, query: AuditQuery): Promise
           (actions === undefined || actions.includes(row.parent_action ?? ''))
             ? { id: row.parent_id, action: row.parent_action ?? '' }
             : null,
+        ...(withSource ? { source: row.source ?? null } : {}),
       };
       // An entity's entry, or (only when asked for) an access entry, which is shown in full.
       if (Object.hasOwn(visible, row.entity)) {
@@ -303,4 +467,36 @@ export async function listAuditEntries(db: Database, query: AuditQuery): Promise
     }),
     hasMore: rows.length > limit,
   };
+}
+
+/** What the connected role may do to a configured audit table. */
+export interface AuditTableAccess {
+  /** It can insert entries (into at least some columns; an insert that fails is rolled back). */
+  insert: boolean;
+  select: boolean;
+  /**
+   * It could change or remove entries: it may update, delete, or truncate, or it owns the table
+   * (directly or through a role it belongs to), or is a superuser.
+   */
+  tamper: boolean;
+}
+
+/** The connected role's access to `table`; undefined when the table doesn't exist. */
+export async function auditTableAccess(
+  db: Database,
+  table: { schema: string; name: string },
+): Promise<AuditTableAccess | undefined> {
+  const { rows } = await sql<AuditTableAccess>`
+    select has_any_column_privilege(c.oid, 'INSERT') as insert,
+           has_any_column_privilege(c.oid, 'SELECT') as select,
+           r.rolsuper
+             or pg_has_role(current_user, c.relowner, 'MEMBER')
+             or has_any_column_privilege(c.oid, 'UPDATE')
+             or has_table_privilege(c.oid, 'DELETE')
+             or has_table_privilege(c.oid, 'TRUNCATE') as tamper
+    from pg_class c
+    join pg_namespace n on n.oid = c.relnamespace
+    join pg_roles r on r.rolname = current_user
+    where n.nspname = ${table.schema} and c.relname = ${table.name}`.execute(db);
+  return rows[0];
 }

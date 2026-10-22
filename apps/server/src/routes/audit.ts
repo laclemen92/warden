@@ -7,6 +7,7 @@ import {
   runnableActions,
   type ActionPolicy,
   type Policy,
+  type AuditStore,
 } from '@wardenhq/core';
 import { listAuditEntries, type AuditQuery, type Database } from '@wardenhq/pg-adapter';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
@@ -24,6 +25,8 @@ export interface AuditRouteOptions {
   roles: WardenConfig['roles'];
   /** Custom actions, if any; a record's History shows an action's own entry to who may run it. */
   actionPolicy?: ActionPolicy | undefined;
+  /** Where entries are read from; `warden.audit_log` when absent. */
+  audit?: AuditStore | undefined;
 }
 
 interface PageQuery {
@@ -39,6 +42,7 @@ interface SearchQuery extends PageQuery {
   from?: string;
   to?: string;
   parent?: string;
+  source?: string;
 }
 
 const pageProperties = {
@@ -60,6 +64,8 @@ const searchQuerySchema = {
     to: { type: 'string', format: 'date-time' },
     /** A custom action's entry: the rows it changed. */
     parent: pageProperties.cursor,
+    /** Who wrote the entry, with an audit table that tags Warden's (`audit.source`). */
+    source: { type: 'string', minLength: 1, maxLength: 200, pattern: NO_NUL },
   },
 } as const;
 
@@ -74,7 +80,7 @@ const notFound = (reply: FastifyReply) =>
  */
 export function registerAuditRoutes(
   app: FastifyInstance,
-  { db, policy, views, roles: roleConfig, actionPolicy }: AuditRouteOptions,
+  { db, policy, views, roles: roleConfig, actionPolicy, audit }: AuditRouteOptions,
 ) {
   /** Entity key → fields the caller can read, for every entity they may read. */
   const visibleTo = (req: FastifyRequest): AuditQuery['visible'] => {
@@ -90,7 +96,7 @@ export function registerAuditRoutes(
     adminAreas(roleConfig, req.roles ?? []).includes('audit');
 
   const page = async (query: AuditQuery, { withRoles = true } = {}) => {
-    const { entries, hasMore } = await listAuditEntries(db, query);
+    const { entries, hasMore } = await listAuditEntries(db, query, audit);
     const items = withRoles
       ? entries
       : entries.map((entry) => ({
@@ -151,7 +157,7 @@ export function registerAuditRoutes(
       },
     },
     async (req, reply) => {
-      const { entity, actor, action, from, to, parent, cursor, limit } = req.query;
+      const { entity, actor, action, from, to, parent, source, cursor, limit } = req.query;
       const visible = visibleTo(req);
       // Hidden and unreadable entities are rejected exactly like nonexistent ones.
       if (entity !== undefined && !Object.hasOwn(visible, entity)) {
@@ -183,6 +189,7 @@ export function registerAuditRoutes(
         ...(from !== undefined ? { from } : {}),
         ...(to !== undefined ? { to } : {}),
         ...(parent !== undefined ? { parentId: parent } : {}),
+        ...(source !== undefined ? { source } : {}),
         ...(cursor !== undefined ? { before: cursor } : {}),
       });
     },

@@ -29,9 +29,11 @@ import {
   type FieldError,
   type Policy,
   type ResolvedAction,
+  type AuditStore,
 } from '@wardenhq/core';
 import {
   ActionWriteError,
+  AuditUnavailableError,
   auditHook,
   createActionTx,
   getRow,
@@ -91,6 +93,8 @@ export interface ActionRouteOptions {
   defaultSchema: string;
   /** Keys preview tokens. */
   sessionSecret: string;
+  /** Where changes are audited; `warden.audit_log` when absent. */
+  audit?: AuditStore | undefined;
 }
 
 /** What `GET /api/actions` says about an action, so the UI can offer it and build its form. */
@@ -232,7 +236,7 @@ const pick = <T>(values: Record<string, T> | null, fields: ReadonlySet<string>) 
  */
 export function registerActionRoutes(app: FastifyInstance, options: ActionRouteOptions) {
   const { db, schema, policy, views, actionPolicy, definitions, defaultSchema } = options;
-  const { startTransaction } = options;
+  const { startTransaction, audit: store = { kind: 'warden' } } = options;
   const { deadlineMs, ...caps } = { ...DEFAULT_ACTION_LIMITS, ...options.limits };
   const acquire = createSlots(caps);
   const byTable = new Map(schema.entities.map((e) => [`${e.schema}.${e.name}`, e]));
@@ -490,6 +494,7 @@ export function registerActionRoutes(app: FastifyInstance, options: ActionRouteO
 
       const auditId = await insertActionEntry(trx, {
         actor,
+        store,
         requestId,
         ...(reason ? { reason } : {}),
         action: action.name,
@@ -503,6 +508,7 @@ export function registerActionRoutes(app: FastifyInstance, options: ActionRouteO
       });
       const audit = auditHook({
         actor,
+        store,
         requestId,
         parentId: auditId,
         ...(reason ? { reason } : {}),
@@ -714,7 +720,8 @@ export function registerActionRoutes(app: FastifyInstance, options: ActionRouteO
       throw err.cause;
     }
     // Warden's own reads can still hit a value Postgres rejects; the app maps those to a 400.
-    if (isDataError(err)) throw err;
+    // The app also explains a misconfigured audit store.
+    if (isDataError(err) || err instanceof AuditUnavailableError) throw err;
     req.log.error({ err, action: req.action?.name }, 'action failed');
     return serverError(reply);
   };

@@ -27,6 +27,10 @@ export function AuditLogPage() {
   const { data: schema } = useSchema();
   const entities = new Map(schema?.entities.map((e) => [e.key, e]));
   const search = useAuditSearch(filters);
+  // Entries carry a source only when the audit table is shared with the application.
+  const hasSource =
+    filters.source !== undefined ||
+    (search.data?.pages[0]?.items.some((e) => e.source !== undefined) ?? false);
 
   // Users without access get the same 404 as a page that doesn't exist.
   if (search.error instanceof ApiError && search.error.status === 404) return <NotFoundPage />;
@@ -44,6 +48,7 @@ export function AuditLogPage() {
         // Remounted when the URL changes (back/forward), so the form shows the applied filters.
         key={params.toString()}
         filters={filters}
+        hasSource={hasSource}
         entities={[...entities.values()].sort((a, b) => a.label.localeCompare(b.label))}
         onApply={(next) => setParams(filtersToParams(next))}
       />
@@ -55,10 +60,12 @@ export function AuditLogPage() {
 
 function AuditFilterForm({
   filters,
+  hasSource,
   entities,
   onApply,
 }: {
   filters: AuditFilters;
+  hasSource: boolean;
   entities: Entity[];
   onApply: (filters: AuditFilters) => void;
 }) {
@@ -117,6 +124,17 @@ function AuditFilterForm({
           </SelectContent>
         </Select>
       </div>
+      {hasSource && (
+        <label className="space-y-1 text-sm">
+          <span className="font-medium">Source</span>
+          <Input
+            className="w-36"
+            placeholder="Any source"
+            value={draft.source ?? ''}
+            onChange={(e) => set('source', e.target.value)}
+          />
+        </label>
+      )}
       <label className="space-y-1 text-sm">
         <span className="font-medium">From</span>
         <Input
@@ -160,7 +178,9 @@ function AuditResults({
       <p role="alert" className="text-sm text-muted-foreground">
         {error instanceof ApiError && error.status === 400
           ? `Couldn't search: ${error.message}.`
-          : "Couldn't load the audit log."}
+          : error instanceof ApiError && error.status === 503
+            ? `Couldn't load the audit log: ${error.message}.`
+            : "Couldn't load the audit log."}
       </p>
     );
   }

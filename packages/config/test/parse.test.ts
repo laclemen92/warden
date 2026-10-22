@@ -28,6 +28,7 @@ describe('parseConfig', () => {
       tables: {},
       roles: {},
       actions: {},
+      audit: { store: 'warden' },
     });
   });
 

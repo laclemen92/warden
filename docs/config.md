@@ -11,6 +11,7 @@ Warden needs one decision from you before it starts: who may sign in ([`access`]
 - [`roles`](#roles)
 - [`actions`](#actions)
 - [`access`](#access)
+- [`audit`](#audit)
 - [Schema drift](#schema-drift)
 - [Audit log](#audit-log)
 - [Saved views](#saved-views)
@@ -424,6 +425,64 @@ access:
   allowAll: true
 ```
 
+## `audit`
+
+Where the [audit log](#audit-log) is written. By default (`audit.store: warden`) it is `warden.audit_log`. With `audit.store: table`, every entry goes to a table you own instead: creates, updates, and deletes, custom actions and the rows they change, exports, role assignments, session revocations, and schema drift acknowledgements. Each entry is still inserted in the same transaction as the change, so a change whose entry can't be written is rolled back. History and the audit log page read from the same table.
+
+| Key                   | Default   | Description                                                                                                                              |
+| --------------------- | --------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `audit.store`         | `warden`  | `warden`: `warden.audit_log`. `table`: the table named by `audit.table`.                                                                 |
+| `audit.table`         |           | `table` (in the first of `schemas`) or `schema.table`. Required with `store: table`. Its schema needn't be one Warden exposes.           |
+| `audit.columns`       | see below | The column each field is written to. Leave it out to use [`warden.audit_log`'s column names](database.md#the-audit-log) for every field. |
+| `audit.source.column` |           | A text column that tells Warden's entries apart, in a table that also holds your application's own.                                      |
+| `audit.source.value`  |           | What Warden writes in `audit.source.column`, such as `warden`.                                                                           |
+
+```yaml
+audit:
+  store: table
+  table: public.change_log
+  columns: # Warden field: your column
+    id: id
+    occurredAt: created_at
+    actorSubject: actor_sub
+    actorEmail: actor_email
+    action: action
+    entity: table_name
+    recordId: record_id
+    before: old_values
+    after: new_values
+    diff: diff
+    details: details
+    reason: reason
+  source: { column: source, value: warden }
+```
+
+With `audit.columns`, only the fields listed are written; the others are dropped. The first eight below are required, since History and the audit log need them to show each user only what they may see. Each column must have a compatible type, and a field Warden sometimes leaves empty needs a nullable column:
+
+| Field                        | Column type                                            | Holds                                                                                                   |
+| ---------------------------- | ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------- |
+| `audit.columns.id`           | `int2`/`int4`/`int8` with identity or sequence default | Required. Increasing entry id; Warden never writes it. Pages and parent links use it.                   |
+| `audit.columns.occurredAt`   | `timestamptz` or `timestamp`                           | Required. The write's transaction start (`now()`).                                                      |
+| `audit.columns.actorSubject` | `text`/`varchar`                                       | Required. OIDC subject of the user.                                                                     |
+| `audit.columns.action`       | `text`/`varchar`                                       | Required. `create`, `update`, `delete`, `export`, a custom action's name, ...                           |
+| `audit.columns.entity`       | `text`/`varchar`                                       | Required. Entity key.                                                                                   |
+| `audit.columns.recordId`     | `text`/`varchar`, nullable                             | Required. The API's record id; History finds a record's entries by it.                                  |
+| `audit.columns.diff`         | `json`/`jsonb`, nullable                               | Required. `{ field: { from, to } }`.                                                                    |
+| `audit.columns.details`      | `json`/`jsonb`, nullable                               | Required. What exports and custom actions did.                                                          |
+| `audit.columns.requestId`    | `text`/`varchar`, nullable                             | The request's id.                                                                                       |
+| `audit.columns.actorEmail`   | `text`/`varchar`, nullable                             | The user's verified email.                                                                              |
+| `audit.columns.actorRoles`   | `text[]`                                               | Their Warden roles. Unmapped, History and the audit log don't show roles.                               |
+| `audit.columns.primaryKey`   | `json`/`jsonb`, nullable                               | The row's primary key columns.                                                                          |
+| `audit.columns.before`       | `json`/`jsonb`, nullable                               | The row before the change.                                                                              |
+| `audit.columns.after`        | `json`/`jsonb`, nullable                               | The row after the change.                                                                               |
+| `audit.columns.reason`       | `text`/`varchar`, nullable                             | The reason given. Unmapped, reasons (even required ones) are not kept.                                  |
+| `audit.columns.written`      | `text[]`, nullable                                     | The fields an update set. Unmapped, an update's reason is shown only to readers of every changed field. |
+| `audit.columns.parentId`     | the id's type, nullable                                | A custom action's entry, on the rows it changed. Unmapped, those rows aren't linked to the action.      |
+
+Warden checks the table against this at startup. A missing table or column, an incompatible type, a not-null column Warden leaves empty, or a not-null column without a default that isn't mapped, is logged as a warning like any other config that doesn't match the database, and Warden still starts, but every audited change (writes, actions, exports, role and session changes) is refused with a `503` until it is fixed, and History and the audit log can't be read. Everything else keeps working.
+
+The audit table is never exposed, whatever the rest of the config says: it has no grid, record page, or export, and nobody can write it through Warden. Configuring it under `tables` or granting anything on it is a config error. Entries your application writes to the same table are shown in History and the audit log as well as they can be (they need Warden's entity key and record id to appear in a record's History), with their `audit.source.column` value; the audit log page can filter on it. See [database.md](database.md#writing-the-audit-log-to-your-own-table) for the DDL, an ORM entity, and grants.
+
 ## Role assignments
 
 Config is the source of truth for which roles exist and what they grant. On top of the roles [`access`](#access) gives people, users with a role that has `admin: [roles]` can open **Roles** in the sidebar to assign extra roles to individual people by email. The page also shows the roles and access rules from config, read-only.
@@ -458,7 +517,7 @@ The page reflects the schema as of Warden's last start. **Acknowledge** makes th
 
 ## Audit log
 
-Every create, update, and delete made through Warden is recorded in the [audit log](database.md#the-audit-log), with the reason given for it (the **Internal note** in the UI). Reasons are required by default; see [Required reasons](#required-reasons). Entries are shown in two places:
+Every create, update, and delete made through Warden is recorded in the [audit log](database.md#the-audit-log), with the reason given for it (the **Internal note** in the UI). It is `warden.audit_log` unless [`audit`](#audit) points it at a table you own. Reasons are required by default; see [Required reasons](#required-reasons). Entries are shown in two places:
 
 - **History** on a record lists its changes, newest first, with who made each one (email and OIDC subject), why, and the before and after values. Anyone who may read the record sees it. The roles the author held are shown only to users with `admin: [audit]`, so reading a record doesn't tell everyone who holds `admin` or `hr`.
 - **Audit log** in the sidebar searches every entry by actor (email or subject), entity, action, and date range. Only users with a role that has `admin: [audit]` can open it. Besides changes to tables, it lists [role assignments](#role-assignments) and removals (`assign`, `unassign`: who gave or removed which role from whom) and sign-outs everywhere (`revoke_sessions`: whose sessions, and how many). These are shown in full, and only here: they belong to no table, so no record's History includes them.

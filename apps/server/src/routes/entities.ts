@@ -16,6 +16,7 @@ import {
   type Filter,
   type FilterError,
   type Policy,
+  type AuditStore,
 } from '@wardenhq/core';
 import {
   auditHook,
@@ -132,6 +133,7 @@ export function registerEntityRoutes(
   db: Database,
   policy: Policy,
   views: Views,
+  audit: AuditStore = { kind: 'warden' },
 ) {
   // Hidden entities aren't in the effective schema, so they 404 exactly like nonexistent ones.
   const entities = new Map(schema.entities.map((e) => [e.key, e]));
@@ -172,6 +174,7 @@ export function registerEntityRoutes(
         },
         requestId: req.id,
         ...(reason ? { reason } : {}),
+        store: audit,
       }),
     };
   };

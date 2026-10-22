@@ -51,6 +51,11 @@ export interface AuditEntry {
   details: ExportDetails | RevokeSessionsDetails | ActionDetails | null;
   /** The custom action this change was part of. */
   parent: { id: string; action: string } | null;
+  /**
+   * With an audit table that also holds the application's own entries (`audit.source`), who wrote
+   * this one: Warden's tag value, the application's, or null.
+   */
+  source?: string | null;
 }
 
 /**

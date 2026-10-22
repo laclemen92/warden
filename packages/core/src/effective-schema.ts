@@ -1,5 +1,6 @@
 import type { TableConfig, WardenConfig, WriteAction } from '@wardenhq/config';
 import { WRITE_ACTIONS } from '@wardenhq/config/schema';
+import { auditTableName } from './audit-store.js';
 import type { Column, SchemaModel, Table } from './schema-model.js';
 
 /**
@@ -119,7 +120,12 @@ export function resolveSchema(model: SchemaModel, config: WardenConfig): Resolve
   const exposedTables: Table[] = [];
   const entities: Entity[] = [];
 
+  // The audit table is never exposed, whatever other config says, so nobody can edit the trail.
+  const auditTable = auditTableName(config);
   for (const table of model.tables) {
+    if (auditTable && table.schema === auditTable.schema && table.name === auditTable.name) {
+      continue;
+    }
     const configured = tableConfigs.get(`${table.schema}.${table.name}`);
     const exposed = configured ? !configured.config.hidden : config.defaults.expose === 'all';
     if (!exposed) continue;

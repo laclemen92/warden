@@ -1,13 +1,18 @@
-import { loadConfig, requireAccess } from '@wardenhq/config';
+import { loadConfig, requireAccess, type WardenConfig } from '@wardenhq/config';
 import {
+  auditTableName,
   deleteCascadeWarnings,
+  getTable,
   resolveActionPolicy,
+  resolveAuditStore,
   resolvePolicy,
   resolveSchema,
   sessionEmail,
+  type SchemaModel,
 } from '@wardenhq/core';
 import {
   assignedRoles,
+  auditTableAccess,
   canDisableAuditTriggers,
   createDatabase,
   ensureSchemaSnapshot,
@@ -16,6 +21,7 @@ import {
   pendingMigrations,
   refreshSessionEmails,
   startDetachedTransaction,
+  type Database,
 } from '@wardenhq/pg-adapter';
 import { ActionsError, loadActions } from './actions.js';
 import { buildApp, type AppOptions } from './app.js';
@@ -101,6 +107,41 @@ export function parseDatabaseSettings(env: Record<string, string | undefined>): 
 }
 
 /**
+ * Resolve `audit` against the database. A table that doesn't match the mapping, or that Warden
+ * can't insert into or read, leaves the store unavailable (changes refused) rather than failing
+ * startup, as with any other config/database mismatch.
+ */
+async function checkAuditStore(
+  db: Database,
+  config: WardenConfig,
+  model: SchemaModel,
+  introspectSchema: (schema: string) => Promise<SchemaModel>,
+) {
+  const target = auditTableName(config);
+  if (!target) {
+    return { store: { kind: 'warden' } as const, problems: [], tamperable: false, label: '' };
+  }
+  const label = `${target.schema}.${target.name}`;
+  // Its schema needn't be one Warden exposes.
+  const tables = config.schemas.includes(target.schema)
+    ? model
+    : await introspectSchema(target.schema);
+  const resolved = resolveAuditStore(config, getTable(tables, target.name, target.schema));
+  const access = resolved.store.kind === 'table' ? await auditTableAccess(db, target) : undefined;
+  const problems = [...resolved.problems];
+  if (access && !access.insert)
+    problems.push(`audit table "${label}": Warden's role can't insert into it`);
+  if (access && !access.select)
+    problems.push(`audit table "${label}": Warden's role can't read it`);
+  return {
+    store: problems.length > 0 ? ({ kind: 'unavailable' } as const) : resolved.store,
+    problems,
+    tamperable: access?.tamper ?? false,
+    label,
+  };
+}
+
+/**
  * Load config, migrate Warden's own schema (or check it is current), introspect the database, and build the app. Config that doesn't match the
  * database is logged as warnings; invalid config, or config without `access`, throws a ConfigError.
  */
@@ -170,6 +211,9 @@ export async function createWarden({
     // Sessions store the email sign-in gave them; config may have changed the rule since.
     await refreshSessionEmails(db, (claims) => sessionEmail(config.access, claims));
     const model = await introspect(pool, { schemas: config.schemas });
+    const audit = await checkAuditStore(db, config, model, (schema) =>
+      introspect(pool, { schemas: [schema] }),
+    );
     const { schema, warnings: schemaWarnings } = resolveSchema(model, config);
     const { policy, warnings: policyWarnings } = resolvePolicy(schema, config);
     // Loaded after config and the schema, so its tables can be checked, and before routes.
@@ -223,6 +267,7 @@ export async function createWarden({
       policy,
       actions,
       auth,
+      audit: audit.store,
       drift: { model, config },
       roles: {
         config,
@@ -250,7 +295,15 @@ export async function createWarden({
       },
       'schema loaded',
     );
-    if (auditTamperable) {
+    for (const problem of audit.problems) {
+      app.log.warn({ configPath: 'audit' }, `config: ${problem}; changes are refused until fixed`);
+    }
+    if (audit.tamperable) {
+      app.log.warn(
+        `the database role Warden runs as can update, delete from, or truncate the audit table ${audit.label}, or owns it; Warden only ever inserts, so revoke those to keep the trail append-only`,
+      );
+    }
+    if (auditTamperable && audit.store.kind === 'warden') {
       app.log.warn(
         'the database role Warden runs as owns warden.audit_log, the warden schema, or the audit trigger function (or is a superuser), so it could disable the append-only triggers; run Warden as a separate role (see docs/database.md)',
       );

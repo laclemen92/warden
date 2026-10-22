@@ -215,6 +215,92 @@ const tableConfigSchema = z
     });
   });
 
+/** Audit entry fields Warden writes, mapped to a column of the audit table (`audit.columns`). */
+const auditColumnsSchema = z.strictObject({
+  id: name.optional(),
+  occurredAt: name.optional(),
+  requestId: name.optional(),
+  actorSubject: name.optional(),
+  actorEmail: name.optional(),
+  actorRoles: name.optional(),
+  action: name.optional(),
+  entity: name.optional(),
+  recordId: name.optional(),
+  primaryKey: name.optional(),
+  before: name.optional(),
+  after: name.optional(),
+  diff: name.optional(),
+  details: name.optional(),
+  reason: name.optional(),
+  written: name.optional(),
+  parentId: name.optional(),
+});
+
+export type AuditField = keyof z.infer<typeof auditColumnsSchema>;
+export const AUDIT_FIELDS = Object.keys(auditColumnsSchema.shape) as AuditField[];
+/** The columns `warden.audit_log` stores each field in: `occurredAt` → `occurred_at`. */
+export const DEFAULT_AUDIT_COLUMNS = Object.fromEntries(
+  AUDIT_FIELDS.map((field) => [field, field.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`)]),
+) as Record<AuditField, string>;
+/**
+ * Fields every mapping must include. Reads depend on `diff` and `details` to keep what a user
+ * can't see out of History and the audit log, so they aren't optional.
+ */
+export const REQUIRED_AUDIT_FIELDS: readonly AuditField[] = [
+  'id',
+  'occurredAt',
+  'actorSubject',
+  'action',
+  'entity',
+  'recordId',
+  'diff',
+  'details',
+];
+
+const auditConfigSchema = z
+  .strictObject({
+    /** `warden`: `warden.audit_log`. `table`: a table you own, set by `table` and `columns`. */
+    store: z.enum(['warden', 'table']).default('warden'),
+    /** `table` or `schema.table`, for `store: table`. */
+    table: tableKey.optional(),
+    /** Field → column. Omitted, every field goes to the column `warden.audit_log` names it. */
+    columns: auditColumnsSchema.optional(),
+    /** Tags Warden's entries, for a table that also holds the application's own. */
+    source: z.strictObject({ column: name, value: name }).optional(),
+  })
+  .superRefine((audit, ctx) => {
+    const issue = (path: (string | number)[], message: string) =>
+      ctx.addIssue({ code: 'custom', path, message });
+    if (audit.store === 'warden') {
+      for (const key of ['table', 'columns', 'source'] as const) {
+        if (audit[key] !== undefined) issue([key], 'only applies with `store: table`');
+      }
+      return;
+    }
+    if (audit.table === undefined) issue(['table'], 'is required with `store: table`');
+    else if (audit.table.split('.').length === 2 && audit.table.startsWith('warden.')) {
+      issue(['table'], "the warden schema is Warden's own; use `store: warden` for its audit log");
+    }
+    const columns: Partial<Record<AuditField, string | undefined>> =
+      audit.columns ?? DEFAULT_AUDIT_COLUMNS;
+    for (const field of REQUIRED_AUDIT_FIELDS) {
+      if (columns[field] === undefined) issue(['columns'], `"${field}" must be mapped`);
+    }
+    const used = new Map<string, string>();
+    for (const [field, column] of Object.entries(columns)) {
+      if (column === undefined) continue;
+      const other = used.get(column);
+      if (other) issue(['columns', field], `column "${column}" is already mapped to "${other}"`);
+      used.set(column, field);
+    }
+    if (audit.source && used.has(audit.source.column)) {
+      issue(
+        ['source', 'column'],
+        `column "${audit.source.column}" is already mapped to "${used.get(audit.source.column)}"`,
+      );
+    }
+  });
+
 export const wardenConfigSchema = z
   .strictObject({
     /** Database schemas to introspect. The first is the default for unqualified table keys. */
@@ -248,6 +334,8 @@ export const wardenConfigSchema = z
     actions: z.record(actionName, actionConfigSchema).default({}),
     /** Who may sign in, and with which roles. The server requires it (see `requireAccess`). */
     access: accessConfigSchema.optional(),
+    /** Where the audit trail is written. */
+    audit: auditConfigSchema.prefault({}),
   })
   .superRefine((config, ctx) => {
     const checkSchema = (key: string, path: string[]) => {
@@ -314,6 +402,27 @@ export const wardenConfigSchema = z
         }
       }
     };
+    // The audit table is never exposed, so config for it would read as though it could be.
+    if (config.audit.store === 'table' && config.audit.table) {
+      const qualify = (key: string) =>
+        key.includes('.') ? key : `${config.schemas[0] ?? 'public'}.${key}`;
+      const auditTable = qualify(config.audit.table);
+      const refuse = (path: string[]) =>
+        ctx.addIssue({
+          code: 'custom',
+          path,
+          message: `"${auditTable}" is the audit table, which Warden never exposes`,
+          params: { at: 'key' },
+        });
+      for (const key of Object.keys(config.tables)) {
+        if (qualify(key) === auditTable) refuse(['tables', key]);
+      }
+      for (const [role, { grants }] of Object.entries(config.roles)) {
+        for (const key of Object.keys(grants)) {
+          if (key !== '*' && qualify(key) === auditTable) refuse(['roles', role, 'grants', key]);
+        }
+      }
+    }
     checkDuplicateKeys(Object.keys(config.tables), ['tables']);
     for (const [role, { grants }] of Object.entries(config.roles)) {
       checkDuplicateKeys(Object.keys(grants), ['roles', role, 'grants']);
@@ -355,6 +464,7 @@ export type ColumnConfig = z.infer<typeof columnConfigSchema>;
 export type RoleConfig = z.infer<typeof roleConfigSchema>;
 export type AccessConfig = z.infer<typeof accessConfigSchema>;
 export type ActionConfig = z.infer<typeof actionConfigSchema>;
+export type AuditConfig = z.infer<typeof auditConfigSchema>;
 export type Action = (typeof ACTIONS)[number];
 export type WriteAction = (typeof WRITE_ACTIONS)[number];
 export type AdminArea = (typeof ADMIN_AREAS)[number];

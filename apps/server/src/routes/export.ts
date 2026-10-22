@@ -10,6 +10,7 @@ import {
   type Filter,
   type FilterError,
   type Policy,
+  type AuditStore,
 } from '@wardenhq/core';
 import { openExport, recordExport, type Database, type RowExport } from '@wardenhq/pg-adapter';
 import type { FastifyInstance, FastifyReply } from 'fastify';
@@ -44,6 +45,8 @@ export interface ExportRouteOptions {
   /** Where exports read from; `db` when absent. A pool of their own can't starve other requests. */
   exportDb?: Database;
   limits?: Partial<ExportLimits>;
+  /** Where changes are audited; `warden.audit_log` when absent. */
+  audit?: AuditStore | undefined;
 }
 
 interface ExportQuery {
@@ -89,7 +92,7 @@ const badRequest = (reply: FastifyReply, message: string, details?: FilterError[
  */
 export function registerExportRoutes(
   app: FastifyInstance,
-  { db, policy, views, exportDb = db, limits }: ExportRouteOptions,
+  { db, policy, views, exportDb = db, limits, audit = { kind: 'warden' } }: ExportRouteOptions,
 ) {
   const { idleTimeoutMs, deadlineMs, ...caps } = { ...DEFAULT_EXPORT_LIMITS, ...limits };
   // Counts running exports, so they can never hold every database connection.
@@ -196,6 +199,7 @@ export function registerExportRoutes(
           },
           requestId: req.id,
           entity,
+          store: audit,
           details: {
             rowCount: rows.total,
             columns: fields.map((f) => f.name),

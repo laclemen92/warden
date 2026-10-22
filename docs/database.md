@@ -68,7 +68,7 @@ To refuse exports over the 100,000-row limit cheaply, Warden counts at most 100,
 
 ## The audit log
 
-`warden.audit_log` is append-only. Besides the grants above, triggers reject every `update`, `delete`, and `truncate`, including from the table owner. Removing an entry means dropping those triggers first, a deliberate step the runtime role can't take. If the role Warden runs as owns `warden.audit_log` (as it does when it ran the migrations itself), the `warden` schema (which lets it drop the table), or the `warden.audit_log_append_only()` trigger function (which `create or replace` could turn into a no-op), or is a superuser, it could get around the triggers, so Warden logs a warning at startup.
+`warden.audit_log` is append-only. (To write the audit log to a table you own instead, see [below](#writing-the-audit-log-to-your-own-table).) Besides the grants above, triggers reject every `update`, `delete`, and `truncate`, including from the table owner. Removing an entry means dropping those triggers first, a deliberate step the runtime role can't take. If the role Warden runs as owns `warden.audit_log` (as it does when it ran the migrations itself), the `warden` schema (which lets it drop the table), or the `warden.audit_log_append_only()` trigger function (which `create or replace` could turn into a no-op), or is a superuser, it could get around the triggers, so Warden logs a warning at startup.
 
 Every create, update, and delete made through Warden inserts its entry in the same transaction as the change, so a write that can't be audited (for example, because the insert fails) is rolled back and the request fails with a 500. Rows are recorded as the API shows them: hidden columns are never stored. Rows that foreign key cascades or triggers change in other tables aren't recorded; see [cascades](config.md#cascades).
 
@@ -93,6 +93,97 @@ An [export](config.md#csv-export) inserts its entry, with `record_id` null and w
 | `parent_id`     | `bigint`      | For rows changed by a custom action, the action's parent entry.                                                                                                                                                                                                                                                                   |
 | `details`       | `jsonb`       | For actions that change no row: an `export`'s `rowCount`, `columns`, and `filter`, `q` (with the `searchFields` it ran over), and `sort`; the number of `sessions` a `revoke_sessions` deleted, and whose (`email`); a custom action's `input`, target `records`, and `refs` (which input fields picked records of which entity). |
 | `written`       | `text[]`      | For `create` and `update`, the fields the request set. Other changed fields in `diff` were set by the database (defaults, triggers, generated columns).                                                                                                                                                                           |
+
+## Writing the audit log to your own table
+
+With [`audit.store: table`](config.md#audit), Warden writes every entry to a table you own instead of `warden.audit_log` (the `warden` schema is still used for sessions and the rest). Entries are inserted in the same transaction as the change, as before, and nothing else about them changes.
+
+The simplest table has `warden.audit_log`'s columns, so `audit.columns` can be left out. Add a source column if your application writes its own entries there too:
+
+```sql
+create table public.change_log (
+  id            bigint generated always as identity primary key,
+  occurred_at   timestamptz not null default now(),
+  request_id    text,
+  actor_subject text not null,
+  actor_email   text,
+  actor_roles   text[] not null default '{}',
+  action        text not null,
+  entity        text not null,
+  record_id     text,
+  primary_key   jsonb,
+  before        jsonb,
+  after         jsonb,
+  diff          jsonb,
+  details       jsonb,
+  reason        text,
+  written       text[],
+  parent_id     bigint references public.change_log (id),
+  source        text not null default 'app'
+);
+create index on public.change_log (entity, record_id, id desc);
+create index on public.change_log (occurred_at);
+```
+
+```yaml
+audit:
+  store: table
+  table: public.change_log
+  source: { column: source, value: warden }
+```
+
+The same table as a TypeORM entity, if your application defines its schema there:
+
+```ts
+@Entity({ name: 'change_log' })
+@Index(['entity', 'recordId', 'id'])
+export class ChangeLog {
+  @PrimaryGeneratedColumn('identity', { type: 'bigint', generatedIdentity: 'ALWAYS' })
+  id!: string;
+  @CreateDateColumn({ name: 'occurred_at', type: 'timestamptz' })
+  occurredAt!: Date;
+  @Column({ name: 'request_id', type: 'text', nullable: true })
+  requestId!: string | null;
+  @Column({ name: 'actor_subject', type: 'text' })
+  actorSubject!: string;
+  @Column({ name: 'actor_email', type: 'text', nullable: true })
+  actorEmail!: string | null;
+  @Column({ name: 'actor_roles', type: 'text', array: true, default: () => "'{}'" })
+  actorRoles!: string[];
+  @Column({ type: 'text' })
+  action!: string;
+  @Column({ type: 'text' })
+  entity!: string;
+  @Column({ name: 'record_id', type: 'text', nullable: true })
+  recordId!: string | null;
+  @Column({ name: 'primary_key', type: 'jsonb', nullable: true })
+  primaryKey!: object | null;
+  @Column({ type: 'jsonb', nullable: true })
+  before!: object | null;
+  @Column({ type: 'jsonb', nullable: true })
+  after!: object | null;
+  @Column({ type: 'jsonb', nullable: true })
+  diff!: object | null;
+  @Column({ type: 'jsonb', nullable: true })
+  details!: object | null;
+  @Column({ type: 'text', nullable: true })
+  reason!: string | null;
+  @Column({ type: 'text', array: true, nullable: true })
+  written!: string[] | null;
+  @Column({ name: 'parent_id', type: 'bigint', nullable: true })
+  parentId!: string | null;
+  @Column({ type: 'text', default: 'app' })
+  source!: string;
+}
+```
+
+An existing table with other names and fewer columns works too, through `audit.columns`; [config.md](config.md#audit) lists each field, the types it accepts, and which are required. Other columns are left to their defaults.
+
+- **Ids and parent links.** The id column must be an integer the database generates in increasing order; Warden reads it back to page through entries. A custom action's entry links to the rows it changed through `parentId`, which holds the action entry's id. Without a `parentId` column the rows are still recorded, just not linked.
+- **Grants.** The runtime role needs `select` and `insert` on the table, and `usage` on its sequence if the id uses one. Warden checks both at startup and refuses changes without them.
+- **Append-only is up to you.** Warden only ever inserts, but it can't protect a table it doesn't own the way it protects `warden.audit_log`. Don't grant the runtime role `update`, `delete`, or `truncate` on it, and don't let it own the table; if it can do any of those, Warden logs a warning at startup. A trigger like `warden.audit_log`'s (see [Migrations](#migrations)) makes the table append-only even for its owner.
+- **Your own entries.** Rows your application writes show in History and the audit log too, filed under their `entity` and `record_id`, so use Warden's entity key and record id where you can. JSON columns that don't hold objects are shown as empty.
+- **Mismatches.** If the table or a column is missing or has the wrong type, Warden logs why at startup and refuses every audited change with a `503` until it is fixed and Warden restarted. Reads of your data keep working.
 
 ## Schema snapshots
 

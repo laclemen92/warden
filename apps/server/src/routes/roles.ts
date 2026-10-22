@@ -1,5 +1,5 @@
 import type { WardenConfig } from '@wardenhq/config';
-import { adminAreas, lastHolderRoles, parseEmail } from '@wardenhq/core';
+import { adminAreas, lastHolderRoles, parseEmail, type AuditStore } from '@wardenhq/core';
 import {
   assignRole,
   deleteSessionsForSubject,
@@ -19,6 +19,8 @@ export interface RoleRoutesOptions {
   db: Database;
   /** Which sessions count as signed in, for the list of signed-in users. */
   sessionTimeouts: SessionTimeouts;
+  /** Where changes are audited; `warden.audit_log` when absent. */
+  audit?: AuditStore | undefined;
 }
 
 interface AssignmentBody {
@@ -64,7 +66,7 @@ const assignmentSchema = {
  */
 export function registerRoleRoutes(
   app: FastifyInstance,
-  { config, db, sessionTimeouts }: RoleRoutesOptions,
+  { config, db, sessionTimeouts, audit }: RoleRoutesOptions,
 ) {
   const defined = (role: string) => Object.hasOwn(config.roles, role);
   const protect = lastHolderRoles(config.roles, config.access);
@@ -81,6 +83,7 @@ export function registerRoleRoutes(
       ...(session.email ? { email: session.email } : {}),
       roles: req.roles!,
       requestId: req.id,
+      ...(audit ? { store: audit } : {}),
     };
   };
 

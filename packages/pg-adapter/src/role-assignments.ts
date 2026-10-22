@@ -1,10 +1,10 @@
-import { auditDiff } from '@wardenhq/core';
+import { auditDiff, type AuditStore } from '@wardenhq/core';
 import { sql } from 'kysely';
+import { insertAuditEntry } from './audit.js';
 import type { Database } from './database.js';
 import { WARDEN_SCHEMA } from './introspect.js';
 
 const ASSIGNMENTS = sql.id(WARDEN_SCHEMA, 'role_assignments');
-const AUDIT_LOG = sql.id(WARDEN_SCHEMA, 'audit_log');
 const ENTITY = 'warden.role_assignments';
 
 /** A role given to a user in the app. A type, not an interface, so it can be audited as a row. */
@@ -22,9 +22,9 @@ export interface AssignmentActor {
   email?: string;
   roles: readonly string[];
   requestId?: string;
+  /** Where the change is audited; `warden.audit_log` when absent. */
+  store?: AuditStore;
 }
-
-const json = (value: unknown) => (value === null ? null : JSON.stringify(value));
 
 const COLUMNS = sql`email, role, assigned_by as "assignedBy", assigned_at as "assignedAt"`;
 
@@ -49,14 +49,18 @@ async function audit(
   after: RoleAssignment | null,
 ) {
   const { email, role } = (after ?? before)!;
-  await sql`
-    insert into ${AUDIT_LOG}
-      (request_id, actor_subject, actor_email, actor_roles, action, entity, primary_key,
-       before, after, diff)
-    values (${actor.requestId ?? null}, ${actor.subject}, ${actor.email ?? null},
-            ${[...actor.roles]}, ${action}, ${ENTITY}, ${json({ email, role })}::jsonb,
-            ${json(before)}::jsonb, ${json(after)}::jsonb,
-            ${json(auditDiff(before, after))}::jsonb)`.execute(trx);
+  await insertAuditEntry(trx, actor.store ?? { kind: 'warden' }, {
+    requestId: actor.requestId ?? null,
+    actorSubject: actor.subject,
+    actorEmail: actor.email ?? null,
+    actorRoles: [...actor.roles],
+    action,
+    entity: ENTITY,
+    primaryKey: { email, role },
+    before,
+    after,
+    diff: auditDiff(before, after),
+  });
 }
 
 /**

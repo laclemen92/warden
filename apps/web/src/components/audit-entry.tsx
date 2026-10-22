@@ -227,6 +227,11 @@ export function AuditEntryItem({
           </span>
         )}
         <span title={entry.actor.subject}>{entry.actor.email ?? entry.actor.subject}</span>
+        {entry.source != null && (
+          <Badge variant="outline" title="Source">
+            {entry.source}
+          </Badge>
+        )}
         <time dateTime={entry.occurredAt} className="text-muted-foreground">
           {formatTime(entry.occurredAt)}
         </time>
