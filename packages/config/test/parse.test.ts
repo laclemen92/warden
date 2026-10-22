@@ -17,7 +17,7 @@ describe('parseConfig', () => {
   it('exposes everything, read-only, when the file is empty', () => {
     expect(parseConfig('', FILE)).toEqual({
       schemas: ['public'],
-      defaults: { expose: 'all', newColumns: 'visible', read: 'all' },
+      defaults: { expose: 'all', newColumns: 'visible', read: 'all', delete: 'none' },
       tables: {},
       roles: {},
       actions: {},
@@ -43,7 +43,12 @@ tables:
 `,
       FILE,
     );
-    expect(config.defaults).toEqual({ expose: 'none', newColumns: 'visible', read: 'all' });
+    expect(config.defaults).toEqual({
+      expose: 'none',
+      newColumns: 'visible',
+      read: 'all',
+      delete: 'none',
+    });
     expect(config.tables.users).toEqual({
       label: 'People',
       displayField: 'email',
@@ -149,6 +154,25 @@ tables:
     expect(config.tables.orders?.deny).toEqual(['create', 'delete']);
   });
 
+  it('parses the hard delete switches and rejects anything but none or granted', () => {
+    const config = parseConfig(
+      `
+defaults: { delete: granted }
+tables:
+  users: { allowDelete: true }
+  orders: { allowDelete: false }
+`,
+      FILE,
+    );
+    expect(config.defaults.delete).toBe('granted');
+    expect(config.tables.users?.allowDelete).toBe(true);
+    expect(config.tables.orders?.allowDelete).toBe(false);
+    expect(() => parseConfig('defaults: { delete: allow }', FILE)).toThrow(ConfigError);
+    expect(() => parseConfig('tables: { users: { allowDelete: yes please } }', FILE)).toThrow(
+      ConfigError,
+    );
+  });
+
   it('parses custom action grants and settings', () => {
     const config = parseConfig(
       `
@@ -230,6 +254,18 @@ roles:
         { path: `roles.ops.grants.${key}`, message: 'Expected "*", "table" or "schema.table"' },
       ]);
     }
+  });
+
+  it('rejects delete in a "*" grant', () => {
+    expect(issues(`roles:\n  ops:\n    grants:\n      "*": [read, delete]\n`)).toMatchObject([
+      {
+        path: 'roles.ops.grants.*.1',
+        message:
+          '"*" can\'t grant delete; grant it on each table that should allow it ' +
+          '(e.g. orders: [delete]) and set tables.<table>.allowDelete: true',
+        line: 4,
+      },
+    ]);
   });
 
   it('requires qualified grant keys to use a listed schema', () => {

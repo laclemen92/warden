@@ -176,6 +176,7 @@ exports[`introspect > matches the example schema snapshot 1`] = `
             "company_id",
           ],
           "name": "orders_company_id_fkey",
+          "onDelete": "cascade",
           "references": {
             "columns": [
               "id",
@@ -189,6 +190,7 @@ exports[`introspect > matches the example schema snapshot 1`] = `
             "user_id",
           ],
           "name": "orders_user_id_fkey",
+          "onDelete": "setNull",
           "references": {
             "columns": [
               "id",
@@ -310,6 +312,7 @@ exports[`introspect > matches the example schema snapshot 1`] = `
             "company_id",
           ],
           "name": "users_company_id_fkey",
+          "onDelete": "setNull",
           "references": {
             "columns": [
               "id",

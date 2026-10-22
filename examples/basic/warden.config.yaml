@@ -7,6 +7,8 @@ defaults:
   expose: all # all | none (only tables listed below)
   newColumns: visible # visible | hidden | readOnly: columns not mentioned here
   read: all # all | granted (reading requires a `read` grant)
+  # none: hard delete is off unless a table sets allowDelete: true | granted: delete grants apply
+  delete: none
 
 tables:
   companies:
@@ -32,6 +34,9 @@ tables:
       # when someone last logged in.
       role: { writableBy: [admin] }
       last_login_at: { readableBy: [admin, ops] }
+    # Hard delete is off by default; roles granted `users: [delete]` may delete users. Deleting a
+    # user sets orders.user_id to null (`on delete set null`), which Warden warns about at startup.
+    allowDelete: true
     # Deleting a user must say why; the reason is kept in the audit log.
     requireReason: [delete]
 
@@ -42,11 +47,14 @@ tables:
     # Nobody may create or delete orders, whatever their role grants.
     deny: [create, delete]
 
-# Create, update and delete are denied unless a role grants them.
+# Create, update and delete are denied unless a role grants them. `*` never grants delete: it is
+# granted per table, on tables that set allowDelete.
 roles:
   viewer: { grants: { '*': [read] } }
   admin:
-    grants: { '*': [read, create, update, delete, export] }
+    grants:
+      '*': [read, create, update, export]
+      users: [delete]
     # The schema drift page shows every table and column, including hidden ones. The audit log
     # page searches every change made through Warden. The roles page can give anyone any role,
     # admin included. `views` lets admins share saved grid views with everyone.

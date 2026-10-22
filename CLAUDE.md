@@ -36,7 +36,7 @@ Put logic in `packages/core` when it can be pure; keep SQL in `pg-adapter`; keep
 
 ## Core rules (security-relevant; don't break these)
 
-- **Config narrows defaults.** Everything is readable unless config hides it. Writes (create/update/delete) are denied unless config grants them to a role, and a table-level `deny` beats every grant.
+- **Config narrows defaults.** Everything is readable unless config hides it. Writes (create/update/delete) are denied unless config grants them to a role, and a table-level `deny` beats every grant. Hard delete is also off unless the table opts in (`allowDelete` / `defaults.delete`), and a `*` grant never includes `delete`.
 - **Hidden means absent.** Hidden tables and columns are removed in `resolveSchema` and must never be selected, returned, or accepted as input. A hidden field or entity must be indistinguishable from a nonexistent one (same 400/404 and message).
 - **Only the `EffectiveSchema` decides what exists.** Identifiers in SQL come from it and are quoted with `sql.id`. Client values are always bind parameters. Never build SQL with string interpolation or `sql.raw` on user input.
 - **Validate client input in `core`** (filters, sorts, ids, cursors) before it reaches `pg-adapter`.

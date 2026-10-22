@@ -13,10 +13,12 @@ const CONFIG = `
 tables:
   companies:
     requireReason: [create, update, delete]
+    allowDelete: true
   users:
     columns:
       password_hash: { hidden: true }
     requireReason: [delete]
+    allowDelete: true
   orders:
     requireReason: [update]
     deny: [update]
@@ -25,7 +27,7 @@ tables:
     requireReason: [create]
 roles:
   viewer: { grants: { '*': [read] } }
-  admin: { grants: { '*': [read, create, update, delete] } }
+  admin: { grants: { '*': [read, create, update], companies: [delete], users: [delete] } }
 access:
   groups:
     warden-viewers: [viewer]

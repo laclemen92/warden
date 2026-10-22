@@ -22,11 +22,18 @@ const SCHEMA = `
 `;
 
 const CONFIG = `
+defaults: { delete: granted }
 tables:
   stamps:
     requireReason: [update, delete]
 roles:
-  admin: { grants: { '*': [read, create, update, delete, export] }, admin: [audit] }
+  admin:
+    grants:
+      '*': [read, create, update, export]
+      docs: [delete]
+      stamps: [delete]
+      codes: [delete]
+    admin: [audit]
 access:
   groups:
     warden-admins: [admin]

@@ -123,6 +123,11 @@ const tableConfigSchema = z
     columns: z.record(name, columnConfigSchema).default({}),
     /** Actions nobody may perform on this table, whatever their roles grant. */
     deny: actions.optional(),
+    /**
+     * Let roles granted `delete` on this table hard-delete its rows. Overrides `defaults.delete`
+     * for this table either way; a `deny` that includes `delete` still wins.
+     */
+    allowDelete: z.boolean().optional(),
     /** Writes that must say why; the reason is stored in the audit log. */
     requireReason: z.array(z.enum(WRITE_ACTIONS)).optional(),
     /**
@@ -197,6 +202,12 @@ export const wardenConfigSchema = z
         newColumns: z.enum(['visible', 'hidden', 'readOnly']).default('visible'),
         /** `all`: anyone may read every exposed table. `granted`: reading requires a `read` grant. */
         read: z.enum(['all', 'granted']).default('all'),
+        /**
+         * Hard deletes. `none`: refused on every table unless it sets `allowDelete: true`.
+         * `granted`: a role's `delete` grant on a table is honored. A `*` grant never includes
+         * `delete` either way.
+         */
+        delete: z.enum(['none', 'granted']).default('none'),
       })
       .prefault({}),
     tables: z.record(tableKey, tableConfigSchema).default({}),
@@ -235,6 +246,17 @@ export const wardenConfigSchema = z
     }
     for (const [role, { grants }] of Object.entries(config.roles)) {
       for (const key of Object.keys(grants)) checkSchema(key, ['roles', role, 'grants', key]);
+      // Hard delete is granted table by table, so a blanket grant can't hand it out by accident.
+      grants['*']?.forEach((action, i) => {
+        if (action !== 'delete') return;
+        ctx.addIssue({
+          code: 'custom',
+          path: ['roles', role, 'grants', '*', i],
+          message:
+            '"*" can\'t grant delete; grant it on each table that should allow it ' +
+            '(e.g. orders: [delete]) and set tables.<table>.allowDelete: true',
+        });
+      });
     }
     // `users` and `public.users` (against the first schema) are the same table. The resolvers
     // would each pick or merge the two entries differently, dropping hidden columns and field

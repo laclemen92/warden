@@ -2,6 +2,7 @@
 // and core also runs in the browser.
 import { ACTIONS, type Action, type WardenConfig } from '@wardenhq/config/schema';
 import type { EffectiveSchema, Entity, SchemaWarning } from './effective-schema.js';
+import type { SchemaModel } from './schema-model.js';
 
 export type { Action };
 
@@ -11,8 +12,16 @@ export interface Policy {
   entities: Set<string>;
   readByDefault: boolean;
   roles: Map<string, RoleGrants>;
-  /** Per entity, actions nobody may perform. */
+  /**
+   * Per entity, actions nobody may perform: the table's `deny`, plus `delete` wherever hard delete
+   * isn't enabled.
+   */
   denied: Map<string, Set<Action>>;
+  /**
+   * Entities whose `delete` is denied only because hard delete isn't enabled there (no
+   * `allowDelete`, and `defaults.delete` is `none`), as opposed to by the table's `deny`.
+   */
+  deleteOff: Set<string>;
   /** Per entity and field, the roles that may read or write it, where config restricts them. */
   fields: Map<string, Map<string, FieldRule>>;
 }
@@ -53,7 +62,8 @@ export function resolvePolicy(schema: EffectiveSchema, config: WardenConfig): Re
     const resolved: RoleGrants = { everywhere: new Set(), byEntity: new Map() };
     for (const [tableKey, actions] of Object.entries(grants)) {
       if (tableKey === '*') {
-        actions.forEach((a) => resolved.everywhere.add(a));
+        // Config rejects `*: [delete]`; dropping it here too keeps a blanket grant from ever deleting.
+        actions.filter((a) => a !== 'delete').forEach((a) => resolved.everywhere.add(a));
         continue;
       }
       const key = entityKey(tableKey, `roles.${role}.grants.${tableKey}`);
@@ -68,6 +78,42 @@ export function resolvePolicy(schema: EffectiveSchema, config: WardenConfig): Re
     if (!table.deny || table.hidden) continue;
     const key = entityKey(tableKey, `tables.${tableKey}.deny`);
     if (key) addAll(denied, key, table.deny);
+  }
+
+  const tableConfigs = new Map(
+    Object.entries(config.tables).map(([tableKey, table]) => [
+      tableKey.includes('.') ? tableKey : `${defaultSchema}.${tableKey}`,
+      { tableKey, table },
+    ]),
+  );
+  const deleteOff = new Set<string>();
+  for (const entity of schema.entities) {
+    const configured = tableConfigs.get(`${entity.schema}.${entity.name}`);
+    const allowDelete = configured?.table.allowDelete ?? config.defaults.delete === 'granted';
+    if (denied.get(entity.key)?.has('delete')) {
+      if (configured?.table.allowDelete) {
+        warnings.push({
+          path: `tables.${configured.tableKey}.allowDelete`,
+          message: 'has no effect: the table denies delete',
+        });
+      }
+    } else if (!allowDelete) {
+      addAll(denied, entity.key, ['delete']);
+      deleteOff.add(entity.key);
+      for (const [role, { grants }] of Object.entries(config.roles)) {
+        for (const [tableKey, actions] of Object.entries(grants)) {
+          if (tableKey === '*' || !actions.includes('delete')) continue;
+          const qualified = tableKey.includes('.') ? tableKey : `${defaultSchema}.${tableKey}`;
+          if (qualified !== `${entity.schema}.${entity.name}`) continue;
+          warnings.push({
+            path: `roles.${role}.grants.${tableKey}`,
+            message:
+              `delete is ignored: hard delete is off for "${entity.key}"; ` +
+              `set tables.${entity.key}.allowDelete: true to allow it`,
+          });
+        }
+      }
+    }
   }
 
   const entities = new Map(schema.entities.map((e) => [e.key, e]));
@@ -106,10 +152,75 @@ export function resolvePolicy(schema: EffectiveSchema, config: WardenConfig): Re
       readByDefault: config.defaults.read === 'all',
       roles,
       denied,
+      deleteOff,
       fields,
     },
     warnings,
   };
+}
+
+const ON_DELETE_SQL = { cascade: 'cascade', setNull: 'set null', setDefault: 'set default' };
+
+/**
+ * Warnings for tables that a role (or a custom action, in `actionDeletes`) may hard-delete from
+ * and whose rows are referenced by foreign keys that change other rows on delete. Those changes
+ * bypass Warden's policy and audit log, so the operator should know which tables they reach,
+ * hidden ones included. Cascades are followed transitively, since a cascaded delete fires the
+ * foreign keys into the table it deletes from.
+ */
+export function deleteCascadeWarnings(
+  model: SchemaModel,
+  schema: EffectiveSchema,
+  policy: Policy,
+  actionDeletes: ReadonlySet<string> = new Set(),
+): SchemaWarning[] {
+  const warnings: SchemaWarning[] = [];
+  for (const entity of schema.entities) {
+    if (policy.denied.get(entity.key)?.has('delete')) continue;
+    const granted =
+      actionDeletes.has(entity.key) ||
+      [...policy.roles.values()].some((g) => g.byEntity.get(entity.key)?.has('delete'));
+    if (!granted) continue;
+    const affected = cascadeTargets(model, entity.schema, entity.name);
+    if (affected.length === 0) continue;
+    warnings.push({
+      path: `tables.${entity.key}`,
+      message:
+        `deleting a row here also changes rows in ${affected.join(', ')}, ` +
+        "outside Warden's policy and audit log",
+    });
+  }
+  return warnings;
+}
+
+function cascadeTargets(model: SchemaModel, schema: string, name: string): string[] {
+  const label = (s: string, n: string) => `"${s}.${n}"`;
+  const start = label(schema, name);
+  const visited = new Set([start]);
+  const queue = [{ schema, name }];
+  const affected: string[] = [];
+  for (let next = queue.shift(); next; next = queue.shift()) {
+    const from = label(next.schema, next.name);
+    for (const table of model.tables) {
+      for (const fk of table.foreignKeys) {
+        if (
+          fk.onDelete === undefined ||
+          fk.references.schema !== next.schema ||
+          fk.references.name !== next.name
+        ) {
+          continue;
+        }
+        const target = label(table.schema, table.name);
+        const via = from === start ? '' : `, via ${from}`;
+        affected.push(`${target} (on delete ${ON_DELETE_SQL[fk.onDelete]}${via})`);
+        if (fk.onDelete === 'cascade' && !visited.has(target)) {
+          visited.add(target);
+          queue.push({ schema: table.schema, name: table.name });
+        }
+      }
+    }
+  }
+  return affected;
 }
 
 /**

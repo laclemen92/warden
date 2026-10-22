@@ -21,13 +21,14 @@ tables:
     columns:
       password_hash: { hidden: true }
       full_name: { readableBy: [admin] }
+  companies: { allowDelete: true }
 roles:
   viewer: { grants: { '*': [read] } }
   ops:
     grants: { users: [read, update], companies: [read, create, update], employees: [read] }
     admin: [audit]
   admin:
-    grants: { '*': [read, create, update, delete] }
+    grants: { '*': [read, create, update], companies: [delete] }
     admin: [audit]
 access:
   groups:

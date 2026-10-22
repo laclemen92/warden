@@ -1,5 +1,11 @@
 import { loadConfig, requireAccess } from '@wardenhq/config';
-import { resolveActionPolicy, resolvePolicy, resolveSchema, sessionEmail } from '@wardenhq/core';
+import {
+  deleteCascadeWarnings,
+  resolveActionPolicy,
+  resolvePolicy,
+  resolveSchema,
+  sessionEmail,
+} from '@wardenhq/core';
 import {
   assignedRoles,
   canDisableAuditTriggers,
@@ -187,7 +193,19 @@ export async function createWarden({
       startTransaction: () => startDetachedTransaction(actionDb.pool),
       limits: dbSettings.actions,
     };
-    const warnings = [...schemaWarnings, ...policyWarnings, ...actionWarnings];
+    const actionDeletes = new Set(
+      [...actionPolicy.actions.values()].flatMap((a) =>
+        Object.entries(a.permissions)
+          .filter(([, writes]) => writes.includes('delete'))
+          .map(([key]) => key),
+      ),
+    );
+    const warnings = [
+      ...schemaWarnings,
+      ...policyWarnings,
+      ...actionWarnings,
+      ...deleteCascadeWarnings(model, schema, policy, actionDeletes),
+    ];
     // The first start records the schema drift baseline.
     await ensureSchemaSnapshot(db, model);
 

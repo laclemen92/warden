@@ -100,7 +100,7 @@ An actions module is server code, not a plugin in a sandbox. Warden `import()`s 
 
 Within `tx`, a few things deliberately differ from what a user could do through the CRUD routes:
 
-- An action reads and writes with config's view of a table, not the user's: field-level rules (`readableBy`, `writableBy`) don't apply, and the user needs no table grants for what `permissions` declares. Granting an action is the escalation (see [config](config.md#actions)). Table `deny` still applies, including `deny: [read]`, which makes a table as absent to `tx` as a hidden one.
+- An action reads and writes with config's view of a table, not the user's: field-level rules (`readableBy`, `writableBy`) don't apply, and the user needs no table grants for what `permissions` declares. Granting an action is the escalation (see [config](config.md#actions)). Table `deny` still applies, including `deny: [read]`, which makes a table as absent to `tx` as a hidden one. So does [hard delete](config.md#hard-delete): an action whose `permissions` include `delete` on a table that doesn't allow it is disabled at startup, so `tx.delete` and `tx.deleteMany` only ever reach tables with `allowDelete` (or `defaults.delete: granted`).
 - `defaults` and `run` see values the user may not be allowed to read, and what they return (`defaults` values, `run`'s `message`) is sent to the user as-is. Don't copy restricted fields into them.
 - `confirm: 'preview'` is how the UI asks before running; the API doesn't require a preview first. A run that sends the preview's token is checked against it (see [Preview](#preview)); one that doesn't simply runs. Who may run an action is decided by roles, not by the preview.
 

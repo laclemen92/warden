@@ -14,9 +14,16 @@ roles:
     grants:
       '*': [read]
 
+# Hard delete is off on every table, even for roles granted `delete`, until a table opts in
+# with allowDelete: true (and a role is granted delete on it by name; '*' never grants delete).
+defaults:
+  delete: none
+
 # Hide anything people shouldn't see before inviting them, for example:
 # tables:
 #   api_keys: { hidden: true }
 #   users:
 #     columns:
 #       password_hash: { hidden: true }
+#   notes:
+#     allowDelete: true

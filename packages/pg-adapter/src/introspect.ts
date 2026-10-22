@@ -71,6 +71,7 @@ interface ConstraintRow {
   columns: string[];
   ref_schema: string | null;
   ref_table: string | null;
+  on_delete: string | null;
   ref_columns: string[] | null;
 }
 
@@ -139,10 +140,17 @@ const COLUMNS_SQL = `
     and a.attnum > 0 and not a.attisdropped
   order by a.attrelid, a.attnum`;
 
+const ON_DELETE: Record<string, ForeignKey['onDelete']> = {
+  c: 'cascade',
+  n: 'setNull',
+  d: 'setDefault',
+};
+
 const CONSTRAINTS_SQL = `
   select con.conrelid::int8::text as table_oid, con.conname as name, con.contype,
          ${keyColumns('con.conkey', 'con.conrelid')} as columns,
          rn.nspname as ref_schema, rc.relname as ref_table,
+         case when con.contype = 'f' then con.confdeltype::text end as on_delete,
          case when con.contype = 'f' then ${keyColumns('con.confkey', 'con.confrelid')} end as ref_columns
   from pg_constraint con
   join pg_class c on c.oid = con.conrelid
@@ -222,6 +230,8 @@ async function readModel(client: PoolClient, schemas: string[]): Promise<SchemaM
         columns: row.columns,
         references: { schema: row.ref_schema, name: row.ref_table, columns: row.ref_columns },
       };
+      const onDelete = ON_DELETE[row.on_delete ?? ''];
+      if (onDelete) fk.onDelete = onDelete;
       table.foreignKeys.push(fk);
     }
   }

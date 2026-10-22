@@ -292,6 +292,53 @@ describe('resolveActionPolicy', () => {
     );
   });
 
+  describe('that may delete', () => {
+    const deleter = () =>
+      specs(definition({ permissions: { users: ['update'], orders: ['update', 'delete'] } }));
+
+    it('is disabled while hard delete is off on that table', () => {
+      for (const config of [
+        {},
+        { tables: { users: { allowDelete: true } } },
+        { defaults: { delete: 'granted' }, tables: { orders: { allowDelete: false } } },
+      ]) {
+        const { actionPolicy, warnings } = resolve(deleter(), config);
+        expect(actionPolicy.actions.size).toBe(0);
+        expect(warnings).toEqual([
+          {
+            path: 'actions.move-user',
+            message:
+              'its permissions include delete on "orders", where hard delete is off; set ' +
+              'tables.orders.allowDelete: true to allow it; the action is disabled',
+          },
+        ]);
+      }
+    });
+
+    it('runs where the table allows delete, without a delete grant', () => {
+      for (const tables of [{ orders: { allowDelete: true } }, {}]) {
+        const config = {
+          ...(Object.keys(tables).length > 0 ? {} : { defaults: { delete: 'granted' } }),
+          tables,
+          roles: { ops: { actions: ['move-user'] } },
+        };
+        const { actionPolicy, policy, warnings } = resolve(deleter(), config);
+        expect(warnings).toEqual([]);
+        expect(canRunAction(actionPolicy, policy, ['ops'], 'move-user')?.name).toBe('move-user');
+      }
+    });
+
+    it('is disabled by a table deny even where the table allows delete', () => {
+      const { actionPolicy, warnings } = resolve(deleter(), {
+        tables: { orders: { allowDelete: true, deny: ['delete'] } },
+      });
+      expect(actionPolicy.actions.size).toBe(0);
+      expect(warnings.at(-1)?.message).toBe(
+        'its permissions include delete on "orders", which config denies; the action is disabled',
+      );
+    });
+  });
+
   it('disables an action that writes a table config denies reading', () => {
     const { actionPolicy, warnings } = resolve(specs(definition()), {
       tables: { orders: { deny: ['read'] } },

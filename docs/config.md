@@ -1,6 +1,6 @@
 # Configuration reference
 
-Warden needs one decision from you before it starts: who may sign in ([`access`](#access)). Beyond that it introspects the database and exposes every table and column, readable by everyone who can sign in and writable by nobody. The rest of the config only narrows and customizes that. It hides tables and columns, locks fields read-only, adjusts labels and defaults, and grants write actions to roles.
+Warden needs one decision from you before it starts: who may sign in ([`access`](#access)). Beyond that it introspects the database and exposes every table and column, readable by everyone who can sign in and writable by nobody. Hard deletes are off on every table until config turns them on (see [Hard delete](#hard-delete)). The rest of the config only narrows and customizes that. It hides tables and columns, locks fields read-only, adjusts labels and defaults, and grants write actions to roles.
 
 - [Loading the config](#loading-the-config)
 - [Errors and warnings](#errors-and-warnings)
@@ -80,6 +80,7 @@ tables:
 | `defaults.expose`     | `all`, `none`                   | `all`     |
 | `defaults.newColumns` | `visible`, `hidden`, `readOnly` | `visible` |
 | `defaults.read`       | `all`, `granted`                | `all`     |
+| `defaults.delete`     | `none`, `granted`               | `none`    |
 
 **`defaults.expose`** decides which tables Warden shows.
 
@@ -101,12 +102,44 @@ A column with any entry, even `{}`, ignores this setting: it's visible and writa
 
 A table's [`deny`](#tables) can still forbid reading it in either mode.
 
+**`defaults.delete`** decides whether a `delete` grant on a table can hard-delete its rows. See [Hard delete](#hard-delete).
+
+- `none`: deleting is refused on every table, even for a role granted `delete`, unless the table sets [`allowDelete: true`](#tables).
+- `granted`: a role's `delete` grant on a table is honored, unless the table sets `allowDelete: false`.
+
+`delete` can't be granted with `*` in either mode: a `*` grant that lists it fails startup.
+
 ```yaml
 defaults:
   expose: none
   newColumns: hidden
   read: granted
+  delete: none
 ```
+
+### Hard delete
+
+Deleting a row through Warden removes it for good. That's riskier than other writes: most applications soft-delete and have their own cleanup and invariants that a hard delete skips; `on delete cascade` and `set null` foreign keys change other tables outside Warden's policy and audit log (see [cascades](#cascades)); and nothing in Warden restores a deleted row. So deleting has to be turned on table by table:
+
+1. The table allows it: `tables.<table>.allowDelete: true`, or `defaults.delete: granted` (and the table doesn't set `allowDelete: false`).
+2. A role grants `delete` on that table by name (`orders: [delete]`). `*` can't grant `delete`.
+3. The table's `deny` doesn't include `delete`. It beats `allowDelete`.
+
+Otherwise a delete gets the same 403 as any other denied write, and the UI shows no delete control. At startup Warden warns about every `delete` grant it ignores, naming the key to add, and about every table some role (or [custom action](#actions)) may delete from whose rows other tables reference with `on delete cascade`, `set null` or `set default`, naming those tables and any reached further down a chain of `on delete cascade` keys. Foreign keys from tables outside [`schemas`](#schemas) aren't introspected, so they aren't named.
+
+```yaml
+tables:
+  users:
+    allowDelete: true
+    requireReason: [delete]
+roles:
+  admin:
+    grants:
+      '*': [read, create, update]
+      users: [delete] # only users; nobody may delete other tables
+```
+
+> **Upgrading:** before this setting existed, a `delete` grant allowed hard deletes on its own. A `*: [delete]` grant now fails startup, and a table-named `delete` grant does nothing until the table sets `allowDelete: true` (or you set `defaults.delete: granted`). The startup warnings list each ignored grant.
 
 ## `tables`
 
@@ -121,6 +154,7 @@ Each key is a table, as `table` (in the default schema) or `schema.table`. Warde
 | `tables.<table>.defaultSort.direction` | `asc`, `desc`                                              | `asc`                                          |
 | `tables.<table>.searchable`            | list of column names                                       | Visible text columns                           |
 | `tables.<table>.deny`                  | list of `read`, `create`, `update`, `delete`, `export`     | None                                           |
+| `tables.<table>.allowDelete`           | boolean                                                    | Per `defaults.delete`                          |
 | `tables.<table>.requireReason`         | list of `create`, `update`, `delete`                       | None                                           |
 | `tables.<table>.updatablePrimaryKey`   | boolean                                                    | `false`                                        |
 | `tables.<table>.insertablePrimaryKey`  | boolean                                                    | `false`                                        |
@@ -137,6 +171,8 @@ Each key is a table, as `table` (in the default schema) or `schema.table`. Warde
 **`searchable`** lists the columns the grid's free-text search matches against. By default that's every visible text column (`text`, `varchar`, `char`, `citext`, not arrays).
 
 **`deny`** lists actions nobody may perform on this table, whatever their roles grant. It beats every grant, including `*`. Denying `read` blocks reading for everyone, even with `defaults.read: all`.
+
+**`allowDelete`** turns [hard delete](#hard-delete) on (`true`) or off (`false`) for this table, overriding `defaults.delete`. It doesn't grant anything: a role still needs `delete` on the table by name. A `deny` that includes `delete` beats it, with a warning.
 
 **`requireReason`** lists writes that must say why. Every write may send a `reason`, which is stored in the [audit log](#audit-log); for these actions the API rejects a write without one (or with only whitespace) with a 400, and the UI asks for it before saving or deleting. This includes [custom actions](#actions) whose `permissions` allow one of these writes on the table: running them needs a reason too. It doesn't grant or deny anything: the caller still needs a role that may perform the action.
 
@@ -199,7 +235,7 @@ Both apply on top of the table's actions, not instead of them: `writableBy` does
 
 ```yaml
 roles:
-  admin: { grants: { '*': [read, create, update, delete] } }
+  admin: { grants: { '*': [read, create, update] } }
   hr: { grants: { users: [read, update] } }
   support: { grants: { users: [read, update] } }
 tables:
@@ -215,7 +251,7 @@ Version tokens are computed from the fields each user can see, so a change to a 
 
 ## `roles`
 
-Roles grant actions on tables. Create, update, and delete are denied unless a role grants them, and reading follows [`defaults.read`](#defaults).
+Roles grant actions on tables. Create, update, and delete are denied unless a role grants them, delete also needs [hard delete](#hard-delete) turned on for the table, and reading follows [`defaults.read`](#defaults).
 
 | Key                           | Type                                                   | Default |
 | ----------------------------- | ------------------------------------------------------ | ------- |
@@ -231,7 +267,8 @@ How a request is decided:
 2. An action in the table's `deny` is denied.
 3. `read` is allowed when `defaults.read` is `all`.
 4. `export` is denied unless the user may also `read` the table.
-5. Otherwise the action is allowed only if one of the user's roles grants it on that table or on `*`.
+5. `delete` is denied unless [hard delete](#hard-delete) is on for the table.
+6. Otherwise the action is allowed only if one of the user's roles grants it on that table or on `*`. `*` can't grant `delete`; config that tries fails startup.
 
 A table the user may do nothing with is hidden from them in the same way as a `hidden` table: it isn't in their sidebar or schema, relations to it are left out, and every request for it gets the same 404 as a table that doesn't exist. A table they may write but not read (for example, a role granted only `create`) stays visible so they can fill in its form: they see its columns, and reading its rows is refused with a 403. A write's response then carries only the new or changed record's id, not its values.
 
@@ -253,7 +290,7 @@ tables:
     deny: [create, delete] # nobody, regardless of role
 ```
 
-Here `ops` may update users and create or update companies. Nobody may create or delete orders, even a role granted `*: [create, delete]`.
+Here `ops` may update users and create or update companies. Nobody may create or delete orders, even a role granted `orders: [create, delete]` with `allowDelete: true` on orders.
 
 **`admin`** lists the Warden administration areas the role may use:
 
@@ -282,7 +319,7 @@ Running an action is a write, so it is denied unless a role lists it in [`roles.
 
 1. It loaded, isn't `disabled` here, and wasn't disabled by a warning at startup (below).
 2. One of the user's roles lists it, or lists `*`.
-3. No table `deny` covers anything in its `permissions` (the writes its code declares it may make).
+3. No table `deny` covers anything in its `permissions` (the writes its code declares it may make), and [hard delete](#hard-delete) is on for every table it may `delete` from.
 4. The user may `read` the action's table, and every table its form picks records from.
 
 The user does **not** need the table grants for what the action writes. Granting an action is a deliberate, narrow escalation: `ops` may "move a user and cancel their pending orders" without being able to update arbitrary orders. A table `deny` still beats it, as it beats every grant. To everyone else an action doesn't exist: it isn't listed, and its routes give the same 404 as a nonexistent one.
@@ -303,7 +340,7 @@ actions:
     disabled: true
 ```
 
-Mismatches warn rather than fail, as for tables and columns: an action whose table, written tables, or picked tables are hidden or don't exist, or whose `permissions` include a write a table `deny` forbids or a table that denies `read`, is disabled with a warning; and `roles.<role>.actions` or `actions` naming an action the module doesn't define is a warning. Mistakes in the module itself (a missing file, duplicate names, unsupported input fields) fail startup with an `ActionsError`.
+Mismatches warn rather than fail, as for tables and columns: an action whose table, written tables, or picked tables are hidden or don't exist, or whose `permissions` include a write a table `deny` forbids, a table that denies `read`, or `delete` on a table where hard delete is off, is disabled with a warning; and `roles.<role>.actions` or `actions` naming an action the module doesn't define is a warning. Mistakes in the module itself (a missing file, duplicate names, unsupported input fields) fail startup with an `ActionsError`.
 
 ## `access`
 
@@ -403,7 +440,7 @@ Foreign keys with `on delete cascade`, `on delete set null`/`set default`, or `o
 - They happen whatever roles the user holds on the other table, including when it is [hidden](#tables), carries a `deny`, or has [field-level rules](#field-level-rules). A user allowed to delete a company also deletes its orders under `on delete cascade`, even with no `delete` grant on orders.
 - Only the row Warden was asked to change gets an audit entry. The rows changed by the cascade don't.
 
-Primary keys are read-only on update by default (see [`updatablePrimaryKey`](#tables)), so `on update cascade` only comes into play on tables that opt in. For deletes, prefer `on delete restrict` (or `no action`) on foreign keys into tables Warden writes, so that removing dependent rows is a separate, checked, and audited delete; or deny `delete` on the parent table. Where a cascade is intended, make sure everyone allowed to delete the parent may remove its children too.
+Primary keys are read-only on update by default (see [`updatablePrimaryKey`](#tables)), so `on update cascade` only comes into play on tables that opt in. Likewise, deletes only happen on tables that turn on [hard delete](#hard-delete), and Warden warns at startup about the cascading foreign keys into those tables. For deletes, prefer `on delete restrict` (or `no action`) on foreign keys into tables Warden writes, so that removing dependent rows is a separate, checked, and audited delete; or deny `delete` on the parent table. Where a cascade is intended, make sure everyone allowed to delete the parent may remove its children too.
 
 ## Saved views
 
@@ -445,6 +482,7 @@ defaults:
   expose: all
   newColumns: visible
   read: all
+  delete: none
 
 tables:
   users:
@@ -456,6 +494,7 @@ tables:
       password_hash: { hidden: true }
       created_at: { readOnly: true, label: Joined }
       role: { writableBy: [ops] }
+    allowDelete: true
     requireReason: [delete]
 
   orders:
@@ -478,7 +517,7 @@ roles:
       '*': [read]
   ops:
     grants:
-      users: [read, update]
+      users: [read, update, delete]
       companies: [read, create, update]
       orders: [update]
     actions: [move-user]

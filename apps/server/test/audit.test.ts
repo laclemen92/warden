@@ -1,4 +1,3 @@
-import { fileURLToPath } from 'node:url';
 import type { MockOidc } from '@wardenhq/mock-oidc';
 import { readExampleSql, startPostgres, type TestDatabase } from '@wardenhq/testing';
 import pg from 'pg';
@@ -6,10 +5,10 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { MAX_REASON_LENGTH } from '../src/routes/entities.js';
 import { createWarden } from '../src/warden.js';
 import { authEnv, login, startTestIdp } from './helpers/auth.js';
+import { exampleConfigDeletingCompanies } from './helpers/config.js';
 
-const EXAMPLE_CONFIG = fileURLToPath(
-  new URL('../../../examples/basic/warden.config.yaml', import.meta.url),
-);
+// Deleting companies needs allowDelete, which the example only sets on users.
+const CONFIG = exampleConfigDeletingCompanies();
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 interface Item {
@@ -33,7 +32,7 @@ beforeAll(async () => {
   sqlPool = new pg.Pool({ connectionString: db.connectionString });
   idp = await startTestIdp();
   app = await createWarden({
-    env: { DATABASE_URL: db.connectionString, WARDEN_CONFIG: EXAMPLE_CONFIG, ...authEnv(idp) },
+    env: { DATABASE_URL: db.connectionString, WARDEN_CONFIG: CONFIG, ...authEnv(idp) },
   });
   [admin, editor, viewer] = [
     await login(app, 'admin'),
