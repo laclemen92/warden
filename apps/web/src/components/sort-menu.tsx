@@ -22,6 +22,7 @@ import { cn } from 'cn';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { listKey } from '@/lib/shortcuts';
 
 interface FieldComboboxProps {
   fields: Field[];
@@ -64,14 +65,14 @@ function FieldCombobox({
   };
 
   const onKeyDown = (event: KeyboardEvent) => {
-    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-      event.preventDefault();
-      const step = event.key === 'ArrowDown' ? 1 : -1;
-      setActive((i) => Math.min(Math.max(i + step, 0), Math.max(matches.length - 1, 0)));
-    } else if (event.key === 'Enter') {
-      event.preventDefault();
+    const step = listKey(event.key);
+    if (step === null) return;
+    event.preventDefault();
+    if (step === 'choose') {
       const field = matches[active];
       if (field) choose(field);
+    } else {
+      setActive((i) => Math.min(Math.max(i + step, 0), Math.max(matches.length - 1, 0)));
     }
   };
 

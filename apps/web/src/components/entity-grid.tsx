@@ -45,6 +45,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Skeleton } from '@/components/ui/skeleton';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import {
   Table,
   TableBody,
@@ -69,6 +70,7 @@ import {
 } from '@/lib/grid-state';
 import { isSoftDeleted, recordPath, type RecordItem, type RecordList } from '@/lib/records';
 import { FROM_PARAM, useSavedView, useViewList, type SavedView } from '@/lib/saved-views';
+import { isMultiSortEvent } from '@/lib/shortcuts';
 
 /** Params that make up a grid's state. A table opened without any gets its default view. */
 const STATE_PARAMS = ['sort', 'filter', 'q', 'columns', 'page', 'view', FROM_PARAM];
@@ -87,6 +89,8 @@ const helper = createColumnHelper<typeof features, RecordItem>();
 const NO_ROWS: RecordItem[] = [];
 const SEARCH_DEBOUNCE_MS = 300;
 const numberFormat = new Intl.NumberFormat();
+// Long enough not to flash over every header the pointer crosses. Keyboard focus shows it at once.
+const SORT_HINT_DELAY_MS = 600;
 
 function CellValue({ value }: { value: unknown }) {
   if (value === null || value === undefined) {
@@ -132,6 +136,15 @@ function SearchBox({ value, onSearch }: { value: string; onSearch: (q: string) =
         }}
       />
     </div>
+  );
+}
+
+function SortHint() {
+  return (
+    <span className="block max-w-64">
+      Click to sort; click again to reverse. Shift+click to add to the sort (up to {MAX_SORT_TERMS}{' '}
+      columns).
+    </span>
   );
 }
 
@@ -354,6 +367,7 @@ export function EntityGrid({ entity }: { entity: Entity }) {
     enableSortingRemoval: false,
     enableMultiSort: true,
     maxMultiSortColCount: MAX_SORT_TERMS,
+    isMultiSortEvent,
     sortDescFirst: false,
   });
 
@@ -489,19 +503,25 @@ export function EntityGrid({ entity }: { entity: Entity }) {
                         }
                       >
                         {header.column.getCanSort() ? (
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            className="-ml-3"
-                            title="Click to sort; Shift+click to sort by several columns"
-                            onClick={header.column.getToggleSortingHandler()}
-                          >
-                            <table.FlexRender header={header} />
-                            <Icon className={cn(!sorted && 'text-muted-foreground/50')} />
-                            {sorted && sorting.length > 1 && (
-                              <span className="text-xs text-muted-foreground">{index + 1}</span>
-                            )}
-                          </Button>
+                          <Tooltip delayDuration={SORT_HINT_DELAY_MS}>
+                            <TooltipTrigger asChild>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="-ml-3"
+                                onClick={header.column.getToggleSortingHandler()}
+                              >
+                                <table.FlexRender header={header} />
+                                <Icon className={cn(!sorted && 'text-muted-foreground/50')} />
+                                {sorted && sorting.length > 1 && (
+                                  <span className="text-xs text-muted-foreground">{index + 1}</span>
+                                )}
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent>
+                              <SortHint />
+                            </TooltipContent>
+                          </Tooltip>
                         ) : (
                           <table.FlexRender header={header} />
                         )}

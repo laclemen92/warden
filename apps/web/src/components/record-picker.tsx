@@ -9,6 +9,7 @@ import { Input } from '@/components/ui/input';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { useParentRecord, useRecordSearch, type RecordItem, type Row } from '@/lib/records';
 import type { Drafts } from '@/lib/form-fields';
+import { listKey } from '@/lib/shortcuts';
 
 const SEARCH_DEBOUNCE_MS = 250;
 
@@ -85,14 +86,14 @@ export function RecordPicker({
   };
 
   const onKeyDown = (event: KeyboardEvent) => {
-    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-      event.preventDefault();
-      const step = event.key === 'ArrowDown' ? 1 : -1;
-      setActive((i) => Math.min(Math.max(i + step, 0), Math.max(items.length - 1, 0)));
-    } else if (event.key === 'Enter') {
-      event.preventDefault();
+    const step = listKey(event.key);
+    if (step === null) return;
+    event.preventDefault();
+    if (step === 'choose') {
       const item = items[active];
       if (item) choose(item);
+    } else {
+      setActive((i) => Math.min(Math.max(i + step, 0), Math.max(items.length - 1, 0)));
     }
   };
 
