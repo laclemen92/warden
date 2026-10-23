@@ -1,4 +1,5 @@
 import * as oidc from 'openid-client';
+import { RefreshRejectedError, type ApiTokens } from './session.js';
 import { buildLogoutUrl, type AuthSettings } from './settings.js';
 
 /** Per-login values kept in the browser between /auth/login and /auth/callback. */
@@ -12,10 +13,20 @@ export interface OidcClient {
   redirectUri: string;
   /** Where the IdP sends the browser after logging out; register it at the IdP. */
   postLogoutRedirectUri: string;
+  /** The API audience login requests (`OIDC_AUDIENCE`), whose access token sessions keep. */
+  audience: string | undefined;
   /** Fresh checks plus the IdP URL to send the browser to. */
   begin(): Promise<{ url: URL; checks: LoginChecks }>;
-  /** Exchange the callback's code and return the validated ID token and its claims. */
-  finish(callbackUrl: URL, checks: LoginChecks): Promise<{ claims: oidc.IDToken; idToken: string }>;
+  /**
+   * Exchange the callback's code and return the validated ID token and its claims, plus the
+   * access (and refresh) token when login requests an API audience.
+   */
+  finish(
+    callbackUrl: URL,
+    checks: LoginChecks,
+  ): Promise<{ claims: oidc.IDToken; idToken: string; apiTokens?: ApiTokens }>;
+  /** Renew an access token; throws `RefreshRejectedError` when the IdP refuses the refresh token. */
+  refresh(refreshToken: string): Promise<ApiTokens>;
   /**
    * The IdP's logout URL (RP-initiated logout), so it ends its own session too. Falls back to
    * `OIDC_LOGOUT_URL` without an `end_session_endpoint`; `undefined` when neither exists.
@@ -40,9 +51,22 @@ export function createOidcClient(settings: AuthSettings): OidcClient {
         throw err;
       }));
 
+  const audience = settings.authParams.audience;
+  const apiTokensFrom = (
+    tokens: oidc.TokenEndpointResponse & oidc.TokenEndpointResponseHelpers,
+  ) => {
+    const expiresIn = tokens.expiresIn();
+    return {
+      accessToken: tokens.access_token,
+      ...(tokens.refresh_token ? { refreshToken: tokens.refresh_token } : {}),
+      ...(expiresIn !== undefined ? { expiresIn } : {}),
+    };
+  };
+
   return {
     redirectUri,
     postLogoutRedirectUri,
+    audience,
 
     async begin() {
       const config = await configuration();
@@ -73,7 +97,26 @@ export function createOidcClient(settings: AuthSettings): OidcClient {
       });
       const claims = tokens.claims();
       if (!claims || !tokens.id_token) throw new Error('token response has no ID token');
-      return { claims, idToken: tokens.id_token };
+      // Without an audience the access token is only good for userinfo, so it isn't kept.
+      return {
+        claims,
+        idToken: tokens.id_token,
+        ...(audience && tokens.access_token ? { apiTokens: apiTokensFrom(tokens) } : {}),
+      };
+    },
+
+    async refresh(refreshToken) {
+      const config = await configuration();
+      try {
+        return apiTokensFrom(await oidc.refreshTokenGrant(config, refreshToken));
+      } catch (err) {
+        // Only invalid_grant means the refresh token itself is dead. Rate limits (429) and client
+        // misconfiguration (invalid_client) are fixable without the user, so the token is kept.
+        if (err instanceof oidc.ResponseBodyError && err.error === 'invalid_grant') {
+          throw new RefreshRejectedError(err.error);
+        }
+        throw err;
+      }
     },
 
     async endSessionUrl(idToken) {

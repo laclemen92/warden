@@ -28,11 +28,15 @@ export interface MockOidcOptions {
    * redirects to `returnTo` if it is one of the client's post-logout redirect URIs. Off by default.
    */
   legacyLogout?: boolean;
+  /** Access token lifetime in seconds (default an hour). */
+  accessTokenTtl?: number;
 }
 
 export interface MockOidc {
   issuer: string;
   users: readonly MockUser[];
+  /** Every token endpoint request so far, in order: its grant type and whether it succeeded. */
+  grants: readonly { grantType: string; ok: boolean }[];
   close(): Promise<void>;
 }
 
@@ -49,6 +53,7 @@ export async function startMockOidc({
   users = MOCK_USERS,
   endSession = true,
   legacyLogout = false,
+  accessTokenTtl = 3600,
 }: MockOidcOptions): Promise<MockOidc> {
   // The issuer may depend on the bound port, so the provider is created after listen().
   let handler: http.RequestListener = (_req, res) => res.writeHead(503).end();
@@ -60,10 +65,30 @@ export async function startMockOidc({
   const address = server.address() as AddressInfo;
   const resolvedIssuer = issuer ?? `http://${host}:${address.port}`;
 
-  const provider = createProvider(resolvedIssuer, clients, users, endSession);
+  // Nonces of authorization requests that asked for offline_access (see createProvider).
+  const offlineNonces = new Set<string>();
+  const provider = createProvider(
+    resolvedIssuer,
+    clients,
+    users,
+    endSession,
+    accessTokenTtl,
+    offlineNonces,
+  );
+  const grants: { grantType: string; ok: boolean }[] = [];
+  provider.on('grant.success', (ctx) => {
+    grants.push({ grantType: String(ctx.oidc.params?.grant_type), ok: true });
+  });
+  provider.on('grant.error', (ctx) => {
+    grants.push({ grantType: String(ctx.oidc.params?.grant_type), ok: false });
+  });
   const callback = provider.callback();
   handler = (req, res) => {
     const url = new URL(req.url ?? '/', resolvedIssuer);
+    const nonce = url.searchParams.get('nonce');
+    if (url.pathname === '/auth' && nonce && /(^| )offline_access( |$)/.test(scopeOf(url))) {
+      offlineNonces.add(nonce);
+    }
     if (legacyLogout && url.pathname === LEGACY_LOGOUT_PATH) {
       return void handleLegacyLogout(provider, clients, url, req, res).catch((err: unknown) => {
         if (!res.headersSent) sendHtml(res, 400, page('Error', `<p>${escape(String(err))}</p>`));
@@ -79,6 +104,7 @@ export async function startMockOidc({
   return {
     issuer: resolvedIssuer,
     users,
+    grants,
     close: () =>
       new Promise((resolve, reject) => {
         server.closeAllConnections();
@@ -92,7 +118,15 @@ function createProvider(
   clients: MockOidcClient[],
   users: readonly MockUser[],
   endSession: boolean,
+  accessTokenTtl: number,
+  offlineNonces: ReadonlySet<string>,
 ): Provider {
+  // oidc-provider drops offline_access unless the request also has prompt=consent, as the spec
+  // suggests. Auth0 and most IdPs don't require that, so the mock remembers which requests asked.
+  const offline = (code: { scopes: Set<string>; nonce?: string | undefined }) =>
+    code.scopes.has('offline_access') ||
+    (code.nonce !== undefined && offlineNonces.has(code.nonce));
+
   // Fresh keys per process are fine for a mock; relying parties refetch the JWKS on unknown kids.
   const { privateKey } = generateKeyPairSync('ec', { namedCurve: 'P-256' });
   const signingKey = { ...privateKey.export({ format: 'jwk' }), use: 'sig', alg: 'ES256' };
@@ -103,11 +137,15 @@ function createProvider(
       client_secret: client.clientSecret,
       redirect_uris: client.redirectUris,
       post_logout_redirect_uris: client.postLogoutRedirectUris ?? [],
-      grant_types: ['authorization_code'],
+      grant_types: ['authorization_code', 'refresh_token'],
       response_types: ['code'],
       id_token_signed_response_alg: 'ES256',
     })),
     jwks: { keys: [signingKey as JWK] },
+    ttl: { AccessToken: accessTokenTtl },
+    issueRefreshToken: (_ctx, client, code) =>
+      client.grantTypeAllowed('refresh_token') && offline(code),
+    expiresWithSession: (_ctx, code) => !offline(code),
     cookies: { keys: ['warden-mock-oidc-dev-only'] },
     claims: {
       openid: ['sub'],
@@ -121,6 +159,8 @@ function createProvider(
     pkce: { required: () => true },
     features: {
       devInteractions: { enabled: false },
+      // Lets tests revoke a refresh token, as an admin removing a user would.
+      revocation: { enabled: true },
       rpInitiatedLogout: {
         enabled: endSession,
         // Sign out without the default confirmation page.
@@ -169,6 +209,8 @@ function createProvider(
 }
 
 const LEGACY_LOGOUT_PATH = '/v2/logout';
+
+const scopeOf = (url: URL) => url.searchParams.get('scope') ?? '';
 
 async function handleLegacyLogout(
   provider: Provider,

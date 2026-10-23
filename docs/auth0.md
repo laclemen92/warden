@@ -72,15 +72,45 @@ Role names match exactly and are case-sensitive.
 
 Auth0 sends `email` and `email_verified` with the `email` scope. `access.emailDomains` and [role assignments](config.md#role-assignments) only match a verified address ([`requireVerifiedEmail`](config.md#access), on by default). Users of a **Database** connection start with `email_verified: false` until they click the verification link Auth0 emails them, so they won't match an email rule until then. Social and enterprise connections (Google Workspace, Entra ID, SAML) usually report their own verification. Leave `requireVerifiedEmail` on.
 
-## Audience and other authorization parameters
+## Other authorization parameters
 
-Warden calls no API with the access token, so it doesn't need an audience. If your tenant needs one anyway, set `OIDC_AUDIENCE`. Other authorization parameters go in `OIDC_AUTH_PARAMS` as `key=value` pairs joined by `&` (URL-encode values that contain `&`, `=` or `%`):
+Other authorization parameters go in `OIDC_AUTH_PARAMS` as `key=value` pairs joined by `&` (URL-encode values that contain `&`, `=` or `%`):
 
 ```sh
-OIDC_AUDIENCE=https://api.example.com
 OIDC_AUTH_PARAMS=organization=org_abc123&connection=google-oauth2
 ```
 
 `organization` signs users in to an [Auth0 Organization](https://auth0.com/docs/manage-users/organizations), `connection` skips the Universal Login chooser, and `prompt=login` always asks for credentials. Warden sets `client_id`, `redirect_uri`, `response_type`, `response_mode`, `scope`, `state`, `nonce`, `code_challenge`, `code_challenge_method`, `request`, and `request_uri` itself, so setting any of them here fails startup.
 
 These parameters are hints in a URL the browser carries, and a user can remove them. They are not an access control: restrict who can sign in with the application's enabled connections and Organization settings in Auth0, and with Warden's `access` rules.
+
+## 6. Calling your API as the user (optional)
+
+When Warden and your API both trust this tenant, Warden can call the API with the signed-in user's own access token. The API then applies the same permissions it applies to its own frontend, and Warden needs no extra trust. Without an audience Warden keeps no access token; skip this section if nothing calls an API.
+
+**Register the API.** Under **Applications → APIs**, create (or open) the API. Its **Identifier** is the audience, e.g. `https://api.example.com`. Then:
+
+```sh
+OIDC_AUDIENCE=https://api.example.com
+OIDC_SCOPES=openid email profile offline_access
+```
+
+One login now yields Warden's ID token plus an access token for the API, and Warden keeps the access token with the session, encrypted under a key derived from the session cookie. Only one audience is supported per deployment. (`audience` in `OIDC_AUTH_PARAMS` works too, but not both.)
+
+**Offline access (refresh tokens).** Auth0 access tokens live 24 hours by default (the API's **Token Expiration**), often less than a Warden session if you shorten it. With `offline_access` in `OIDC_SCOPES` and **Allow Offline Access** turned on in the API's **Settings**, Auth0 also returns a refresh token, and Warden renews the access token when it has less than a minute left, once per session however many requests need it at the same time. Without a refresh token, an expired access token means the user must sign in again. If the refresh fails (the user was blocked or deleted, their refresh tokens were revoked, or it expired), the call fails with "Sign in again to continue"; signing out and in again fixes it. A rate limit or other temporary error at Auth0 fails only that call: the refresh token is kept and the next call tries again. Renewing never extends Warden's own session timeouts.
+
+[Refresh token rotation](https://auth0.com/docs/secure/tokens/refresh-tokens/refresh-token-rotation) (the application's **Refresh Token Rotation** setting) works: Warden keeps the newest refresh token and never uses one twice. Set the refresh token's **Absolute Lifetime** at least as long as `WARDEN_SESSION_ABSOLUTE_TIMEOUT`.
+
+**RBAC permissions.** In the API's **Settings**, turn on **Enable RBAC** and **Add Permissions in the Access Token**. Define permissions (e.g. `refunds:create`) under the API's **Permissions** tab and grant them to the Auth0 roles from step 4. Access tokens for the API then carry a `permissions` claim, which the API checks as it does for any other caller. Warden doesn't read the access token.
+
+**One place decides.** With roles in the ID token (step 4) mapped to Warden roles by `access.groupsClaim`, and the same roles granting API permissions, Auth0 decides both who sees a button in Warden and who may perform the operation in the API. Warden's grants still gate the button; the API's 403 is the final word.
+
+The tokens never reach the browser and are never logged, and they are deleted when the user logs out or an admin signs them out.
+
+## Other identity providers
+
+The same works with any IdP that issues an access token for your API from the authorization code login. Warden keeps the access token only when `OIDC_AUDIENCE` is set, so set it to the API's identifier even where the IdP picks the token's audience from scopes instead: OAuth servers ignore authorization parameters they don't recognize.
+
+- **Okta:** use a custom authorization server (or `default`) whose audience is your API, with `OIDC_ISSUER=https://<org>.okta.com/oauth2/default`. Add the API's scopes and `offline_access` to `OIDC_SCOPES`, and allow the **Refresh Token** grant on the app.
+- **Entra ID:** expose an API on its app registration and add its scope (`api://<app-id>/<scope>`) and `offline_access` to `OIDC_SCOPES`. Entra issues one audience per token, so the access token is for that API only.
+- **Keycloak:** add an audience mapper (or a client scope with one) so the access token's `aud` includes the API's client. Add `offline_access` to `OIDC_SCOPES` if refresh tokens should outlive the Keycloak SSO session.

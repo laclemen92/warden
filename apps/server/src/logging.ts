@@ -3,7 +3,14 @@ import type { FastifyBaseLogger, FastifyRequest, FastifyServerOptions } from 'fa
 const REDACTED = '[redacted]';
 // OIDC callback parameters. Codes are single-use and need the client secret and PKCE verifier,
 // but still shouldn't end up in log pipelines.
-const SECRET_PARAMS = new Set(['code', 'state', 'session_state', 'id_token', 'access_token']);
+const SECRET_PARAMS = new Set([
+  'code',
+  'state',
+  'session_state',
+  'id_token',
+  'access_token',
+  'refresh_token',
+]);
 
 /**
  * `url` as it is safe to log: the whole query string of `/auth/*` routes is dropped, and the

@@ -79,12 +79,17 @@ export {
   deleteSession,
   deleteSessionsForSubject,
   insertSession,
+  claimSessionApiTokensRefresh,
+  readSessionApiTokens,
+  releaseSessionApiTokensRefresh,
+  saveSessionApiTokens,
   listSignedInUsers,
   refreshSessionEmails,
   touchSession,
   type NewSession,
   type Session,
   type SessionTimeouts,
+  type StoredApiTokens,
   type SignedInUser,
 } from './sessions.js';
 export {
