@@ -268,4 +268,23 @@ jobs:
           \`$MOCK_OIDC_IMAGE:$VERSION\` (digest \`$MOCK_OIDC_DIGEST\`) signs anyone in as a test user, for [trying Warden locally](https://github.com/$GITHUB_REPOSITORY/blob/v$VERSION/docs/deployment.md#trying-it-locally-without-an-identity-provider). Never deploy it.
           NOTES
           )"
+          # A stable Release takes the upgrade notes from the Release draft (release-draft.yml) and
+          # replaces it. Prereleases leave the draft alone so the final release still gets its notes.
+          drafts=""
+          if [ "$PRERELEASE" != true ]; then
+            drafts="$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
+              --jq '.[] | select(.draft and ((.body // "") | contains("<!-- warden-release-draft -->"))) | .id')"
+          fi
+          for id in $drafts; do
+            if [ -z "${upgrade:-}" ]; then
+              upgrade="$(gh api "repos/$GITHUB_REPOSITORY/releases/$id" --jq .body \
+                | awk '/^## Upgrade notes/ { on = 1; print; next }
+                       on && /^[ \t]*```/ { fenced = !fenced }
+                       on && /^[ \t]*~~~/ { fenced = !fenced }
+                       on && !fenced && /^## / { exit }
+                       on')"
+            fi
+            gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/$id"
+          done
+          if [ -n "${upgrade:-}" ]; then notes="$upgrade"$'\n\n'"$notes"; fi
           gh release create "v$VERSION" "${args[@]}" --notes "$notes"
