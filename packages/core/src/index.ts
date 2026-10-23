@@ -66,3 +66,14 @@ export type * from './audit-store.js';
 export { WARDEN_AUDIT_COLUMNS, auditTableName, resolveAuditStore } from './audit-store.js';
 export type * from './actor.js';
 export { actorMappingKey, resolveActor } from './actor.js';
+export type * from './config-view.js';
+export {
+  CONFIG_VIEW_PREFIX,
+  configViewId,
+  configViewState,
+  resolveConfigViews,
+  toExportedView,
+  viewEntryYaml,
+  viewKeyFor,
+  viewsConfigYaml,
+} from './config-view.js';

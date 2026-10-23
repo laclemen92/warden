@@ -116,10 +116,12 @@ describe('saved views', () => {
       id: expect.stringMatching(/^\d+$/),
       entity: 'users',
       name: 'Active users',
+      origin: 'personal',
       shared: false,
       mine: true,
       owner: 'Vera Viewer',
       canEdit: true,
+      canDelete: true,
       state,
       updatedAt: expect.any(String),
     });
@@ -205,6 +207,7 @@ describe('saved views', () => {
       expect((await send(user, 'GET', `/api/views/${view.id}`)).body).toMatchObject({
         mine: false,
         canEdit: false,
+        canDelete: false,
         state: { sort: 'email' },
       });
       expect(
@@ -227,6 +230,7 @@ describe('saved views', () => {
     expect((await send('editor', 'GET', `/api/views/${id}`)).body).toMatchObject({
       mine: true,
       canEdit: false,
+      canDelete: true,
     });
     expect(await send('editor', 'PATCH', `/api/views/${id}`, { name: 'Mine now' })).toMatchObject({
       status: 403,

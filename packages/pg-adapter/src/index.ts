@@ -101,6 +101,7 @@ export {
   deleteSavedView,
   getSavedView,
   listSavedViews,
+  listSharedViews,
   updateSavedView,
   type NewSavedView,
   type SavedView,

@@ -57,6 +57,14 @@ export async function listSavedViews(
   return rows;
 }
 
+/** Every shared view, of every entity. */
+export async function listSharedViews(db: Database): Promise<SavedView[]> {
+  const { rows } = await sql<SavedView>`
+    select ${COLUMNS} from ${SAVED_VIEWS} where shared
+    order by entity, lower(name), id`.execute(db);
+  return rows;
+}
+
 export async function getSavedView(db: Database, id: string): Promise<SavedView | undefined> {
   const { rows } = await sql<SavedView>`
     select ${COLUMNS} from ${SAVED_VIEWS} where id = ${id}`.execute(db);

@@ -13,7 +13,6 @@ import {
   isSortable,
   type Condition,
   type Entity,
-  type ViewState,
 } from '@wardenhq/core';
 import {
   ArrowDown,
@@ -69,7 +68,19 @@ import {
   type GridUpdate,
 } from '@/lib/grid-state';
 import { recordPath, type RecordItem, type RecordList } from '@/lib/records';
-import { useSavedView } from '@/lib/saved-views';
+import { FROM_PARAM, useSavedView, useViewList, type SavedView } from '@/lib/saved-views';
+
+/** Params that make up a grid's state. A table opened without any gets its default view. */
+const STATE_PARAMS = ['sort', 'filter', 'q', 'columns', 'page', 'view', FROM_PARAM];
+
+/** URL params that show a view; config views remember where they came from. */
+function paramsFor(view: SavedView, pageSize: string | null) {
+  const next = viewParams(view.state ?? {});
+  if (view.origin === 'config') next.set(FROM_PARAM, view.id);
+  // Page size is the user's preference, not part of the view.
+  if (pageSize) next.set('pageSize', pageSize);
+  return next;
+}
 
 const features = tableFeatures({ rowSortingFeature });
 const helper = createColumnHelper<typeof features, RecordItem>();
@@ -142,7 +153,7 @@ export function EntityGrid({ entity }: { entity: Entity }) {
     if (!viewId || linked.isPending) return;
     const view = linked.data;
     if (view?.state && view.entity === entity.key) {
-      setParams(viewParams(view.state), { replace: true });
+      setParams(paramsFor(view, params.get('pageSize')), { replace: true });
       return;
     }
     const next = new URLSearchParams(params);
@@ -158,26 +169,36 @@ export function EntityGrid({ entity }: { entity: Entity }) {
     });
   }, [viewId, linked.isPending, linked.data, entity.key, params, setParams]);
 
+  // A config view marked `default` applies when the table is opened without grid state. Only
+  // on opening: clearing the grid afterwards shows every row.
+  const viewList = useViewList(entity.key);
+  const bare = !STATE_PARAMS.some((key) => params.has(key));
+  const [defaultChecked, setDefaultChecked] = useState<string | null>(null);
+  const checkingDefault = defaultChecked !== entity.key;
+  const defaultView =
+    checkingDefault && bare
+      ? viewList.data?.views.find((v) => v.origin === 'config' && v.default && v.state)
+      : undefined;
+  if (checkingDefault && !defaultView && !(bare && viewList.isPending)) {
+    setDefaultChecked(entity.key);
+  }
+  useEffect(() => {
+    if (defaultView) setParams(paramsFor(defaultView, params.get('pageSize')), { replace: true });
+  }, [defaultView, params, setParams]);
+
   const rows = useQuery({
     queryKey: ['rows', entity.key, url],
     queryFn: () => apiFetch<RecordList>(url),
     placeholderData: keepPreviousData,
-    // Don't load rows for the default state while a view link is about to replace it.
-    enabled: !viewId,
+    // Don't load rows for the default state while a view is about to replace it.
+    enabled: !viewId && !(checkingDefault && bare && (viewList.isPending || defaultView)),
   });
 
   const update = (change: GridUpdate, options?: { replace?: boolean }) =>
     setParams((current) => writeGridState(current, change), options);
 
-  const applyView = (view: ViewState) => {
-    // Page size is the user's preference, not part of the view.
-    setParams((current) => {
-      const next = viewParams(view);
-      const pageSize = current.get('pageSize');
-      if (pageSize) next.set('pageSize', pageSize);
-      return next;
-    });
-  };
+  const applyView = (view: SavedView) =>
+    setParams((current) => paramsFor(view, current.get('pageSize')));
 
   const fields = useMemo(() => {
     const byName = new Map(entity.fields.map((f) => [f.name, f]));

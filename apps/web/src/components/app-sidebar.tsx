@@ -1,7 +1,7 @@
 import type { Entity } from '@wardenhq/core';
-import { GitCompare, History, Shield, Table2, UserCog } from 'lucide-react';
+import { Bookmark, GitCompare, History, Shield, Table2, UserCog } from 'lucide-react';
 import { useState } from 'react';
-import { Link, NavLink, useMatch } from 'react-router';
+import { Link, NavLink, useLocation, useMatch } from 'react-router';
 import {
   Sidebar,
   SidebarContent,
@@ -20,6 +20,7 @@ import { UserMenu } from '@/components/user-menu';
 import { AUDIT_LOG_PATH, useCanViewAuditLog } from '@/lib/audit';
 import { entityPath, useSchema } from '@/lib/schema';
 import { ROLES_PATH, useCanManageRoles } from '@/lib/roles';
+import { FROM_PARAM, useSidebarViews, viewPath, type SavedView } from '@/lib/saved-views';
 import { SCHEMA_DRIFT_PATH, useCanViewSchemaDrift } from '@/lib/schema-drift';
 
 function EntityNavItem({ entity }: { entity: Entity }) {
@@ -34,6 +35,43 @@ function EntityNavItem({ entity }: { entity: Entity }) {
         </NavLink>
       </SidebarMenuButton>
     </SidebarMenuItem>
+  );
+}
+
+function ViewNavItem({ view }: { view: SavedView }) {
+  const location = useLocation();
+  const isActive =
+    location.pathname === entityPath({ key: view.entity }) &&
+    new URLSearchParams(location.search).get(FROM_PARAM) === view.id;
+  return (
+    <SidebarMenuItem>
+      <SidebarMenuButton isActive={isActive} tooltip={view.name} asChild>
+        <Link to={viewPath(view)}>
+          <Bookmark />
+          <span>{view.name}</span>
+        </Link>
+      </SidebarMenuButton>
+    </SidebarMenuItem>
+  );
+}
+
+/** Config views with `sidebar: true`, each opening its table with the view applied. */
+function QueuesGroup() {
+  const { data: views } = useSidebarViews();
+  if (!views?.length) return null;
+  return (
+    <SidebarGroup>
+      <SidebarGroupLabel>Queues</SidebarGroupLabel>
+      <SidebarGroupContent>
+        <nav aria-label="Queues">
+          <SidebarMenu>
+            {views.map((view) => (
+              <ViewNavItem key={view.id} view={view} />
+            ))}
+          </SidebarMenu>
+        </nav>
+      </SidebarGroupContent>
+    </SidebarGroup>
   );
 }
 
@@ -75,6 +113,7 @@ export function AppSidebar() {
         />
       </SidebarHeader>
       <SidebarContent>
+        <QueuesGroup />
         <SidebarGroup>
           <SidebarGroupLabel>Entities</SidebarGroupLabel>
           <SidebarGroupContent>

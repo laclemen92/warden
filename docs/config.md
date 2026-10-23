@@ -8,6 +8,7 @@ Warden needs one decision from you before it starts: who may sign in ([`access`]
 - [`defaults`](#defaults)
 - [`tables`](#tables)
 - [`tables.<table>.columns`](#tablestablecolumns)
+- [`tables.<table>.views`](#tablestableviews)
 - [`roles`](#roles)
 - [`actions`](#actions)
 - [`access`](#access)
@@ -85,6 +86,7 @@ tables:
 | `defaults.delete`          | `none`, `granted`                    | `none`                     |
 | `defaults.requireReason`   | list of `create`, `update`, `delete` | `[create, update, delete]` |
 | `defaults.reasonMinLength` | integer, 1 to 2000                   | `10`                       |
+| `defaults.sharedViews`     | `config`, `ui`, `both`               | `both`                     |
 
 **`defaults.expose`** decides which tables Warden shows.
 
@@ -114,6 +116,12 @@ A table's [`deny`](#tables) can still forbid reading it in either mode.
 `delete` can't be granted with `*` in either mode: a `*` grant that lists it fails startup.
 
 **`defaults.requireReason`** lists the writes that must say why, on every table that doesn't set its own [`requireReason`](#tables). By default that's all three: every create, update and delete needs a reason. See [Required reasons](#required-reasons). `[]` makes reasons optional.
+
+**`defaults.sharedViews`** decides where shared grid views come from. See [`tables.<table>.views`](#tablestableviews). Personal views are allowed in every mode.
+
+- `both`: views defined in config and views shared in the UI live side by side.
+- `config`: shared views come only from config. Sharing a view in the UI is refused (the API returns the same `403` as sharing without `admin: [views]`). Views shared in the UI before stop appearing for everyone else. Their owners and anyone with `admin: [views]` still see them, marked **Not in config**, so they can export them to config and delete them.
+- `ui`: shared views come only from the UI. Config `views` fail startup.
 
 **`defaults.reasonMinLength`** is the shortest a required reason may be, in characters, after trimming whitespace, so `.` or `fix` doesn't count. It applies to required reasons on tables and [custom actions](#actions) alike.
 
@@ -192,6 +200,7 @@ Each key is a table, as `table` (in the default schema) or `schema.table`. Warde
 | `tables.<table>.updatablePrimaryKey`   | boolean                                                    | `false`                                        |
 | `tables.<table>.insertablePrimaryKey`  | boolean                                                    | `false`                                        |
 | `tables.<table>.columns`               | map of column name to [column config](#tablestablecolumns) | None                                           |
+| `tables.<table>.views`                 | list of [views](#tablestableviews)                         | None                                           |
 
 **`hidden`** removes the table completely. It doesn't appear in the UI, the schema API, or any relation, and requesting it returns the same 404 as a table that doesn't exist. No grant can make a hidden table accessible.
 
@@ -284,6 +293,70 @@ tables:
 Here `support` can update users but sees `role` as read-only and doesn't see `salary` at all. `admin` sees `salary` but can't change it.
 
 Version tokens are computed from the fields each user can see, so a change to a field someone can't see doesn't make their edit a conflict. Audit entries always record every exposed field.
+
+## `tables.<table>.views`
+
+Shared grid views defined in config, so they are reviewed, versioned and the same in every environment. The intended workflow: build the view in the grid, use **Export to config** (see below), paste the snippet into the config file, and deploy. Warden never writes the config file itself.
+
+| Key                              | Type                                         | Default          |
+| -------------------------------- | -------------------------------------------- | ---------------- |
+| `tables.<table>.views[].key`     | lowercase letters, digits and hyphens        | Required         |
+| `tables.<table>.views[].name`    | string, up to 100 characters                 | Required         |
+| `tables.<table>.views[].filter`  | a [filter](#filters-in-views)                | None (every row) |
+| `tables.<table>.views[].search`  | string                                       | None             |
+| `tables.<table>.views[].sort`    | list of `{ column, direction: asc \| desc }` | The table's sort |
+| `tables.<table>.views[].columns` | list of column names                         | Every column     |
+| `tables.<table>.views[].sidebar` | boolean                                      | `false`          |
+| `tables.<table>.views[].default` | boolean                                      | `false`          |
+
+**`key`** identifies the view. It must be unique across all tables, and links to the view use it: `/entities/<table>?view=config:<key>`. Keep it stable, since links and the export below rely on it.
+
+**`name`** is shown in the **Views** menu and the sidebar.
+
+**`filter`**, **`search`**, **`sort`** and **`columns`** are what the view applies to the grid: the filter, the free-text search, the sort (`direction` defaults to `asc`), and the visible columns.
+
+**`sidebar: true`** gives the view its own entry in the sidebar, under **Queues**.
+
+**`default: true`** applies the view when the table is opened without any other grid state (no filter, sort, search, columns or page in the URL). Only one view per table can be the default. Clearing the grid afterwards shows every row.
+
+A view follows the same rules as a [shared view](#saved-views): it appears only to users who can read the table, and a view that uses a column someone can't see (because of [`readableBy`](#field-level-rules)) doesn't exist for them at all. Nobody can change or delete it in the UI (the API refuses with a `403`); users can apply it and save a personal copy. The **Views** menu marks it **Config**.
+
+Views are checked at startup:
+
+- An invalid filter, sort or column list fails startup with a `ConfigError` naming the line. So does a view that uses a column config hides (`hidden: true`, or `defaults.newColumns: hidden`), or a view on a hidden table.
+- A view that uses a column or table the database doesn't have is disabled, with a warning, like any other config/database mismatch.
+- Config views need `defaults.sharedViews: config` or `both`.
+
+```yaml
+tables:
+  orders:
+    views:
+      - key: paid-orders
+        name: Paid orders
+        filter: { field: status, op: eq, value: paid }
+        sort: [{ column: placed_at, direction: desc }]
+        columns: [id, status, total, placed_at]
+        sidebar: true
+      - key: big-or-refunded
+        name: Big or refunded
+        filter:
+          or:
+            - { field: total, op: gte, value: 1000 }
+            - { field: status, op: in, value: [refunded, cancelled] }
+        default: true
+```
+
+### Filters in views
+
+A view's `filter` is the filter the list endpoint takes, written in YAML: a condition `{ field, op, value }`, or `{ and: [...] }`, `{ or: [...] }`, `{ not: ... }` around others. Operators are `eq`, `neq`, `lt`, `lte`, `gt`, `gte`, `between`, `in`, `notIn`, `contains`, `startsWith`, `endsWith`, `isNull` and `isNotNull`, as the column's type allows; the easiest way to get one right is to build it in the grid and export it.
+
+### Export to config
+
+**Export to config** in the **Views** menu turns a view into a ready-to-paste YAML snippet, copies it to the clipboard, and shows it with the config key to paste it under. It works on any view: a personal one, one shared in the UI, a config view, or the grid's current unsaved state (**Export current grid**). The snippet gets a `key` made from the view's name, except for a config view, which keeps its key so pasting it over the old entry updates it.
+
+When the grid was opened from a config view and has changed since, the menu shows **Modified, not saved**, with **Export to config** and **Reset** (back to the view as config defines it).
+
+Users with `admin: [views]` can also export every view shared in the UI, for one table (**Export shared views**) or all of them (**Export all tables**), as one `tables:` section. That's the way to move an existing deployment to `defaults.sharedViews: config`.
 
 ## `roles`
 
@@ -595,7 +668,7 @@ Each view has a link, `/entities/<table>?view=<id>`, that opens the grid with th
 
 Views follow the same rules as everything else. A view can only use columns its author can see. A shared view that uses a column someone can't see (because of [`readableBy`](#field-level-rules), or because the column was hidden or dropped since) doesn't appear for them at all. Its owner, and anyone who may delete it, see it marked as out of date so they can fix or delete it. The exception is a column hidden from someone by `readableBy`: then only the view's owner sees it, since even its name could describe that column, and anyone with `admin: [views]` who can't read the column can't see or delete it.
 
-Views are stored in [`warden.saved_views`](database.md#saved-views).
+Views are stored in [`warden.saved_views`](database.md#saved-views). Shared views can also be defined in config, and with [`defaults.sharedViews: config`](#defaults) they come only from there: see [`tables.<table>.views`](#tablestableviews).
 
 ## CSV export
 

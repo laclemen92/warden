@@ -40,6 +40,8 @@ export interface LoadedConfig {
   config: WardenConfig;
   /** Absolute path of the file that was loaded, or `null` when running on defaults. */
   path: string | null;
+  /** The file's contents, for locating problems found after loading (see {@link configError}). */
+  source?: string;
 }
 
 /**
@@ -62,13 +64,13 @@ export async function loadConfig({
         { path: '', message: err.code === 'ENOENT' ? 'File not found' : err.message },
       ]);
     });
-    return { config: parseConfig(source, file), path: file };
+    return { config: parseConfig(source, file), path: file, source };
   }
 
   for (const name of CONFIG_FILE_NAMES) {
     const file = resolve(cwd, name);
     const source = await readFile(file, 'utf8').catch(() => null);
-    if (source !== null) return { config: parseConfig(source, file), path: file };
+    if (source !== null) return { config: parseConfig(source, file), path: file, source };
   }
 
   return { config: wardenConfigSchema.parse({}), path: null };
@@ -90,6 +92,29 @@ export function requireAccess({ config, path }: LoadedConfig): void {
         'itself restricts who can sign in). See docs/config.md#access.',
     },
   ]);
+}
+
+/**
+ * A {@link ConfigError} for problems found after the config was loaded, such as checks against the
+ * database, located in the file like schema errors.
+ */
+export function configError(
+  { path, source }: LoadedConfig,
+  issues: { path: readonly (string | number)[]; message: string }[],
+): ConfigError {
+  const lineCounter = new LineCounter();
+  const doc = source !== undefined ? parseDocument(source, { lineCounter }) : undefined;
+  return new ConfigError(
+    path ?? '(defaults: no config file found)',
+    issues.map((issue) => {
+      const node = doc && locate(doc, issue.path.map(String));
+      return {
+        path: issue.path.join('.'),
+        message: issue.message,
+        ...(node?.range ? position(lineCounter, node.range[0]) : {}),
+      };
+    }),
+  );
 }
 
 /**

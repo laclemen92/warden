@@ -1,4 +1,4 @@
-import { loadConfig, requireAccess, type WardenConfig } from '@wardenhq/config';
+import { configError, loadConfig, requireAccess, type WardenConfig } from '@wardenhq/config';
 import {
   auditTableName,
   deleteCascadeWarnings,
@@ -7,6 +7,7 @@ import {
   actorMappingKey,
   resolveAuditStore,
   resolveActor,
+  resolveConfigViews,
   resolvePolicy,
   resolveSchema,
   sessionEmail,
@@ -219,6 +220,8 @@ export async function createWarden({
     );
     const { schema, warnings: schemaWarnings } = resolveSchema(model, config);
     const { policy, warnings: policyWarnings } = resolvePolicy(schema, config);
+    const configViews = resolveConfigViews(model, schema, config);
+    if (configViews.errors.length > 0) throw configError(loaded, configViews.errors);
     // Against the introspected model, not the effective schema: the users table may be hidden.
     const actor = resolveActor(model, config);
     // Loaded after config and the schema, so its tables can be checked, and before routes.
@@ -255,6 +258,7 @@ export async function createWarden({
       ...actionWarnings,
       ...deleteCascadeWarnings(model, schema, policy, actionDeletes),
       ...actor.warnings,
+      ...configViews.warnings,
     ];
     // The first start records the schema drift baseline.
     await ensureSchemaSnapshot(db, model);
@@ -299,6 +303,7 @@ export async function createWarden({
       bodyLimit,
       version,
       logger,
+      savedViews: { configViews: configViews.views, sharedViews: config.defaults.sharedViews },
       ...(webDir ? { webDir } : {}),
     });
     app.addHook('onClose', close);

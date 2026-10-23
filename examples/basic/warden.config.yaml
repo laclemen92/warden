@@ -13,6 +13,9 @@ defaults:
   # requireReason overrides this ([] makes reasons optional there).
   requireReason: [create, update, delete]
   reasonMinLength: 10 # after trimming, so "." or "fix" doesn't count
+  # Where shared grid views come from: config (tables.<table>.views only), ui (shared in the app
+  # by roles with admin: [views]), or both.
+  sharedViews: both
 
 tables:
   companies:
@@ -50,6 +53,22 @@ tables:
       placed_at: { readOnly: true }
     # Nobody may create or delete orders, whatever their role grants.
     deny: [create, delete]
+    # Shared grid views, reviewed and versioned with this file. Read-only in the app; build one in
+    # the grid and use Views > Export to config to get its YAML. Links: ?view=config:<key>.
+    views:
+      - key: paid-orders
+        name: Paid orders
+        filter: { field: status, op: eq, value: paid }
+        sort: [{ column: placed_at, direction: desc }]
+        columns: [id, status, total, currency, placed_at]
+        sidebar: true # its own entry in the sidebar, under Queues
+      - key: refunds-and-cancellations
+        name: Refunds and cancellations
+        filter:
+          or:
+            - { field: status, op: in, value: [refunded, cancelled] }
+            - { field: total, op: eq, value: 0 }
+        sort: [{ column: placed_at, direction: asc }]
 
 # Create, update and delete are denied unless a role grants them. `*` never grants delete: it is
 # granted per table, on tables that set allowDelete.

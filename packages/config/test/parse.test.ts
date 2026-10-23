@@ -24,6 +24,7 @@ describe('parseConfig', () => {
         delete: 'none',
         requireReason: ['create', 'update', 'delete'],
         reasonMinLength: 10,
+        sharedViews: 'both',
       },
       tables: {},
       roles: {},
@@ -58,6 +59,7 @@ tables:
       delete: 'none',
       requireReason: ['create', 'update', 'delete'],
       reasonMinLength: 10,
+      sharedViews: 'both',
     });
     expect(config.tables.users).toEqual({
       label: 'People',
