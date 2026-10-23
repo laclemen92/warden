@@ -92,6 +92,8 @@ export interface ActionDetails {
   redacted?: true;
   /** On an HTTP action's follow-up entry: what its API answered. */
   outcome?: HttpActionOutcome;
+  /** On a "Retry remaining steps" entry: the id of the attempt it continues. */
+  retryOf?: string;
 }
 
 /** How an HTTP action's call went: `rejected` is a 4xx; `failed` a 5xx, timeout or network error. */
@@ -104,8 +106,10 @@ export type HttpCallResult = 'ok' | 'rejected' | 'failed';
 export interface HttpActionOutcome {
   /** The id of the action's own entry: the attempt this completes. */
   attempt: string;
-  /** Method, origin and path; the query is left out. */
-  endpoint: string;
+  /** On a retry's outcome: the id of the retry's own entry. */
+  retry?: string;
+  /** Method, origin and path; the query is left out. Each step has its own instead. */
+  endpoint?: string;
   /** `partial` when some records failed (`rejected` for a batch whose API failed them all). */
   result: HttpCallResult | 'partial';
   status?: number;
@@ -115,6 +119,39 @@ export interface HttpActionOutcome {
   resultId?: string;
   /** Per record, for `perRecord` and APIs that report each record. */
   records?: { id: string; result: HttpCallResult; status?: number; message?: string }[];
+  /** Multi-step actions: every step, in order. */
+  steps?: HttpStepOutcome[];
+}
+
+/**
+ * How one step went. `skipped`: its `when` said no. `not_attempted`: an earlier step failed, or
+ * the deadline passed.
+ */
+export type HttpStepResult = HttpCallResult | 'skipped' | 'not_attempted';
+
+export interface HttpStepOutcome {
+  name: string;
+  result: HttpStepResult;
+  /** It completed in an earlier attempt, so this one didn't send it. */
+  earlier?: true;
+  endpoint?: string;
+  status?: number;
+  durationMs?: number;
+  /** A 2xx's or 4xx's message, or why Warden couldn't send it, as the user was shown it. */
+  message?: string;
+  resultId?: string;
+  /** The JSON response body, when the step keeps it (`auditBody`), redacted. */
+  body?: unknown;
+  /** Set when the step keeps its body but it was too large to keep. */
+  bodyOmitted?: true;
+  /** The undo call made after a later step failed. */
+  compensation?: {
+    result: HttpCallResult;
+    endpoint?: string;
+    status?: number;
+    durationMs?: number;
+    message?: string;
+  };
 }
 
 /** An action's details as the audit log stores them. */
@@ -215,7 +252,7 @@ function projectActionDetails(
   details: StoredActionDetails,
   entities: ReadonlySet<string>,
 ): ActionDetails {
-  const { input, records, refs, outcome } = details;
+  const { input, records, refs, outcome, retryOf } = details;
   const kept = refs
     ? Object.fromEntries(
         Object.entries(input).filter(
@@ -229,6 +266,7 @@ function projectActionDetails(
     records,
     ...(redacted ? { redacted: true as const } : {}),
     ...(outcome ? { outcome } : {}),
+    ...(retryOf ? { retryOf } : {}),
   };
 }
 

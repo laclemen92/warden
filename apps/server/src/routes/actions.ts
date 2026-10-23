@@ -5,9 +5,13 @@ import {
   type ActionResult,
   type Actor,
   type AnyActionDefinition,
+  type HttpCall,
   type HttpContext,
+  type HttpStep,
+  type HttpSteps,
   type Logger,
   type RecordRef,
+  type StepResponse,
 } from '@wardenhq/actions';
 import {
   MAX_ACTION_RECORDS,
@@ -23,6 +27,7 @@ import {
   previewTokenPayload,
   redactInput,
   runnableActions,
+  stepsProgress,
   toFieldErrors,
   type ActionChange,
   type ActionPolicy,
@@ -32,6 +37,9 @@ import {
   type Policy,
   type ResolvedAction,
   type AuditStore,
+  type Entity,
+  type HttpStepSpec,
+  type StepsProgress,
 } from '@wardenhq/core';
 import {
   ActionWriteError,
@@ -42,11 +50,15 @@ import {
   getRows,
   insertActionEntry,
   isDataError,
+  loadActionAttempt,
   lockKeyedRows,
   mapWriteError,
   setActorSettings,
   setStatementTimeout,
+  storesField,
   toRecordRef,
+  withActionAttempt,
+  type ActionAttempt,
   type ActionTxHandle,
   type Database,
   type DetachedTransaction,
@@ -57,9 +69,12 @@ import {
   contextActor,
   isSignInAgain,
   runHttpAction,
+  runHttpSteps,
   type Credentials,
+  type HttpAction,
   type HttpActions,
   type HttpRequestPlan,
+  type StepRunner,
 } from '../http-actions.js';
 import { createSlots } from '../slots.js';
 import type { Views } from '../views.js';
@@ -70,6 +85,30 @@ export const MAX_PREVIEW_CHANGES = 200;
 const MAX_RECORD_ID_LENGTH = 10_000;
 const MAX_TOKEN_LENGTH = 200;
 const RECORDS_REPEAT = 'records must not repeat';
+/**
+ * How long after a run its remaining steps may be retried. APIs commonly keep idempotency keys
+ * for a day; past that, resending a step that may have applied could apply it twice.
+ */
+export const RETRY_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Why an attempt's remaining steps can't be retried, from its entries. A try (the run or a retry)
+ * with no outcome entry is still calling the API, or ended without its outcome being recorded;
+ * either way which of its steps completed isn't known, so nothing is resent.
+ */
+function retryRefusal(steps: readonly HttpStepSpec[], attempt: ActionAttempt): string | undefined {
+  const { outcomes, retries } = attempt;
+  const settled = (retry: string | undefined) => outcomes.some((o) => o.retry === retry);
+  if (!settled(undefined) || !retries.every(settled)) {
+    return "this run is still calling the API, or how it ended wasn't recorded; check the API, then run the action again if needed";
+  }
+  const progress = stepsProgress(steps, outcomes);
+  if (progress.compensated) {
+    return 'the steps that completed were undone, so the rest would run without them; run the action again';
+  }
+  if (progress.finished) return 'every step of this run already completed';
+  return undefined;
+}
 
 export interface ActionLimits {
   /** Runs and previews at once on this server, across all users: the action pool's size. */
@@ -159,6 +198,12 @@ const runBodySchema = {
     previewToken: { type: 'string', minLength: 1, maxLength: MAX_TOKEN_LENGTH },
   },
 } as const;
+const retryBodySchema = {
+  type: 'object',
+  required: ['auditId'],
+  additionalProperties: false,
+  properties: { auditId: { type: 'string', pattern: '^[1-9][0-9]{0,17}$' } },
+} as const;
 const defaultsQuerySchema = {
   type: 'object',
   properties: { record: { type: 'string', minLength: 1, maxLength: MAX_RECORD_ID_LENGTH } },
@@ -187,6 +232,9 @@ const serverError = (reply: FastifyReply) =>
     error: 'Internal Server Error',
     message: 'Internal Server Error',
   });
+
+const conflict = (reply: FastifyReply, message: string) =>
+  reply.code(409).send({ statusCode: 409, error: 'Conflict', message });
 
 const tooMany = (reply: FastifyReply) =>
   reply.code(429).send({
@@ -226,6 +274,10 @@ interface Outcome {
   afterCommit: (() => Promise<void>)[];
   /** For an HTTP action: the requests to make once the action's entry is committed. */
   plans?: HttpRequestPlan[];
+  /** For a multi-step HTTP action: its steps, to run once the action's entry is committed. */
+  steps?: StepRunner[];
+  /** For a multi-step HTTP action: the target records' ids. */
+  records?: string[];
   /** For an HTTP action on one record: its row, for the follow-up entry. */
   record?: Row | undefined;
 }
@@ -388,7 +440,7 @@ export function registerActionRoutes(app: FastifyInstance, options: ActionRouteO
     actor: Actor,
     reason: string | undefined,
   ): HttpRequestPlan[] => {
-    const call = definition.http!;
+    const call = definition.http as HttpCall<Record<string, unknown>>;
     const groups = action.http!.perRecord ? refs.map((r) => [r]) : [refs];
     return groups.map((group) => {
       const ctx: HttpContext<Record<string, unknown>> = {
@@ -408,6 +460,234 @@ export function registerActionRoutes(app: FastifyInstance, options: ActionRouteO
       const value: unknown = call.body ? call.body(ctx) : { input, records };
       return { url, body: value === undefined ? '' : JSON.stringify(value), records };
     });
+  };
+
+  /**
+   * A multi-step action's steps, ready to build their requests from earlier steps' answers. As
+   * in `planRequests`, only validated ids and input reach the module's functions.
+   */
+  const stepRunners = (
+    action: ResolvedAction,
+    definition: AnyActionDefinition,
+    input: Record<string, unknown>,
+    resolved: Record<string, unknown>,
+    refs: RecordRef[],
+    actor: Actor,
+    reason: string | undefined,
+  ): StepRunner[] => {
+    type Ctx = HttpContext<Record<string, unknown>>;
+    type Prev = Record<string, StepResponse>;
+    const call = definition.http as HttpSteps<Record<string, unknown>>;
+    const ctx = {
+      input: resolved,
+      record: action.target === 'one' ? refs[0] : undefined,
+      records: action.target === 'many' ? refs : undefined,
+      actor,
+      ...(reason ? { reason } : {}),
+    } as Ctx;
+    const records = refs.map((r) => r.id);
+    const request = (
+      what: string,
+      url: HttpStep<Record<string, unknown>>['url'],
+      body: ((ctx: Ctx, prev: Prev) => unknown) | undefined,
+      prev: Prev,
+    ): HttpRequestPlan => {
+      const target: unknown = typeof url === 'function' ? url(ctx, prev) : url;
+      if (typeof target !== 'string') {
+        throw new Error(`action "${action.name}": ${what}.url must return a string`);
+      }
+      const bad = checkActionUrl(target, http?.allowHttp ?? false);
+      if (bad) throw new Error(`action "${action.name}": ${what}.url ${bad}`);
+      const value: unknown = body ? body(ctx, prev) : { input, records };
+      return { url: target, body: value === undefined ? '' : JSON.stringify(value), records };
+    };
+    return action.http!.steps!.map((spec, i) => {
+      const step = call.steps[i]!;
+      return {
+        spec,
+        plan: (prev) => {
+          if (step.when && !step.when(ctx, prev)) return null;
+          return request(`http.steps[${i}]`, step.url, step.body, prev);
+        },
+        compensation: (prev) =>
+          request(`http.steps[${i}].compensate`, step.compensate!.url, step.compensate!.body, prev),
+      };
+    });
+  };
+
+  /**
+   * Build the steps' requests that need no earlier answer (up to the first step that will be
+   * sent), so a module error there fails the run before its entry is written. The run then uses
+   * them as built.
+   */
+  const prebuild = (runners: StepRunner[]): StepRunner[] => {
+    let sending = false;
+    return runners.map((runner) => {
+      if (sending) return runner;
+      const plan = runner.plan({});
+      if (plan) sending = true;
+      return { ...runner, plan: () => plan };
+    });
+  };
+
+  /** Load the records ref input fields pick, with the action's (full) view of their entity. */
+  const resolveRefs = async (
+    trx: Database,
+    action: ResolvedAction,
+    input: Record<string, unknown>,
+  ) => {
+    // Bad ids and missing rows get the same message.
+    const resolved: Record<string, unknown> = { ...input };
+    const refErrors: FieldError[] = [];
+    for (const ref of action.refs) {
+      const value = input[ref.field];
+      if (value === undefined || value === null) continue;
+      const target = entities.get(ref.entity)!;
+      const values = ref.many ? (value as unknown[]) : [value];
+      const decoded = values.map((id) =>
+        typeof id === 'string' ? decodeRecordId(target, id) : undefined,
+      );
+      const filters = decoded.flatMap((d) => (d?.ok ? [d.filter] : []));
+      const found = await getRows(trx, target, filters);
+      const loaded: RecordRef[] = [];
+      const seen = new Set<string>();
+      let next = 0;
+      for (const [i, d] of decoded.entries()) {
+        const row = d?.ok ? found[next++] : undefined;
+        const loadedRef = row && toRecordRef(target, row);
+        if (!loadedRef) {
+          refErrors.push({
+            field: ref.field,
+            message: `${ref.many ? `item ${i}: ` : ''}references a record that does not exist`,
+          });
+        } else if (seen.has(loadedRef.id)) {
+          // By canonical id, so "1" and "01" are the same record.
+          refErrors.push({ field: ref.field, message: `item ${i}: repeats an earlier record` });
+        } else {
+          seen.add(loadedRef.id);
+          loaded.push(loadedRef);
+        }
+      }
+      resolved[ref.field] = ref.many ? loaded : loaded[0];
+    }
+    return { resolved, refErrors };
+  };
+
+  /**
+   * Whether a failed run's remaining steps can be retried: the retry rebuilds the requests from
+   * the attempt's entry, so that needs the whole input and a store that keeps details.
+   */
+  const canRetry = (action: ResolvedAction) =>
+    action.sensitive.length === 0 &&
+    storesField(store, 'details') &&
+    storesField(store, 'actorSubject');
+
+  /**
+   * Call a multi-step action's steps (those not done in an earlier try), record how they went in
+   * an entry of their own, and answer. Releases the user's API slot.
+   */
+  const callSteps = async (
+    req: FastifyRequest,
+    reply: FastifyReply,
+    run: {
+      action: ResolvedAction;
+      httpAction: HttpAction;
+      credentials: Credentials;
+      actor: Actor;
+      reason: string | undefined;
+      entity: Entity;
+      record: Row | undefined;
+      records: string[];
+      steps: StepRunner[];
+      auditId: string;
+      done: StepsProgress['done'];
+      /** The retry's own entry. */
+      retry?: string;
+    },
+    releaseApi: () => void,
+  ) => {
+    const { action, actor, reason, entity, auditId } = run;
+    try {
+      const called = await runHttpSteps({
+        req,
+        action: run.httpAction,
+        credentials: run.credentials,
+        steps: run.steps,
+        auditId,
+        deadlineMs: action.deadlineMs ?? deadlineMs,
+        done: run.done,
+        retryable: canRetry(action),
+        context: {
+          action: action.name,
+          auditId,
+          requestId: req.id,
+          actor: contextActor(actor),
+          ...(reason ? { reason } : {}),
+        },
+        log: req.log,
+      });
+      // The log is append-only: which steps completed goes in an entry of its own.
+      await insertActionEntry(db, {
+        actor,
+        store,
+        requestId: req.id,
+        action: action.name,
+        entity,
+        ...(action.target === 'one' && run.record ? { record: run.record } : {}),
+        details: {
+          input: {},
+          records: run.records,
+          refs: {},
+          outcome: {
+            attempt: auditId,
+            ...(run.retry ? { retry: run.retry } : {}),
+            ...called.outcome,
+          },
+        },
+      }).catch((err: unknown) =>
+        req.log.error({ err, action: action.name, auditId }, 'could not audit the API outcome'),
+      );
+      req.log.info(
+        { action: action.name, auditId, result: called.outcome.result, retry: run.retry },
+        'action run',
+      );
+      return reply.code(called.statusCode).send(called.body);
+    } finally {
+      releaseApi();
+    }
+  };
+
+  /**
+   * An HTTP action's credentials, got before anything is written: no credentials, no attempt.
+   * Answers (and releases the API slot) when they can't be had.
+   */
+  const credentialsFor = async (
+    req: FastifyRequest,
+    reply: FastifyReply,
+    action: ResolvedAction,
+    releaseApi: () => void,
+  ): Promise<{ httpAction: HttpAction; credentials: Credentials } | undefined> => {
+    const httpAction = http?.actions.get(action.name);
+    try {
+      // Startup refuses HTTP actions it couldn't prepare.
+      if (!httpAction) throw new Error(`action "${action.name}" has no prepared credentials`);
+      return { httpAction, credentials: await httpAction.authenticator.credentials(req) };
+    } catch (err) {
+      releaseApi();
+      if (isSignInAgain(err)) {
+        void reply
+          .code(401)
+          .send({ statusCode: 401, error: 'Unauthorized', message: 'Sign in again to continue' });
+        return undefined;
+      }
+      req.log.error({ err, action: action.name }, 'could not get credentials for the action API');
+      void reply.code(502).send({
+        statusCode: 502,
+        error: 'Bad Gateway',
+        message: 'the API this action calls failed; try again later',
+      });
+      return undefined;
+    }
   };
 
   /**
@@ -520,47 +800,18 @@ export function registerActionRoutes(app: FastifyInstance, options: ActionRouteO
         rows.push(row);
       }
 
-      // Picked records are loaded with the action's (full) view of their entity. Bad ids and
-      // missing rows get the same message.
-      const resolved: Record<string, unknown> = { ...input };
-      const refErrors: FieldError[] = [];
-      for (const ref of action.refs) {
-        const value = input[ref.field];
-        if (value === undefined || value === null) continue;
-        const target = entities.get(ref.entity)!;
-        const values = ref.many ? (value as unknown[]) : [value];
-        const decoded = values.map((id) =>
-          typeof id === 'string' ? decodeRecordId(target, id) : undefined,
-        );
-        const filters = decoded.flatMap((d) => (d?.ok ? [d.filter] : []));
-        const found = await getRows(trx, target, filters);
-        const loaded: RecordRef[] = [];
-        const seen = new Set<string>();
-        let next = 0;
-        for (const [i, d] of decoded.entries()) {
-          const row = d?.ok ? found[next++] : undefined;
-          const loadedRef = row && toRecordRef(target, row);
-          if (!loadedRef) {
-            refErrors.push({
-              field: ref.field,
-              message: `${ref.many ? `item ${i}: ` : ''}references a record that does not exist`,
-            });
-          } else if (seen.has(loadedRef.id)) {
-            // By canonical id, so "1" and "01" are the same record.
-            refErrors.push({ field: ref.field, message: `item ${i}: repeats an earlier record` });
-          } else {
-            seen.add(loadedRef.id);
-            loaded.push(loadedRef);
-          }
-        }
-        resolved[ref.field] = ref.many ? loaded : loaded[0];
-      }
+      // Picked records are loaded with the action's (full) view of their entity.
+      const { resolved, refErrors } = await resolveRefs(trx, action, input);
       if (refErrors.length > 0) throw new Answer((r) => badRequest(r, 'invalid input', refErrors));
       const refs = rows.map((row) => toRecordRef(entity, row));
       // Built before the entry, so a module bug (or an ActionError) leaves no attempt behind.
-      const plans = action.http
-        ? planRequests(action, definition, input, resolved, refs, actor, reason)
-        : [];
+      const steps = action.http?.steps
+        ? prebuild(stepRunners(action, definition, input, resolved, refs, actor, reason))
+        : undefined;
+      const plans =
+        action.http && !steps
+          ? planRequests(action, definition, input, resolved, refs, actor, reason)
+          : [];
 
       const auditId = await insertActionEntry(trx, {
         actor,
@@ -583,7 +834,7 @@ export function registerActionRoutes(app: FastifyInstance, options: ActionRouteO
           changes: [],
           token: '',
           afterCommit: [],
-          plans,
+          ...(steps ? { steps, records } : { plans }),
           record: rows[0],
         };
       }
@@ -667,28 +918,12 @@ export function registerActionRoutes(app: FastifyInstance, options: ActionRouteO
 
     const releaseApi = action.http ? acquireApi(actor.subject) : () => {};
     if (!releaseApi) return tooMany(reply);
-    const httpAction = action.http ? http?.actions.get(action.name) : undefined;
+    let httpAction: HttpAction | undefined;
     let credentials: Credentials = {};
     if (action.http) {
-      try {
-        // Startup refuses HTTP actions it couldn't prepare.
-        if (!httpAction) throw new Error(`action "${action.name}" has no prepared credentials`);
-        // Before the entry is written: no credentials, no attempt.
-        credentials = await httpAction.authenticator.credentials(req);
-      } catch (err) {
-        releaseApi();
-        if (isSignInAgain(err)) {
-          return reply
-            .code(401)
-            .send({ statusCode: 401, error: 'Unauthorized', message: 'Sign in again to continue' });
-        }
-        req.log.error({ err, action: action.name }, 'could not get credentials for the action API');
-        return reply.code(502).send({
-          statusCode: 502,
-          error: 'Bad Gateway',
-          message: 'the API this action calls failed; try again later',
-        });
-      }
+      const got = await credentialsFor(req, reply, action, releaseApi);
+      if (!got) return reply;
+      ({ httpAction, credentials } = got);
     }
     const release = acquire(actor.subject);
     if (!release) {
@@ -727,6 +962,26 @@ export function registerActionRoutes(app: FastifyInstance, options: ActionRouteO
       release();
     }
 
+    if (outcome.steps) {
+      return callSteps(
+        req,
+        reply,
+        {
+          action,
+          httpAction: httpAction!,
+          credentials,
+          actor,
+          reason,
+          entity,
+          record: outcome.record,
+          records: outcome.records ?? [],
+          steps: outcome.steps,
+          auditId: outcome.auditId,
+          done: new Map(),
+        },
+        releaseApi,
+      );
+    }
     if (outcome.plans) {
       try {
         const called = await runHttpAction({
@@ -883,6 +1138,129 @@ export function registerActionRoutes(app: FastifyInstance, options: ActionRouteO
     req.log.error({ err, action: req.action?.name }, 'action failed');
     return serverError(reply);
   };
+
+  /**
+   * "Retry remaining steps": resend a failed multi-step run's failed step and the ones after it,
+   * with the same idempotency keys, never the steps that completed. The request is rebuilt from
+   * the attempt's audit entry, so only its input, records and reason are used, and only the user
+   * who ran it may retry it; anyone else's attempt is a 404, like a missing one.
+   */
+  const retry = async (
+    req: FastifyRequest<{ Params: ActionParams; Body: { auditId: string } }>,
+    reply: FastifyReply,
+  ) => {
+    const action = req.action!;
+    const definition = definitions.get(action.name)!;
+    const entity = entities.get(action.on)!;
+    const steps = action.http?.steps;
+    if (!steps) return badRequest(reply, 'this action has no steps to retry');
+    const actor = actorOf(req);
+    const attempt = await loadActionAttempt(
+      db,
+      { id: req.body.auditId, action: action.name },
+      store,
+    );
+    if (!attempt || attempt.actorSubject !== actor.subject || !attempt.details) {
+      return notFound(reply);
+    }
+    if (!canRetry(action)) {
+      return conflict(reply, "this action's input isn't kept in full, so run it again instead");
+    }
+    if (attempt.ageMs > RETRY_WINDOW_MS) {
+      return conflict(reply, 'this run is too old to retry; run the action again');
+    }
+    const refused = retryRefusal(steps, attempt);
+    if (refused) return conflict(reply, refused);
+
+    // The definition may have changed since: input that no longer fits it isn't sent.
+    const changed = () =>
+      conflict(reply, 'the action or its records changed since this run; run it again');
+    const stored = attempt.details.input;
+    if (Object.keys(stored).some((key) => !Object.hasOwn(action.inputSchema.properties, key))) {
+      return changed();
+    }
+    let input: Record<string, unknown> = {};
+    if (definition.input) {
+      const parsed = await definition.input.safeParseAsync(stored);
+      if (!parsed.success) return changed();
+      input = parsed.data as Record<string, unknown>;
+    }
+    const ids = attempt.details.records;
+    const targets = ids.flatMap((id) => {
+      const decoded = decodeRecordId(entity, id);
+      return decoded.ok ? [decoded.filter] : [];
+    });
+    if (targets.length !== ids.length) return changed();
+    const rows = await getRows(db, entity, targets);
+    if (rows.some((row) => !row)) return notFound(reply);
+    const { resolved, refErrors } = await resolveRefs(db, action, input);
+    if (refErrors.length > 0) return changed();
+    const refs = rows.map((row) => toRecordRef(entity, row!));
+    const reason = attempt.reason ?? undefined;
+
+    const releaseApi = acquireApi(actor.subject);
+    if (!releaseApi) return tooMany(reply);
+    const got = await credentialsFor(req, reply, action, releaseApi);
+    if (!got) return reply;
+    let runners: StepRunner[];
+    let reserved: { retryId: string; done: StepsProgress['done'] } | { refused: string };
+    try {
+      runners = stepRunners(action, definition, input, resolved, refs, actor, reason);
+      // Checked again under a lock, and the retry's entry written before it's released, so a
+      // concurrent retry (on any server) sees this one as unfinished and is refused.
+      reserved = await withActionAttempt(
+        db,
+        { id: attempt.id, action: action.name },
+        store,
+        async (trx, current) => {
+          const refusedNow = current ? retryRefusal(steps, current) : 'this run changed';
+          if (refusedNow) return { refused: refusedNow };
+          const retryId = await insertActionEntry(trx, {
+            actor,
+            store,
+            requestId: req.id,
+            ...(reason ? { reason } : {}),
+            action: action.name,
+            entity,
+            ...(action.target === 'one' ? { record: rows[0]! } : {}),
+            details: { input: {}, records: ids, refs: {}, retryOf: attempt.id },
+          });
+          return { retryId, done: stepsProgress(steps, current!.outcomes).done };
+        },
+      );
+    } catch (err) {
+      releaseApi();
+      return failed(req, reply, err);
+    }
+    if ('refused' in reserved) {
+      releaseApi();
+      return conflict(reply, reserved.refused);
+    }
+    return callSteps(
+      req,
+      reply,
+      {
+        action,
+        ...got,
+        actor,
+        reason,
+        entity,
+        record: rows[0] ?? undefined,
+        records: ids,
+        steps: runners,
+        auditId: attempt.id,
+        done: reserved.done,
+        retry: reserved.retryId,
+      },
+      releaseApi,
+    );
+  };
+
+  app.post<{ Params: ActionParams; Body: { auditId: string } }>(
+    '/api/actions/:name/retry',
+    { preValidation: authorize, schema: { body: retryBodySchema } },
+    (req, reply) => retry(req, reply),
+  );
 
   app.post<{ Params: ActionParams; Body: ActionBody }>(
     '/api/actions/:name/preview',

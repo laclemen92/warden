@@ -127,17 +127,44 @@ const OUTCOME_TEXT = {
   partial: 'partly succeeded',
 } as const;
 
+const STEP_TEXT = {
+  ok: 'succeeded',
+  rejected: 'was rejected',
+  failed: 'failed',
+  skipped: 'skipped',
+  not_attempted: 'not attempted',
+} as const;
+
 /** What an HTTP action's API answered, from the entry Warden writes after calling it. */
 function OutcomeSummary({ outcome }: { outcome: HttpActionOutcome }) {
   const failures = outcome.records?.filter((r) => r.result !== 'ok') ?? [];
   return (
     <div className="space-y-1 text-sm">
       <p>
-        The API call {OUTCOME_TEXT[outcome.result]}
+        {outcome.retry ? 'The retry' : outcome.steps ? 'The steps' : 'The API call'}{' '}
+        {OUTCOME_TEXT[outcome.result]}
         {outcome.status !== undefined && ` (HTTP ${outcome.status})`}
         {outcome.message && `: ${outcome.message}`}
       </p>
-      <p className="font-mono text-xs break-all text-muted-foreground">{outcome.endpoint}</p>
+      {outcome.endpoint && (
+        <p className="font-mono text-xs break-all text-muted-foreground">{outcome.endpoint}</p>
+      )}
+      {outcome.steps && (
+        <ol className="list-decimal pl-5 text-muted-foreground">
+          {outcome.steps.map((s) => (
+            <li key={s.name}>
+              <span className="font-mono">{s.name}</span>: {STEP_TEXT[s.result]}
+              {s.earlier && ' earlier'}
+              {s.status !== undefined && ` (HTTP ${s.status})`}
+              {s.message && `: ${s.message}`}
+              {s.compensation &&
+                `; undo ${OUTCOME_TEXT[s.compensation.result]}${
+                  s.compensation.status !== undefined ? ` (HTTP ${s.compensation.status})` : ''
+                }`}
+            </li>
+          ))}
+        </ol>
+      )}
       {failures.length > 0 && (
         <ul className="list-disc pl-5 text-muted-foreground">
           {failures.map((r) => (
@@ -158,6 +185,9 @@ function ActionSummary({ entry, details }: { entry: AuditEntry; details: ActionD
   const canViewLog = useCanViewAuditLog();
   const input = Object.entries(details.input);
   if (details.outcome) return <OutcomeSummary outcome={details.outcome} />;
+  if (details.retryOf) {
+    return <p className="text-sm">Retried the remaining steps of entry {details.retryOf}.</p>;
+  }
   return (
     <div className="space-y-2 text-sm">
       {input.length > 0 && (

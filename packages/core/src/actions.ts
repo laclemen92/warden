@@ -86,7 +86,38 @@ export interface HttpActionSpec {
   timeoutMs: number;
   perRecord: boolean;
   concurrency: number;
+  /** Set when the action calls several endpoints in order instead of `url`. */
+  steps?: HttpStepSpec[];
 }
+
+/** One step of a multi-step HTTP action, checked. Its functions stay on the definition. */
+export interface HttpStepSpec {
+  name: string;
+  method: HttpActionSpec['method'];
+  /** The URL, when the step gives a fixed one rather than a function. */
+  url?: string;
+  timeoutMs: number;
+  /** It has a `when`, so it may be skipped. */
+  conditional: boolean;
+  compensate?: { method: HttpActionSpec['method']; url?: string; timeoutMs: number };
+  /** Keep its response body in the audit log, with these keys redacted. */
+  auditBody?: { redact: string[] };
+}
+
+/** Step names: also `prev.<name>` and part of the step's Idempotency-Key. */
+export const STEP_NAME = /^[a-z][a-zA-Z0-9_]{0,39}$/;
+const STEPS_HTTP_KEYS = new Set(['steps', 'auth', 'timeoutMs']);
+const STEP_KEYS = new Set([
+  'name',
+  'url',
+  'method',
+  'body',
+  'when',
+  'timeoutMs',
+  'compensate',
+  'auditBody',
+]);
+const COMPENSATE_KEYS = new Set(['url', 'method', 'body', 'timeoutMs']);
 
 export const HTTP_METHODS: readonly HttpActionSpec['method'][] = ['POST', 'PUT', 'PATCH', 'DELETE'];
 export const DEFAULT_HTTP_TIMEOUT_MS = 10_000;
@@ -119,6 +150,7 @@ function httpSpecOf(
     failed++;
     problem(`http.${message}`);
   };
+  if (http.steps !== undefined) return httpStepsSpecOf(http, problem);
   for (const key of Object.keys(http)) if (!HTTP_KEYS.has(key)) fail(`${key} is not a known key`);
   const { url, method = 'POST', body, auth, timeoutMs = DEFAULT_HTTP_TIMEOUT_MS } = http;
   const { perRecord = false, concurrency = DEFAULT_HTTP_CONCURRENCY } = http;
@@ -146,6 +178,135 @@ function httpSpecOf(
     timeoutMs: timeoutMs as number,
     perRecord: perRecord as boolean,
     concurrency: concurrency as number,
+  };
+}
+
+const validTimeout = (value: unknown) =>
+  positiveInt(value) && (value as number) <= MAX_HTTP_TIMEOUT_MS;
+
+/** Check an `http` that has `steps`. */
+function httpStepsSpecOf(
+  http: Record<string, unknown>,
+  problem: (message: string) => void,
+): HttpActionSpec | undefined {
+  let failed = 0;
+  const fail = (message: string) => {
+    failed++;
+    problem(`http.${message}`);
+  };
+  for (const key of Object.keys(http)) {
+    if (!STEPS_HTTP_KEYS.has(key)) {
+      fail(
+        ['url', 'method', 'body', 'perRecord', 'concurrency'].includes(key)
+          ? `${key} can't be used with steps; set it on each step`
+          : `${key} is not a known key`,
+      );
+    }
+  }
+  const { steps, auth, timeoutMs = DEFAULT_HTTP_TIMEOUT_MS } = http;
+  if (!validTimeout(timeoutMs)) {
+    fail(`timeoutMs must be a positive integer of at most ${MAX_HTTP_TIMEOUT_MS}`);
+  }
+  const authSpec = httpAuthOf(auth, fail);
+  if (!Array.isArray(steps) || steps.length === 0) {
+    fail('steps must be a non-empty array');
+    return undefined;
+  }
+  const names = new Set<string>();
+  const specs: HttpStepSpec[] = [];
+  for (const [i, step] of steps.entries()) {
+    const at = `steps[${i}]`;
+    if (!isObject(step)) {
+      fail(`${at} must be an object`);
+      continue;
+    }
+    for (const key of Object.keys(step)) {
+      if (!STEP_KEYS.has(key)) fail(`${at}.${key} is not a known key`);
+    }
+    const { name, url, method = 'POST', body, when, compensate, auditBody } = step;
+    const stepTimeout = step.timeoutMs ?? timeoutMs;
+    if (typeof name !== 'string' || !STEP_NAME.test(name)) {
+      fail(`${at}.name must match ${STEP_NAME}`);
+    } else if (names.has(name)) {
+      fail(`${at}.name "${name}" repeats an earlier step`);
+    } else {
+      names.add(name);
+    }
+    const urlOk = typeof url === 'function' || (typeof url === 'string' && url !== '');
+    if (!urlOk) fail(`${at}.url must be a string or a function`);
+    if (!HTTP_METHODS.includes(method as HttpActionSpec['method'])) {
+      fail(`${at}.method must be POST, PUT, PATCH or DELETE`);
+    }
+    if (body !== undefined && typeof body !== 'function') fail(`${at}.body must be a function`);
+    if (when !== undefined && typeof when !== 'function') fail(`${at}.when must be a function`);
+    if (!validTimeout(stepTimeout)) {
+      fail(`${at}.timeoutMs must be a positive integer of at most ${MAX_HTTP_TIMEOUT_MS}`);
+    }
+    let compensateSpec: HttpStepSpec['compensate'];
+    if (compensate !== undefined) {
+      if (!isObject(compensate)) {
+        fail(`${at}.compensate must be an object`);
+      } else {
+        for (const key of Object.keys(compensate)) {
+          if (!COMPENSATE_KEYS.has(key)) fail(`${at}.compensate.${key} is not a known key`);
+        }
+        const { url: undoUrl, method: undoMethod = 'POST', body: undoBody } = compensate;
+        const undoTimeout = compensate.timeoutMs ?? stepTimeout;
+        if (typeof undoUrl !== 'function' && (typeof undoUrl !== 'string' || !undoUrl)) {
+          fail(`${at}.compensate.url must be a string or a function`);
+        }
+        if (!HTTP_METHODS.includes(undoMethod as HttpActionSpec['method'])) {
+          fail(`${at}.compensate.method must be POST, PUT, PATCH or DELETE`);
+        }
+        if (undoBody !== undefined && typeof undoBody !== 'function') {
+          fail(`${at}.compensate.body must be a function`);
+        }
+        if (!validTimeout(undoTimeout)) {
+          fail(
+            `${at}.compensate.timeoutMs must be a positive integer of at most ${MAX_HTTP_TIMEOUT_MS}`,
+          );
+        }
+        compensateSpec = {
+          method: undoMethod as HttpActionSpec['method'],
+          ...(typeof undoUrl === 'string' ? { url: undoUrl } : {}),
+          timeoutMs: undoTimeout as number,
+        };
+      }
+    }
+    let auditBodySpec: HttpStepSpec['auditBody'];
+    if (auditBody === true) {
+      auditBodySpec = { redact: [] };
+    } else if (auditBody !== undefined) {
+      const redact = isObject(auditBody) ? auditBody.redact : undefined;
+      const extra = isObject(auditBody) ? Object.keys(auditBody).filter((k) => k !== 'redact') : [];
+      if (
+        !Array.isArray(redact) ||
+        extra.length > 0 ||
+        redact.some((k) => typeof k !== 'string' || !k)
+      ) {
+        fail(`${at}.auditBody must be true or { redact: [key, ...] }`);
+      } else {
+        auditBodySpec = { redact: redact as string[] };
+      }
+    }
+    specs.push({
+      name: name as string,
+      method: method as HttpActionSpec['method'],
+      ...(typeof url === 'string' ? { url } : {}),
+      timeoutMs: stepTimeout as number,
+      conditional: when !== undefined,
+      ...(compensateSpec ? { compensate: compensateSpec } : {}),
+      ...(auditBodySpec ? { auditBody: auditBodySpec } : {}),
+    });
+  }
+  if (failed > 0 || !authSpec) return undefined;
+  return {
+    method: 'POST',
+    auth: authSpec,
+    timeoutMs: timeoutMs as number,
+    perRecord: false,
+    concurrency: 1,
+    steps: specs,
   };
 }
 

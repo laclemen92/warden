@@ -12,6 +12,7 @@ A custom action is a typed, multi-step operation, such as "move this user to ano
 - [Preview](#preview)
 - [Errors](#errors)
 - [Calling your API](#calling-your-api)
+- [Several endpoints: `http.steps`](#several-endpoints-httpsteps)
 - [Audit log](#audit-log)
 - [HTTP API](#http-api)
 
@@ -404,6 +405,132 @@ export class WardenGuard implements CanActivate {
 
 The action's own entry is written before the call, and the log is append-only, so the API's answer goes in a second entry for the same action and record, with no input. Its `details.outcome` holds `attempt` (the first entry's id), `endpoint` (method, origin and path; the query is left out, since it may hold secrets), `result` (`ok`, `rejected`, `failed`, or `partial` when some records failed), the HTTP `status`, the message the user was shown and the `id` a `2xx` named, and with many records each record's result. A `5xx`'s body is only logged. Both entries are shown to the same people as any action entry (see [Audit log](#audit-log)).
 
+## Several endpoints: `http.steps`
+
+### First, prefer one endpoint
+
+HTTP calls can't share a transaction. If a second call fails after the first succeeded, your system is half-changed, and nothing Warden does can make the pair atomic. **When both changes belong to one service, give it one endpoint that makes them in its own transaction, and point a single-call action at it.** Resolving a fraud review that updates a payout item and its claim, both in your API's database, is one endpoint:
+
+```js
+// In your API: both changes commit together, or neither does.
+app.post('/internal/payout-items/:id/review', wardenAuth(secret), async (req, res) => {
+  const result = await db.transaction(async (trx) => {
+    const item = await resolvePayoutItem(trx, req.params.id, req.body.decision);
+    if (req.body.decision === 'fraudulent') await resolveClaim(trx, item.claimId, 'fraudulent');
+    return item;
+  });
+  res.json({ message: 'Review resolved', id: result.id });
+});
+```
+
+Multi-step actions are for steps that live in different services, or for endpoints you can't change.
+
+### Steps
+
+Give `http.steps` instead of `url`. The same fraud review, when payouts and claims are separate services:
+
+```js
+defineAction({
+  name: 'resolve-fraud-review',
+  label: 'Resolve review',
+  on: 'policy_admin.payout_items',
+  target: 'one',
+  input: z.object({ decision: z.enum(['fraudulent', 'not_fraudulent']) }),
+  http: {
+    auth: { type: 'user', audience: 'https://api.example.com' },
+    steps: [
+      {
+        name: 'payout',
+        url: (ctx) => `${process.env.API}/internal/payout-items/${ctx.record.values.id}/review`,
+        body: ({ input, reason }) => ({ decision: input.decision, note: reason }),
+        // Keep this response in the audit log, so a retry can rebuild the next step.
+        auditBody: { redact: ['accountNumber'] },
+      },
+      {
+        name: 'claim',
+        url: (ctx, prev) =>
+          `${process.env.CLAIMS_API}/internal/claims/${prev.payout.body.claimId}/resolve`,
+        body: ({ input }) => ({ decision: input.decision }),
+        when: ({ input }) => input.decision === 'fraudulent',
+        compensate: {
+          url: (ctx, prev) =>
+            `${process.env.CLAIMS_API}/internal/claims/${prev.payout.body.claimId}/reopen`,
+        },
+      },
+    ],
+  },
+});
+```
+
+| `http` key  | Type                            | Default  | Description                                                          |
+| ----------- | ------------------------------- | -------- | -------------------------------------------------------------------- |
+| `steps`     | array                           | required | The steps, in order. At most 5 (`WARDEN_ACTION_MAX_STEPS`, 1 to 20). |
+| `auth`      | object                          | required | As for a single call ([`http.auth`](#httpauth)); every step uses it. |
+| `timeoutMs` | positive integer, at most 60000 | `10000`  | Each step's default timeout.                                         |
+
+`url`, `method`, `body`, `perRecord` and `concurrency` can't be set on `http` with `steps`; set them on each step (`perRecord` isn't available).
+
+| Step key     | Type                                  | Default              | Description                                                                                                                 |
+| ------------ | ------------------------------------- | -------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `name`       | `^[a-z][a-zA-Z0-9_]*$`, unique        | required             | Later steps read its answer as `prev.<name>`; the audit log and its `Idempotency-Key` use it.                               |
+| `url`        | string, or `(ctx, prev) => string`    | required             | As for a single call.                                                                                                       |
+| `method`     | `POST`, `PUT`, `PATCH`, `DELETE`      | `POST`               |                                                                                                                             |
+| `body`       | `(ctx, prev) => value`                | `{ input, records }` |                                                                                                                             |
+| `when`       | `(ctx, prev) => boolean`              | always               | Skip the step when it returns false. A skip is recorded as `skipped`.                                                       |
+| `timeoutMs`  | positive integer, at most 60000       | `http.timeoutMs`     |                                                                                                                             |
+| `compensate` | `{ url, method?, body?, timeoutMs? }` |                      | A call that undoes this step if a later one fails. Its functions get `(ctx, prev)`.                                         |
+| `auditBody`  | `true`, or `{ redact: [key, ...] }`   | not kept             | Keep the step's JSON response in the audit log, with the values of `redact`'s keys (at any depth) replaced by `[redacted]`. |
+
+`ctx` is what a single call's `url` and `body` get. `prev` holds the earlier steps that succeeded, as `{ status, body }`, where `body` is the parsed JSON response, or `undefined` when it wasn't JSON or was larger than 64 KiB. A skipped step isn't in `prev`.
+
+- **In order, stopping at the first failure.** Each step starts after the one before it answered with a `2xx`. A `4xx`, `5xx`, timeout or network error stops the chain, and later steps aren't called; the user gets the failed step's answer as for a single call (a `400` with its message, or a generic `502`/`504`), plus `steps` and `retryable` (below). A `url`, `body` or `when` that throws stops it too (an `ActionError`'s message is shown; anything else is a generic error and is logged). The first step's request is built before the action's entry is written, so a module error there leaves no attempt behind.
+- **Same auth and headers.** Every step is sent with the action's auth mode, `X-Warden-Context` (with the action entry's id as `auditId`) and, with `hmac` and `client_credentials`, its own signature.
+- **One `Idempotency-Key` per step:** `<audit entry id>.<step name>`, the same on every retry. Undo calls use `<audit entry id>.<step name>.compensate`.
+- **Deadline.** The steps share one deadline, the action's `deadlineMs` (or `WARDEN_ACTION_DEADLINE`), counted from the first step. No step starts after it, and a step still running when it passes (including its retry after a `401`) is cut off and fails as a timeout (`504`).
+- **`compensate` isn't a transaction.** When a step fails, the steps that completed are undone in reverse order where they have `compensate`. Undo calls are best effort: each is made once with its own timeout (not the deadline), and its outcome is logged, recorded in the audit log and shown to the user ("undone", "undo failed"). An undo that fails leaves your system half-changed; the audit log says which.
+
+The response always lists every step:
+
+```json
+{
+  "statusCode": 502,
+  "message": "the API this action calls failed; try again later",
+  "auditId": "1042",
+  "steps": [
+    { "name": "payout", "result": "ok", "message": "Payout held" },
+    {
+      "name": "claim",
+      "result": "failed",
+      "message": "the API this action calls failed; try again later"
+    }
+  ],
+  "retryable": true
+}
+```
+
+A step's `result` is `ok`, `rejected` (a `4xx`), `failed`, `skipped` or `not_attempted`, and an undone step has `compensation: { result, message? }`. A run that succeeds answers `200` with `result.steps` in the same form.
+
+### Retry remaining steps
+
+After a failure, running the action again is the way to recover, and the UI offers **Retry remaining steps**: it resends the failed step and the ones after it, with the same idempotency keys, and never resends a step that completed. If your endpoints apply each `Idempotency-Key` once, a step that timed out but did apply isn't applied twice.
+
+A retry (`POST /api/actions/:name/retry` with `{ auditId }`) rebuilds the requests from the attempt's audit entry: its input, records and reason, with the records loaded as they are now. Later steps get `prev` from the steps' kept bodies (`auditBody`); a step that reads the body of an earlier step that didn't keep it, or a value that body's `redact` removed, fails with a `409` saying so, without being sent. A retry is refused with a `409`, and `retryable` is false, when:
+
+- any undo call was made, since the steps that completed may have been undone;
+- the action has [sensitive](#input-forms) input fields, which the audit log doesn't keep;
+- the audit store doesn't keep details or the actor;
+- the run is more than 24 hours old (APIs commonly forget idempotency keys after a day);
+- every step already completed;
+- the run, or an earlier retry of it, has no outcome entry: it is still calling the API, or it ended (say, the server restarted) before its outcome was recorded, so which steps completed isn't known. Check the API, then run the action again if needed.
+
+Retries of one run are serialized across servers: a retry's entry is written under a database lock before anything is sent, so a second retry at the same time is refused.
+
+Only the user who ran it may retry a run, and only while they may run the action; for anyone else it is a `404`, like a run that doesn't exist.
+
+### Steps in the audit log
+
+The action's entry is written before the first step. When the steps finish, a second entry records each step's `name`, `result`, `endpoint`, `status`, `durationMs`, the message shown and the `id` a `2xx` named, plus its undo call's outcome. Response bodies aren't stored unless a step sets `auditBody` (a kept body larger than 8 KiB is left out and marked `bodyOmitted`). A retry writes its own entry (`details.retryOf`: the attempt's id) before sending anything, then an outcome entry with `outcome.retry` set; the steps it didn't resend are marked `earlier`. Entries are never updated.
+
 ## Audit log
 
 A run writes one entry for the action itself (its `action` is the action's name, with the input and target record ids, sensitive fields redacted, and the actor, roles, reason and request id) and one entry per changed row, exactly like a CRUD write, linked to it by `parent_id`. The action's entry is written before `run` and records what was asked; the log is append-only, so the result isn't added afterwards (it is in the response and the server log). An [HTTP action](#calling-your-api) writes a second entry with its API's answer. A record's History shows its rows' entries "as part of" the action, and the action's own entry when the action targeted that record; on the audit log page, an action's entry links to the rows it changed (`/api/audit?parent=<id>`). History shows the action's own entry (its input and reason) only to users who could run the action now and to audit admins; to everyone else it, and the action's name on the rows it changed, doesn't exist. Input that picks records from a table the user can't read is left out for everyone. See [Audit log](config.md#audit-log). Failed runs leave no entry, since they roll back; they are logged with the request id.
@@ -420,5 +547,6 @@ All routes require a session. An action the user may not run gets the same `404`
 | `GET /api/actions/:name/defaults` | `?record=<id>` (`target: 'one'`)               | `{ values }`                                                                                |
 | `POST /api/actions/:name/preview` | `{ records?, input?, reason? }`                | `{ changes, total, truncated, result, previewToken }`; `400` for an HTTP action             |
 | `POST /api/actions/:name/run`     | `{ records?, input?, reason?, previewToken? }` | `{ auditId, result }`; an HTTP action's `result` may have `records: [{ id, ok, message? }]` |
+| `POST /api/actions/:name/retry`   | `{ auditId }`                                  | As `run`, for the remaining steps of a multi-step run ([Retry](#retry-remaining-steps))     |
 
 Each descriptor in `GET /api/actions` has `name`, `label`, `description`, `on`, `target`, `confirm`, `destructive`, `requireReason`, `reasonMinLength` (when a reason is required), `hasDefaults`, `inputSchema` (JSON Schema) and `permissions`. `GET /api/capabilities` lists, per entity, the names of the actions the user may run on it (`customActions`). Preview returns at most 200 changes, with `total` counting them all.

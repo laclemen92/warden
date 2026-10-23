@@ -1,6 +1,6 @@
 import { humanize, type AuditDiff, type FieldError } from '@wardenhq/core';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { apiFetch } from './api';
+import { ApiError, apiFetch } from './api';
 
 // Shapes served by apps/server/src/routes/actions.ts.
 export type ActionTarget = 'one' | 'many' | 'none';
@@ -40,6 +40,33 @@ export interface ActionResult {
   redirect?: { entity: string; id: string };
   /** HTTP actions on many records: how each one went. */
   records?: { id: string; ok: boolean; message?: string }[];
+  /** Multi-step HTTP actions: how each step went. */
+  steps?: ActionStep[];
+}
+
+/** How one step of a multi-step HTTP action went. */
+export interface ActionStep {
+  name: string;
+  result: 'ok' | 'rejected' | 'failed' | 'skipped' | 'not_attempted';
+  message?: string;
+  /** The undo call made after a later step failed. */
+  compensation?: { result: 'ok' | 'rejected' | 'failed'; message?: string };
+}
+
+/** What a failed multi-step run says beyond its message. */
+export interface FailedSteps {
+  auditId: string;
+  steps: ActionStep[];
+  /** "Retry remaining steps" can be offered. */
+  retryable: boolean;
+}
+
+/** The steps of a multi-step run that failed, if `err` is one. */
+export function failedSteps(err: unknown): FailedSteps | undefined {
+  if (!(err instanceof ApiError)) return undefined;
+  const body = err.body as Partial<FailedSteps> | null;
+  if (!body || !Array.isArray(body.steps) || typeof body.auditId !== 'string') return undefined;
+  return { auditId: body.auditId, steps: body.steps, retryable: body.retryable === true };
 }
 
 export interface ActionPreview {
@@ -113,6 +140,8 @@ export function usePreviewAction(action: ActionDescriptor) {
   });
 }
 
+const RUN_INVALIDATES = ['rows', 'children', 'parent', 'record', 'search', 'history', 'audit'];
+
 /** Run an action. An action can change rows anywhere, so every record query is refetched. */
 export function useRunAction(action: ActionDescriptor) {
   const queryClient = useQueryClient();
@@ -120,10 +149,24 @@ export function useRunAction(action: ActionDescriptor) {
     mutationFn: (body: ActionRequest) => post<ActionRun>(`${actionUrl(action.name)}/run`, body),
     onSuccess: () =>
       queryClient.invalidateQueries({
-        predicate: ({ queryKey }) =>
-          ['rows', 'children', 'parent', 'record', 'search', 'history', 'audit'].includes(
-            String(queryKey[0]),
-          ),
+        predicate: ({ queryKey }) => RUN_INVALIDATES.includes(String(queryKey[0])),
+      }),
+  });
+}
+
+/** "Retry remaining steps" of a failed multi-step run, by its `auditId`. */
+export function useRetryAction(action: ActionDescriptor) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (auditId: string) =>
+      apiFetch<ActionRun>(`${actionUrl(action.name)}/retry`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ auditId }),
+      }),
+    onSettled: () =>
+      queryClient.invalidateQueries({
+        predicate: ({ queryKey }) => RUN_INVALIDATES.includes(String(queryKey[0])),
       }),
   });
 }

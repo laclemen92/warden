@@ -91,3 +91,14 @@ export {
   checkActionUrl,
   cleanApiMessage,
 } from './http-action.js';
+export { STEP_NAME } from './actions.js';
+export {
+  MAX_AUDIT_BODY_BYTES,
+  auditedBody,
+  compensationIdempotencyKey,
+  guardRedacted,
+  redactJson,
+  stepIdempotencyKey,
+  stepsProgress,
+  type StepsProgress,
+} from './http-action.js';

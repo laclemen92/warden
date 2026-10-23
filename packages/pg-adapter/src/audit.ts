@@ -9,6 +9,7 @@ import {
   type AuditStore,
   type Entity,
   type ExportDetails,
+  type HttpActionOutcome,
   type RevokeSessionsDetails,
   type StoredActionDetails,
 } from '@wardenhq/core';
@@ -476,6 +477,91 @@ export async function listAuditEntries(
     }),
     hasMore: rows.length > limit,
   };
+}
+
+/** An HTTP action's own entry, and the outcome entries written for it since. */
+export interface ActionAttempt {
+  id: string;
+  actorSubject: string;
+  reason: string | null;
+  recordId: string | null;
+  /** Null in a store that doesn't keep details. */
+  details: StoredActionDetails | null;
+  /** How long ago it was written. */
+  ageMs: number;
+  /** Its outcome entries' `details.outcome`, oldest first. */
+  outcomes: HttpActionOutcome[];
+  /** The ids of its "Retry remaining steps" entries, oldest first. */
+  retries: string[];
+}
+
+/**
+ * The entry action `action` wrote as attempt `id` (not an outcome or a retry's entry), with its
+ * outcomes. Undefined when there is no such entry.
+ */
+export async function loadActionAttempt(
+  db: Database,
+  { id, action }: { id: string; action: string },
+  store: AuditStore = WARDEN_STORE,
+): Promise<ActionAttempt | undefined> {
+  const relation = auditRelation(store);
+  const { rows } = await sql<{
+    id: string;
+    actor_subject: string;
+    reason: string | null;
+    record_id: string | null;
+    details: StoredActionDetails | null;
+    age_ms: number;
+  }>`
+    select a.id::text as id, a.actor_subject, a.reason, a.record_id, a.details,
+           (extract(epoch from (now() - a.occurred_at)) * 1000)::float8 as age_ms
+    from ${relation} as a
+    where a.id = ${id}::bigint and a.action = ${action} and a.parent_id is null
+      and coalesce(a.details ? 'input', false)
+      and not (a.details ? 'outcome') and not (a.details ? 'retryOf')`.execute(db);
+  const row = rows[0];
+  if (!row) return undefined;
+  // Outcomes are written after their attempt, so the scan starts at its id.
+  const { rows: outcomes } = await sql<{ outcome: HttpActionOutcome }>`
+    select a.details -> 'outcome' as outcome
+    from ${relation} as a
+    where a.id > ${id}::bigint and a.action = ${action}
+      and a.details -> 'outcome' ->> 'attempt' = ${id}
+    order by a.id`.execute(db);
+  const { rows: retries } = await sql<{ id: string }>`
+    select a.id::text as id
+    from ${relation} as a
+    where a.id > ${id}::bigint and a.action = ${action}
+      and a.details ->> 'retryOf' = ${id}
+    order by a.id`.execute(db);
+  return {
+    id: row.id,
+    actorSubject: row.actor_subject,
+    reason: row.reason,
+    recordId: row.record_id,
+    details: row.details,
+    ageMs: Number(row.age_ms),
+    outcomes: outcomes.map((o) => o.outcome),
+    retries: retries.map((r) => r.id),
+  };
+}
+
+const RETRY_LOCK = 0x72747279; // "rtry"
+
+/**
+ * Call `fn` in a transaction that holds attempt `id` against other retries of it, on any server,
+ * with the attempt as it is once held. What `fn` writes commits before the hold is released.
+ */
+export async function withActionAttempt<T>(
+  db: Database,
+  attempt: { id: string; action: string },
+  store: AuditStore,
+  fn: (trx: Database, attempt: ActionAttempt | undefined) => Promise<T>,
+): Promise<T> {
+  return db.transaction().execute(async (trx) => {
+    await sql`select pg_advisory_xact_lock(${RETRY_LOCK}, hashtext(${attempt.id}))`.execute(trx);
+    return fn(trx, await loadActionAttempt(trx, attempt, store));
+  });
 }
 
 /** What the connected role may do to a configured audit table. */
