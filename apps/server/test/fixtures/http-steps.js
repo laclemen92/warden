@@ -140,6 +140,58 @@ export default ({ defineAction, z, ActionError }) => [
     },
   }),
   defineAction({
+    name: 'uses-redacted',
+    label: 'Second step reads a redacted value of the first',
+    on: 'companies',
+    target: 'none',
+    http: {
+      auth: hmac,
+      steps: [
+        { name: 'hold', url: () => `${api()}/redact/hold`, auditBody: { redact: ['token'] } },
+        {
+          name: 'use',
+          url: (_ctx, prev) => `${api()}/redact/use/${prev.hold.body.id}`,
+          body: (_ctx, prev) => ({ token: prev.hold.body.token }),
+        },
+      ],
+    },
+  }),
+  defineAction({
+    name: 'reads-unredacted',
+    label: 'Second step reads only what the first kept',
+    on: 'companies',
+    target: 'none',
+    http: {
+      auth: hmac,
+      steps: [
+        { name: 'hold', url: () => `${api()}/unredacted/hold`, auditBody: { redact: ['token'] } },
+        {
+          name: 'use',
+          url: (_ctx, prev) => `${api()}/unredacted/use/${prev.hold.body.id}`,
+          body: (_ctx, prev) => ({ nested: prev.hold.body.nested }),
+        },
+      ],
+    },
+  }),
+  defineAction({
+    name: 'm2m-steps',
+    label: 'Steps as Warden, with a short deadline',
+    on: 'companies',
+    target: 'none',
+    deadlineMs: 1000,
+    http: {
+      auth: {
+        type: 'client_credentials',
+        tokenUrl: `${api()}/oauth/token`,
+        clientIdEnv: 'TEST_CLIENT_ID',
+        clientSecretEnv: 'TEST_CLIENT_SECRET',
+        secretEnv: 'TEST_HMAC_SECRET',
+      },
+      timeoutMs: 5000,
+      steps: [{ name: 'only', url: () => `${api()}/m2m/only` }],
+    },
+  }),
+  defineAction({
     name: 'steps-not-granted',
     label: 'Not granted',
     on: 'companies',

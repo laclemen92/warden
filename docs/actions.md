@@ -486,7 +486,7 @@ defineAction({
 - **In order, stopping at the first failure.** Each step starts after the one before it answered with a `2xx`. A `4xx`, `5xx`, timeout or network error stops the chain, and later steps aren't called; the user gets the failed step's answer as for a single call (a `400` with its message, or a generic `502`/`504`), plus `steps` and `retryable` (below). A `url`, `body` or `when` that throws stops it too (an `ActionError`'s message is shown; anything else is a generic error and is logged). The first step's request is built before the action's entry is written, so a module error there leaves no attempt behind.
 - **Same auth and headers.** Every step is sent with the action's auth mode, `X-Warden-Context` (with the action entry's id as `auditId`) and, with `hmac` and `client_credentials`, its own signature.
 - **One `Idempotency-Key` per step:** `<audit entry id>.<step name>`, the same on every retry. Undo calls use `<audit entry id>.<step name>.compensate`.
-- **Deadline.** The steps share one deadline, the action's `deadlineMs` (or `WARDEN_ACTION_DEADLINE`), counted from the first step. No step starts after it, and a step still running when it passes is cut off and fails as a timeout (`504`).
+- **Deadline.** The steps share one deadline, the action's `deadlineMs` (or `WARDEN_ACTION_DEADLINE`), counted from the first step. No step starts after it, and a step still running when it passes (including its retry after a `401`) is cut off and fails as a timeout (`504`).
 - **`compensate` isn't a transaction.** When a step fails, the steps that completed are undone in reverse order where they have `compensate`. Undo calls are best effort: each is made once with its own timeout (not the deadline), and its outcome is logged, recorded in the audit log and shown to the user ("undone", "undo failed"). An undo that fails leaves your system half-changed; the audit log says which.
 
 The response always lists every step:
@@ -514,13 +514,16 @@ A step's `result` is `ok`, `rejected` (a `4xx`), `failed`, `skipped` or `not_att
 
 After a failure, running the action again is the way to recover, and the UI offers **Retry remaining steps**: it resends the failed step and the ones after it, with the same idempotency keys, and never resends a step that completed. If your endpoints apply each `Idempotency-Key` once, a step that timed out but did apply isn't applied twice.
 
-A retry (`POST /api/actions/:name/retry` with `{ auditId }`) rebuilds the requests from the attempt's audit entry: its input, records and reason, with the records loaded as they are now. Later steps get `prev` from the steps' kept bodies (`auditBody`); a step that reads the body of an earlier step that didn't keep it fails with a `409` saying so, without being sent. A retry is refused with a `409`, and `retryable` is false, when:
+A retry (`POST /api/actions/:name/retry` with `{ auditId }`) rebuilds the requests from the attempt's audit entry: its input, records and reason, with the records loaded as they are now. Later steps get `prev` from the steps' kept bodies (`auditBody`); a step that reads the body of an earlier step that didn't keep it, or a value that body's `redact` removed, fails with a `409` saying so, without being sent. A retry is refused with a `409`, and `retryable` is false, when:
 
 - any undo call was made, since the steps that completed may have been undone;
 - the action has [sensitive](#input-forms) input fields, which the audit log doesn't keep;
 - the audit store doesn't keep details or the actor;
 - the run is more than 24 hours old (APIs commonly forget idempotency keys after a day);
-- every step already completed, or the run is still calling the API.
+- every step already completed;
+- the run, or an earlier retry of it, has no outcome entry: it is still calling the API, or it ended (say, the server restarted) before its outcome was recorded, so which steps completed isn't known. Check the API, then run the action again if needed.
+
+Retries of one run are serialized across servers: a retry's entry is written under a database lock before anything is sent, so a second retry at the same time is refused.
 
 Only the user who ran it may retry a run, and only while they may run the action; for anyone else it is a `404`, like a run that doesn't exist.
 

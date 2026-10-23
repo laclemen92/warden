@@ -62,6 +62,7 @@ export {
   loadActionAttempt,
   recordExport,
   storesField,
+  withActionAttempt,
   type ActionAttempt,
   type AuditContext,
   type AuditPage,

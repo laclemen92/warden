@@ -38,6 +38,7 @@ import {
   type ResolvedAction,
   type AuditStore,
   type Entity,
+  type HttpStepSpec,
   type StepsProgress,
 } from '@wardenhq/core';
 import {
@@ -56,6 +57,8 @@ import {
   setStatementTimeout,
   storesField,
   toRecordRef,
+  withActionAttempt,
+  type ActionAttempt,
   type ActionTxHandle,
   type Database,
   type DetachedTransaction,
@@ -87,6 +90,25 @@ const RECORDS_REPEAT = 'records must not repeat';
  * for a day; past that, resending a step that may have applied could apply it twice.
  */
 export const RETRY_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Why an attempt's remaining steps can't be retried, from its entries. A try (the run or a retry)
+ * with no outcome entry is still calling the API, or ended without its outcome being recorded;
+ * either way which of its steps completed isn't known, so nothing is resent.
+ */
+function retryRefusal(steps: readonly HttpStepSpec[], attempt: ActionAttempt): string | undefined {
+  const { outcomes, retries } = attempt;
+  const settled = (retry: string | undefined) => outcomes.some((o) => o.retry === retry);
+  if (!settled(undefined) || !retries.every(settled)) {
+    return "this run is still calling the API, or how it ended wasn't recorded; check the API, then run the action again if needed";
+  }
+  const progress = stepsProgress(steps, outcomes);
+  if (progress.compensated) {
+    return 'the steps that completed were undone, so the rest would run without them; run the action again';
+  }
+  if (progress.finished) return 'every step of this run already completed';
+  return undefined;
+}
 
 export interface ActionLimits {
   /** Runs and previews at once on this server, across all users: the action pool's size. */
@@ -551,10 +573,6 @@ export function registerActionRoutes(app: FastifyInstance, options: ActionRouteO
     return { resolved, refErrors };
   };
 
-  /** Attempts whose steps are being called now, so a retry can't overlap them. */
-  const inFlight = new Set<string>();
-  const flightKey = (action: string, auditId: string) => `${action}:${auditId}`;
-
   /**
    * Whether a failed run's remaining steps can be retried: the retry rebuilds the requests from
    * the attempt's entry, so that needs the whole input and a store that keeps details.
@@ -589,8 +607,6 @@ export function registerActionRoutes(app: FastifyInstance, options: ActionRouteO
     releaseApi: () => void,
   ) => {
     const { action, actor, reason, entity, auditId } = run;
-    const key = flightKey(action.name, auditId);
-    inFlight.add(key);
     try {
       const called = await runHttpSteps({
         req,
@@ -637,7 +653,6 @@ export function registerActionRoutes(app: FastifyInstance, options: ActionRouteO
       );
       return reply.code(called.statusCode).send(called.body);
     } finally {
-      inFlight.delete(key);
       releaseApi();
     }
   };
@@ -1154,17 +1169,8 @@ export function registerActionRoutes(app: FastifyInstance, options: ActionRouteO
     if (attempt.ageMs > RETRY_WINDOW_MS) {
       return conflict(reply, 'this run is too old to retry; run the action again');
     }
-    if (inFlight.has(flightKey(action.name, attempt.id))) {
-      return conflict(reply, 'this run is still calling the API; wait for it to finish');
-    }
-    const progress = stepsProgress(steps, attempt.outcomes);
-    if (progress.compensated) {
-      return conflict(
-        reply,
-        'the steps that completed were undone, so the rest would run without them; run the action again',
-      );
-    }
-    if (progress.finished) return conflict(reply, 'every step of this run already completed');
+    const refused = retryRefusal(steps, attempt);
+    if (refused) return conflict(reply, refused);
 
     // The definition may have changed since: input that no longer fits it isn't sent.
     const changed = () =>
@@ -1197,22 +1203,38 @@ export function registerActionRoutes(app: FastifyInstance, options: ActionRouteO
     const got = await credentialsFor(req, reply, action, releaseApi);
     if (!got) return reply;
     let runners: StepRunner[];
-    let retryId: string;
+    let reserved: { retryId: string; done: StepsProgress['done'] } | { refused: string };
     try {
       runners = stepRunners(action, definition, input, resolved, refs, actor, reason);
-      retryId = await insertActionEntry(db, {
-        actor,
+      // Checked again under a lock, and the retry's entry written before it's released, so a
+      // concurrent retry (on any server) sees this one as unfinished and is refused.
+      reserved = await withActionAttempt(
+        db,
+        { id: attempt.id, action: action.name },
         store,
-        requestId: req.id,
-        ...(reason ? { reason } : {}),
-        action: action.name,
-        entity,
-        ...(action.target === 'one' ? { record: rows[0]! } : {}),
-        details: { input: {}, records: ids, refs: {}, retryOf: attempt.id },
-      });
+        async (trx, current) => {
+          const refusedNow = current ? retryRefusal(steps, current) : 'this run changed';
+          if (refusedNow) return { refused: refusedNow };
+          const retryId = await insertActionEntry(trx, {
+            actor,
+            store,
+            requestId: req.id,
+            ...(reason ? { reason } : {}),
+            action: action.name,
+            entity,
+            ...(action.target === 'one' ? { record: rows[0]! } : {}),
+            details: { input: {}, records: ids, refs: {}, retryOf: attempt.id },
+          });
+          return { retryId, done: stepsProgress(steps, current!.outcomes).done };
+        },
+      );
     } catch (err) {
       releaseApi();
       return failed(req, reply, err);
+    }
+    if ('refused' in reserved) {
+      releaseApi();
+      return conflict(reply, reserved.refused);
     }
     return callSteps(
       req,
@@ -1227,8 +1249,8 @@ export function registerActionRoutes(app: FastifyInstance, options: ActionRouteO
         records: ids,
         steps: runners,
         auditId: attempt.id,
-        done: progress.done,
-        retry: retryId,
+        done: reserved.done,
+        retry: reserved.retryId,
       },
       releaseApi,
     );

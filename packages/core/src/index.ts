@@ -96,6 +96,7 @@ export {
   MAX_AUDIT_BODY_BYTES,
   auditedBody,
   compensationIdempotencyKey,
+  guardRedacted,
   redactJson,
   stepIdempotencyKey,
   stepsProgress,

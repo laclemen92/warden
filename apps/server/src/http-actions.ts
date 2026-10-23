@@ -6,6 +6,7 @@ import {
   checkActionUrl,
   cleanApiMessage,
   compensationIdempotencyKey,
+  guardRedacted,
   stepIdempotencyKey,
   type HttpActionOutcome,
   type HttpActionSpec,
@@ -408,16 +409,31 @@ export interface HttpRunOptions {
 
 type CallOptions = Omit<HttpRunOptions, 'method' | 'plans'>;
 
-/** Make one request, retrying once with fresh credentials after a 401 when that can help. */
+/**
+ * Make one request, retrying once with fresh credentials after a 401 when that can help. With
+ * `stopAt`, the retry and the token call before it are cut off at that time too.
+ */
 async function callOnce(
   options: CallOptions,
   plan: HttpRequestPlan,
   idempotencyKey: string,
-  { method, timeoutMs }: { method: HttpActionSpec['method']; timeoutMs: number },
+  {
+    method,
+    timeoutMs,
+    stopAt,
+  }: { method: HttpActionSpec['method']; timeoutMs: number; stopAt?: number },
 ): Promise<CallOutcome> {
   const { req, action, context, log } = options;
   let credentials = options.credentials;
+  const timeLeft = () =>
+    stopAt === undefined ? timeoutMs : Math.min(timeoutMs, stopAt - Date.now());
+  const outOfTime = (status?: number): CallOutcome => {
+    log.error({ endpoint: endpointOf(method, plan.url) }, 'action API timed out');
+    return { result: 'failed', timedOut: true, ...(status !== undefined ? { status } : {}) };
+  };
   for (let attempt = 0; ; attempt++) {
+    const limit = timeLeft();
+    if (limit <= 0) return outOfTime();
     const url = new URL(plan.url);
     const contextHeader = Buffer.from(
       JSON.stringify({
@@ -451,7 +467,7 @@ async function callOnce(
         headers,
         body: plan.body,
         redirect: 'manual',
-        signal: AbortSignal.timeout(timeoutMs),
+        signal: AbortSignal.timeout(limit),
       });
     } catch (err) {
       const timedOut = err instanceof Error && err.name === 'TimeoutError';
@@ -465,12 +481,22 @@ async function callOnce(
     const status = res.status;
     if (status === 401 && attempt === 0 && action.authenticator.retryOn401) {
       log.info({ endpoint: endpointOf(method, plan.url) }, 'action API answered 401; new token');
+      let timer: NodeJS.Timeout | undefined;
       try {
-        credentials = await action.authenticator.credentials(req, true);
+        const renewed = await Promise.race([
+          action.authenticator.credentials(req, true),
+          new Promise<undefined>((resolve) => {
+            timer = setTimeout(() => resolve(undefined), Math.max(timeLeft(), 0));
+          }),
+        ]);
+        if (!renewed) return outOfTime(status);
+        credentials = renewed;
         options.credentials = credentials;
       } catch (err) {
         log.error({ err }, 'could not renew the M2M token');
         return { result: 'failed', status };
+      } finally {
+        clearTimeout(timer);
       }
       continue;
     }
@@ -734,13 +760,19 @@ function stepFailure(o: CallOutcome): StepFailure {
     : { statusCode: 502, error: 'Bad Gateway', message: FAILED_MESSAGE };
 }
 
-/** An earlier try's answer. Its body is there only if the step kept it. */
+/**
+ * An earlier try's answer. Its body is there only if the step kept it, and its redacted values
+ * aren't there at all.
+ */
 function restoredResponse(name: string, done: { status?: number; body?: unknown; kept: boolean }) {
+  const missing = () => {
+    throw new MissingStepResponse(name);
+  };
   return Object.freeze({
     status: done.status ?? 200,
     get body(): unknown {
-      if (!done.kept) throw new MissingStepResponse(name);
-      return done.body;
+      if (!done.kept) missing();
+      return guardRedacted(done.body, missing);
     },
   });
 }
@@ -821,7 +853,8 @@ export async function runHttpSteps(options: StepsRunOptions): Promise<HttpRunRes
     const started = Date.now();
     const o = await callOnce(options, plan, stepIdempotencyKey(auditId, name), {
       method: spec.method,
-      timeoutMs: Math.min(spec.timeoutMs, remaining),
+      timeoutMs: spec.timeoutMs,
+      stopAt,
     });
     const outcome: HttpStepOutcome = {
       name,

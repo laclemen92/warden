@@ -7,7 +7,7 @@ import { Writable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { readExampleSql, startPostgres, type TestDatabase } from '@wardenhq/testing';
 import pg from 'pg';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { verifyWardenRequest } from '../../../docs/examples/verify-warden-request.mjs';
 import { ActionsError } from '../src/actions.js';
 import type { UserTokenProvider } from '../src/http-actions.js';
@@ -27,6 +27,9 @@ const STEP_ACTIONS = [
   'steps-as-user',
   'refuses-later',
   'secret-input',
+  'uses-redacted',
+  'reads-unredacted',
+  'm2m-steps',
 ];
 const CONFIG = `
 defaults: { read: granted }
@@ -87,6 +90,8 @@ const baseEnv = () => ({
   WARDEN_CONFIG: writeConfig(CONFIG),
   WARDEN_ACTIONS: ACTIONS,
   TEST_HMAC_SECRET: SECRET,
+  TEST_CLIENT_ID: 'warden-steps',
+  TEST_CLIENT_SECRET: 'm2m-steps-secret',
   ...authEnv(idp),
 });
 
@@ -486,7 +491,187 @@ describe('multi-step HTTP actions: retry remaining steps', () => {
   });
 });
 
+/** A copy of entry `id` written `ago` earlier, with `details` merged into its details. */
+const copyEntry = async (id: string, details: object, ago = '0 seconds') =>
+  String(
+    (
+      await query(
+        `insert into warden.audit_log (occurred_at, request_id, actor_subject, actor_email,
+           actor_roles, action, entity, record_id, primary_key, reason, details)
+         select now() - $3::interval, request_id, actor_subject, actor_email, actor_roles, action,
+           entity, record_id, primary_key, reason, details || $2::jsonb
+         from warden.audit_log where id = $1 returning id`,
+        [id, JSON.stringify(details), ago],
+      )
+    )[0]!.id,
+  );
+
+describe('multi-step HTTP actions: retry failure paths', () => {
+  /** A resolve-review run whose `claim` step failed, and so can be retried. */
+  const failedRun = async () => {
+    respond = (req) =>
+      req.url.startsWith('/payouts')
+        ? { status: 200, body: { claimId: 'c-7' } }
+        : req.url.startsWith('/claims')
+          ? { status: 502 }
+          : { status: 200, body: {} };
+    const res = await run('resolve-review', { records: ['1'], input: { decision: 'fraudulent' } });
+    expect(res.status).toBe(502);
+    expect(res.body.retryable).toBe(true);
+    received.splice(0);
+    respond = (req) =>
+      req.url.startsWith('/claims')
+        ? { status: 200, body: {}, delayMs: 300 }
+        : { status: 200, body: {} };
+    return res.body.auditId as string;
+  };
+
+  it("refuses a retry that reads a redacted value, and sends nothing in the value's place", async () => {
+    let useFails = true;
+    respond = (req) =>
+      req.url === '/redact/hold'
+        ? { status: 200, body: { id: 'h-1', token: 'tok-secret' } }
+        : useFails
+          ? { status: 503 }
+          : { status: 200, body: {} };
+    const first = await run('uses-redacted');
+    expect(first.status).toBe(502);
+    expect(JSON.parse(calls('/redact/use')[0]!.body)).toEqual({ token: 'tok-secret' });
+    received.splice(0);
+    useFails = false;
+    const res = await retry('uses-redacted', first.body.auditId);
+    expect(res.status).toBe(409);
+    expect(res.body.message).toMatch(/wasn't kept/);
+    expect(results(res.body.steps)).toEqual(['hold:ok', 'use:failed']);
+    expect(received).toHaveLength(0);
+  });
+
+  it('retries a step that reads only values its earlier step kept', async () => {
+    let useFails = true;
+    respond = (req) =>
+      req.url === '/unredacted/hold'
+        ? { status: 200, body: { id: 'h-2', token: 'tok-secret', nested: { a: [1, 2] } } }
+        : useFails
+          ? { status: 503 }
+          : { status: 200, body: {} };
+    const first = await run('reads-unredacted');
+    expect(first.status).toBe(502);
+    received.splice(0);
+    useFails = false;
+    const res = await retry('reads-unredacted', first.body.auditId);
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(paths()).toEqual(['POST /unredacted/use/h-2']);
+    expect(JSON.parse(received[0]!.body)).toEqual({ nested: { a: [1, 2] } });
+  });
+
+  it('refuses a retry while the run is still calling the API', async () => {
+    respond = (req) => ({
+      status: 200,
+      body: { claimId: 'c-8' },
+      delayMs: req.url.startsWith('/payouts') ? 400 : 0,
+    });
+    const since = await lastId();
+    const running = run('resolve-review', { records: ['1'], input: { decision: 'fraudulent' } });
+    await vi.waitFor(() => expect(received).toHaveLength(1));
+    const [attempt] = await entries(since);
+    const res = await retry('resolve-review', String(attempt!.id));
+    expect(res.status).toBe(409);
+    expect(res.body.message).toMatch(/still calling the API/);
+    expect((await running).status).toBe(200);
+    expect(calls('/payouts')).toHaveLength(1);
+  });
+
+  it('refuses a retry of a run whose outcome was never recorded', async () => {
+    const auditId = await failedRun();
+    // As if the server stopped after the steps, before writing the outcome entry.
+    const lost = await copyEntry(auditId, {});
+    const res = await retry('resolve-review', lost);
+    expect(res.status).toBe(409);
+    expect(res.body.message).toMatch(/wasn't recorded/);
+    expect(received).toHaveLength(0);
+  });
+
+  it('refuses a retry after an earlier retry whose outcome was never recorded', async () => {
+    const auditId = await failedRun();
+    await copyEntry(auditId, { input: {}, refs: {}, retryOf: auditId });
+    const res = await retry('resolve-review', auditId);
+    expect(res.status).toBe(409);
+    expect(res.body.message).toMatch(/wasn't recorded/);
+    expect(received).toHaveLength(0);
+  });
+
+  it('lets one of two concurrent retries through, and sends each step once', async () => {
+    const auditId = await failedRun();
+    const both = await Promise.all([
+      retry('resolve-review', auditId),
+      retry('resolve-review', auditId),
+    ]);
+    expect(both.map((r) => r.status).sort()).toEqual([200, 409]);
+    expect(paths()).toEqual(['POST /claims/c-7/resolve', 'PUT /notify']);
+  });
+
+  it('retries again after a retry that failed', async () => {
+    const auditId = await failedRun();
+    respond = (req) => (req.url === '/notify' ? { status: 503 } : { status: 200, body: {} });
+    const second = await retry('resolve-review', auditId);
+    expect(second.status).toBe(502);
+    expect(results(second.body.steps)).toEqual(['payout:ok', 'claim:ok', 'notify:failed']);
+    received.splice(0);
+    respond = () => ({ status: 200, body: {} });
+    const third = await retry('resolve-review', auditId);
+    expect(third.status, JSON.stringify(third.body)).toBe(200);
+    expect(paths()).toEqual(['PUT /notify']);
+    expect(keys()).toEqual([`${auditId}.notify`]);
+    const done = await retry('resolve-review', auditId);
+    expect(done.status).toBe(409);
+    expect(done.body.message).toMatch(/already completed/);
+  });
+
+  it('refuses a retry of a run more than 24 hours old', async () => {
+    const auditId = await failedRun();
+    const old = await copyEntry(auditId, {}, '25 hours');
+    const res = await retry('resolve-review', old);
+    expect(res.status).toBe(409);
+    expect(res.body.message).toMatch(/too old/);
+    expect(received).toHaveLength(0);
+  });
+});
+
 describe('multi-step HTTP actions: deadline and access', () => {
+  /** An API whose step answers 401 late; the token endpoint renews slowly when `slowRenewal`. */
+  const lateUnauthorized = (slowRenewal: boolean) => {
+    let unauthorized = false;
+    respond = (req) => {
+      if (req.url !== '/oauth/token') {
+        unauthorized = true;
+        return { status: 401, body: {}, delayMs: 700 };
+      }
+      return {
+        status: 200,
+        body: { access_token: 'm2m-token', expires_in: 3600 },
+        delayMs: slowRenewal && unauthorized ? 2000 : 0,
+      };
+    };
+  };
+
+  it('cuts off the retry after a 401 at the deadline', async () => {
+    lateUnauthorized(false);
+    const started = Date.now();
+    const res = await run('m2m-steps');
+    expect(Date.now() - started).toBeLessThan(1400);
+    expect(res.status).toBe(504);
+    expect(results(res.body.steps)).toEqual(['only:failed']);
+  });
+
+  it('cuts off the token renewal after a 401 at the deadline', async () => {
+    lateUnauthorized(true);
+    const started = Date.now();
+    const res = await run('m2m-steps');
+    expect(Date.now() - started).toBeLessThan(1400);
+    expect(res.status).toBe(504);
+    expect(calls('/m2m/only')).toHaveLength(1);
+  });
+
   it('starts no step after the deadline, and cuts off the one in flight', async () => {
     respond = () => ({ status: 200, body: {}, delayMs: 700 });
     const started = Date.now();

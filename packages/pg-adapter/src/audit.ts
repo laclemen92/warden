@@ -491,6 +491,8 @@ export interface ActionAttempt {
   ageMs: number;
   /** Its outcome entries' `details.outcome`, oldest first. */
   outcomes: HttpActionOutcome[];
+  /** The ids of its "Retry remaining steps" entries, oldest first. */
+  retries: string[];
 }
 
 /**
@@ -526,6 +528,12 @@ export async function loadActionAttempt(
     where a.id > ${id}::bigint and a.action = ${action}
       and a.details -> 'outcome' ->> 'attempt' = ${id}
     order by a.id`.execute(db);
+  const { rows: retries } = await sql<{ id: string }>`
+    select a.id::text as id
+    from ${relation} as a
+    where a.id > ${id}::bigint and a.action = ${action}
+      and a.details ->> 'retryOf' = ${id}
+    order by a.id`.execute(db);
   return {
     id: row.id,
     actorSubject: row.actor_subject,
@@ -534,7 +542,26 @@ export async function loadActionAttempt(
     details: row.details,
     ageMs: Number(row.age_ms),
     outcomes: outcomes.map((o) => o.outcome),
+    retries: retries.map((r) => r.id),
   };
+}
+
+const RETRY_LOCK = 0x72747279; // "rtry"
+
+/**
+ * Call `fn` in a transaction that holds attempt `id` against other retries of it, on any server,
+ * with the attempt as it is once held. What `fn` writes commits before the hold is released.
+ */
+export async function withActionAttempt<T>(
+  db: Database,
+  attempt: { id: string; action: string },
+  store: AuditStore,
+  fn: (trx: Database, attempt: ActionAttempt | undefined) => Promise<T>,
+): Promise<T> {
+  return db.transaction().execute(async (trx) => {
+    await sql`select pg_advisory_xact_lock(${RETRY_LOCK}, hashtext(${attempt.id}))`.execute(trx);
+    return fn(trx, await loadActionAttempt(trx, attempt, store));
+  });
 }
 
 /** What the connected role may do to a configured audit table. */

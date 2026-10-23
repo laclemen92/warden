@@ -66,18 +66,22 @@ export const compensationIdempotencyKey = (auditId: string, step: string) =>
 /** Largest response body a step keeps in the audit log, as JSON, after redaction. */
 export const MAX_AUDIT_BODY_BYTES = 8 * 1024;
 const MAX_REDACT_DEPTH = 32;
+/** What `redactJson` puts in place of a redacted value. */
+export const REDACTED = '[redacted]';
+/** What `redactJson` puts in place of a value nested too deep to check. */
+export const TOO_DEEP = '[too deep]';
 
 /** `value` with the values of `keys` (case-insensitive, at any depth) replaced by `[redacted]`. */
 export function redactJson(value: unknown, keys: readonly string[]): unknown {
   const redacted = new Set(keys.map((k) => k.toLowerCase()));
   const walk = (v: unknown, depth: number): unknown => {
     if (typeof v !== 'object' || v === null) return v;
-    if (depth >= MAX_REDACT_DEPTH) return '[too deep]';
+    if (depth >= MAX_REDACT_DEPTH) return TOO_DEEP;
     if (Array.isArray(v)) return v.map((item) => walk(item, depth + 1));
     return Object.fromEntries(
       Object.entries(v).map(([k, item]) => [
         k,
-        redacted.has(k.toLowerCase()) ? '[redacted]' : walk(item, depth + 1),
+        redacted.has(k.toLowerCase()) ? REDACTED : walk(item, depth + 1),
       ]),
     );
   };
@@ -92,6 +96,28 @@ export function auditedBody(
   const kept = redactJson(body, redact);
   const size = new TextEncoder().encode(JSON.stringify(kept) ?? '').length;
   return size > MAX_AUDIT_BODY_BYTES ? { bodyOmitted: true } : { body: kept };
+}
+
+/**
+ * A kept (redacted) body that calls `missing` when a redacted value is read, so a retry never
+ * sends the placeholder in place of the real value.
+ */
+export function guardRedacted(body: unknown, missing: () => never): unknown {
+  const wrapped = new WeakMap<object, object>();
+  const wrap = (value: unknown): unknown => {
+    if (value === REDACTED || value === TOO_DEEP) missing();
+    if (typeof value !== 'object' || value === null) return value;
+    let proxy = wrapped.get(value);
+    if (!proxy) {
+      // Spread, `Object.entries` and `JSON.stringify` read through `get` too.
+      proxy = new Proxy(value, {
+        get: (target, key, receiver) => wrap(Reflect.get(target, key, receiver)),
+      });
+      wrapped.set(value, proxy);
+    }
+    return proxy;
+  };
+  return wrap(body);
 }
 
 /** Where an attempt of a multi-step action stands, from its outcome entries. */

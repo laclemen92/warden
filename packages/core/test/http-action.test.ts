@@ -6,6 +6,7 @@ import {
   checkActionDefinitions,
   checkActionUrl,
   cleanApiMessage,
+  guardRedacted,
   redactJson,
   stepsProgress,
   type HttpStepSpec,
@@ -225,6 +226,31 @@ describe('step response bodies in the audit log', () => {
     expect(
       redactJson({ Token: 'x', nested: [{ token: 'y', keep: 1 }], ok: true }, ['token']),
     ).toEqual({ Token: '[redacted]', nested: [{ token: '[redacted]', keep: 1 }], ok: true });
+  });
+
+  it('guards a kept body so a redacted value is never read', () => {
+    const kept = redactJson({ id: 1, token: 'x', nested: [{ secret: 'y', keep: [2] }] }, [
+      'token',
+      'secret',
+    ]);
+    const missing = (): never => {
+      throw new Error('missing');
+    };
+    const body = guardRedacted(kept, missing) as {
+      id: number;
+      token: string;
+      nested: { secret: string; keep: number[] }[];
+    };
+    expect(body.id).toBe(1);
+    expect(body.nested[0]!.keep).toEqual([2]);
+    expect(Object.keys(body)).toEqual(['id', 'token', 'nested']);
+    expect(() => body.token).toThrow('missing');
+    expect(() => body.nested[0]!.secret).toThrow('missing');
+    expect(() => JSON.stringify(body)).toThrow('missing');
+    expect(() => ({ ...body.nested[0] })).toThrow('missing');
+    expect(() => Object.entries(body)).toThrow('missing');
+    expect(() => guardRedacted('[redacted]', missing)).toThrow('missing');
+    expect(guardRedacted(redactJson({ a: 1 }, ['token']), missing)).toEqual({ a: 1 });
   });
 
   it('leaves out a body too large to keep', () => {
