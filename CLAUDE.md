@@ -34,6 +34,12 @@ Run `pnpm format && pnpm lint && pnpm typecheck && pnpm test` before every commi
 
 Put logic in `packages/core` when it can be pure; keep SQL in `pg-adapter`; keep the server thin.
 
+## Docs map
+
+[`docs/README.md`](docs/README.md) indexes every doc and says which to read before touching each area. Start with [`docs/architecture.md`](docs/architecture.md) (request flow, package boundaries, and where each rule below is enforced). Key references: [`config.md`](docs/config.md) (config schema), [`database.md`](docs/database.md) (`warden` schema, migrations, audit log), [`actions.md`](docs/actions.md) (custom and HTTP actions), and the README's [Authentication](README.md#authentication) section (sign-in env vars).
+
+**Docs change in the same PR as the behavior.** A change to config, env vars, the API, the `warden` schema, or what users see updates the doc that describes it (and `apps/web/src/pages/help-page.tsx` with `docs/using-warden.md`). A new doc gets a line in `docs/README.md`.
+
 ## Core rules (security-relevant; don't break these)
 
 - **Config narrows defaults.** Everything is readable unless config hides it. Writes (create/update/delete) are denied unless config grants them to a role, and a table-level `deny` beats every grant. Hard delete is also off unless the table opts in (`allowDelete` / `defaults.delete`), and a `*` grant never includes `delete`.
