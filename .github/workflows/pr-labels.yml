@@ -1,0 +1,29 @@
+name: PR labels
+
+# Every PR needs exactly one semver:* label; the release draft computes the next version from them.
+# See docs/versioning.md.
+on:
+  pull_request:
+    types: [opened, labeled, unlabeled, synchronize, reopened]
+
+concurrency:
+  group: pr-labels-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  semver:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - env:
+          LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        run: |
+          found="$(jq -r '[.[] | select(startswith("semver:"))] | join(", ")' <<< "$LABELS")"
+          count="$(jq '[.[] | select(startswith("semver:"))] | length' <<< "$LABELS")"
+          if [ "$count" -ne 1 ]; then
+            echo "::error::Add exactly one of semver:major, semver:minor, semver:patch, semver:none (found ${count}: ${found:-none}). See docs/versioning.md."
+            exit 1
+          fi
+          echo "Bump: $found"

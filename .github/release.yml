@@ -1,6 +1,9 @@
-# Categories for the release notes the release workflow generates from merged PRs.
+# Categories for the release notes the release workflow generates from merged PRs. A PR is listed
+# under the first category that matches, so breaking changes are never filed elsewhere.
 changelog:
   categories:
+    - title: Breaking changes
+      labels: [semver:major]
     - title: Security
       labels: [security]
     - title: Features
