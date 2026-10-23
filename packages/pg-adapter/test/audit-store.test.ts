@@ -11,7 +11,7 @@ import {
   type Filter,
   type SchemaModel,
 } from '@wardenhq/core';
-import { startPostgres, type TestDatabase } from '@wardenhq/testing';
+import { startPostgres, type TestDatabase, uniqueRoleName } from '@wardenhq/testing';
 import { sql } from 'kysely';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import {
@@ -459,21 +459,22 @@ describe('the documented audit table', () => {
 });
 
 describe('auditTableAccess', () => {
+  const role = uniqueRoleName('audit_app');
   let restricted: DatabaseHandle;
 
   beforeAll(async () => {
     await sql
       .raw(
         `
-      create role audit_app login password 'app';
-      grant usage on schema public to audit_app;
-      grant select, insert on change_log to audit_app;
-      grant usage on sequence change_log_log_id_seq to audit_app;
+      create role ${role} login password 'app';
+      grant usage on schema public to ${role};
+      grant select, insert on change_log to ${role};
+      grant usage on sequence change_log_log_id_seq to ${role};
     `,
       )
       .execute(handle.db);
     const url = new URL(pgContainer.connectionString);
-    url.username = 'audit_app';
+    url.username = role;
     url.password = 'app';
     restricted = createDatabase({ connectionString: url.href });
   });
@@ -503,7 +504,7 @@ describe('auditTableAccess', () => {
 
   it('lets an insert-only role audit through the mapped table', async () => {
     const hook = auditHook({ actor, store: minimal });
-    await sql`grant select, insert on accounts to audit_app`.execute(handle.db);
+    await sql`grant select, insert on accounts to ${sql.id(role)}`.execute(handle.db);
     await createRow(restricted.db, accounts, { name: 'Via app role' }, { onWrite: hook });
     expect((await changeLog()).map((r) => r.action)).toEqual(['create']);
     await expect(sql`delete from change_log`.execute(restricted.db)).rejects.toThrow(
