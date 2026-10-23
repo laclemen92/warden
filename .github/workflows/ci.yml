@@ -67,32 +67,26 @@ jobs:
         timeout-minutes: 5
       - run: docker compose up -d --build --wait
         timeout-minutes: 10
-      # Browsers are cached per Playwright version. The download is retried with short timeouts;
-      # the system packages come from apt, which is slow but must not be killed mid-install (the
-      # orphaned apt-get would hold the dpkg lock), so the step timeout is its only limit.
+      # The tests run in Microsoft's Playwright image for the installed version, which ships the
+      # browser and its system packages, so CI never waits on apt mirrors.
       - id: playwright
         run: echo "version=$(pnpm --filter @wardenhq/e2e exec playwright --version | awk '{print $2}')" >> "$GITHUB_OUTPUT"
-      - uses: actions/cache@v4
-        id: browsers
-        with:
-          path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}
-      - name: Download Playwright browser
-        if: steps.browsers.outputs.cache-hit != 'true'
+      - name: Pull the Playwright image
         timeout-minutes: 5
         run: |
           for attempt in 1 2 3; do
-            timeout 90 pnpm --filter @wardenhq/e2e exec playwright install chromium && exit 0
-            echo "::warning::playwright browser download attempt $attempt failed or timed out"
+            docker pull "mcr.microsoft.com/playwright:v${{ steps.playwright.outputs.version }}-noble" && exit 0
+            echo "::warning::Playwright image pull attempt $attempt failed"
           done
           exit 1
-      - name: Install Playwright system dependencies
-        timeout-minutes: 8
-        run: pnpm --filter @wardenhq/e2e exec playwright install-deps chromium
-      - run: pnpm e2e
+      - name: Run e2e tests
         timeout-minutes: 10
-        env:
-          CI: true
+        run: >
+          docker run --rm --network host --ipc host -e CI=true
+          --user "$(id -u):$(id -g)" -e HOME=/tmp
+          -v "$PWD:/work" -w /work/e2e
+          "mcr.microsoft.com/playwright:v${{ steps.playwright.outputs.version }}-noble"
+          npx playwright test
       - if: failure()
         run: docker compose logs
       - if: failure()
