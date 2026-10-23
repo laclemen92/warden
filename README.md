@@ -41,6 +41,8 @@ See the [configuration reference](docs/config.md) for every option and [database
 
 For the people using it day to day, [Using Warden](docs/using-warden.md) covers search, filters, sorting, views, editing, export, actions and keyboard shortcuts. The same guide is in the app under **Help**.
 
+Every doc is listed in the [docs index](docs/README.md). Contributors should start with the [architecture overview](docs/architecture.md).
+
 ## Quickstart
 
 Requires Docker.
