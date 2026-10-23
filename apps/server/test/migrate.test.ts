@@ -1,7 +1,12 @@
 import { Writable } from 'node:stream';
 import type { MockOidc } from '@wardenhq/mock-oidc';
 import { createDatabase, migrate, MIGRATIONS } from '@wardenhq/pg-adapter';
-import { readExampleSql, startPostgres, type TestDatabase } from '@wardenhq/testing';
+import {
+  readExampleSql,
+  startPostgres,
+  type TestDatabase,
+  uniqueRoleName,
+} from '@wardenhq/testing';
 import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createWarden, parseMigrateFlag, type WardenOptions } from '../src/warden.js';
@@ -128,13 +133,14 @@ describe('WARDEN_MIGRATE', () => {
   });
 
   it('does not warn when Warden runs as a separate role', async () => {
+    const role = uniqueRoleName('warden_runtime');
     await sqlPool.query(`
-      create role warden_runtime login password 'runtime';
-      grant usage on schema warden, public to warden_runtime;
-      grant select, insert, update, delete on all tables in schema warden to warden_runtime;
-      grant select on all tables in schema public to warden_runtime;`);
+      create role ${role} login password 'runtime';
+      grant usage on schema warden, public to ${role};
+      grant select, insert, update, delete on all tables in schema warden to ${role};
+      grant select on all tables in schema public to ${role};`);
     const url = new URL(db.connectionString);
-    url.username = 'warden_runtime';
+    url.username = role;
     url.password = 'runtime';
     const warnings = await startupWarnings({ DATABASE_URL: url.href, WARDEN_MIGRATE: 'false' });
     expect(warnings).not.toContainEqual(expect.stringMatching(OWNS_AUDIT_LOG));

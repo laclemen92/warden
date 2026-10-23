@@ -1,5 +1,5 @@
 import { get, type IncomingMessage } from 'node:http';
-import { connect, type AddressInfo } from 'node:net';
+import { connect, type AddressInfo, type Socket } from 'node:net';
 import { setTimeout as sleep } from 'node:timers/promises';
 import type { MockOidc } from '@wardenhq/mock-oidc';
 import { startPostgres, type TestDatabase } from '@wardenhq/testing';
@@ -31,6 +31,8 @@ let idp: MockOidc;
 let app: Awaited<ReturnType<typeof createWarden>>;
 let base: string;
 const cookies = {} as Record<User, string>;
+// Every export this file opens, so teardown can end any a failed test left running.
+const inFlight = new Set<IncomingMessage | Socket>();
 
 beforeAll(async () => {
   db = await startPostgres({ sql: [SCHEMA] });
@@ -52,6 +54,10 @@ beforeAll(async () => {
 }, 120_000);
 
 afterAll(async () => {
+  for (const conn of inFlight) conn.destroy();
+  // Their export transactions end once the server notices the hang-up.
+  const deadline = Date.now() + 10_000;
+  while (sqlPool && (await openTransactions()) > 0 && Date.now() < deadline) await sleep(50);
   await app?.close();
   await idp?.close();
   await sqlPool?.end();
@@ -65,6 +71,8 @@ function stall(user: User) {
       `${base}/api/export/wide`,
       { headers: { cookie: cookies[user] }, agent: false },
       (res) => {
+        inFlight.add(res);
+        res.on('close', () => inFlight.delete(res));
         res.pause();
         resolve(res);
       },
@@ -91,7 +99,11 @@ const hangUp = (user: User, afterMs: number, query = '') =>
       );
       setTimeout(() => socket.destroy(), afterMs);
     });
-    socket.on('close', () => resolve());
+    inFlight.add(socket);
+    socket.on('close', () => {
+      inFlight.delete(socket);
+      resolve();
+    });
     socket.on('error', reject);
   });
 
