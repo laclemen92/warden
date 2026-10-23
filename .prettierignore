@@ -5,3 +5,4 @@ pnpm-lock.yaml
 LICENSE
 playwright-report
 test-results
+packages/config/warden.config.schema.json

@@ -1,0 +1,667 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "description": "JSON Schema for editor completions. Ignored by Warden.",
+      "type": "string"
+    },
+    "schemas": {
+      "default": [
+        "public"
+      ],
+      "description": "Postgres schemas Warden introspects. The first is the default schema: its tables are referred to by bare name, others as \"schema.table\".",
+      "minItems": 1,
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "defaults": {
+      "description": "Defaults for tables, columns, reads, deletes and reasons.",
+      "default": {},
+      "type": "object",
+      "properties": {
+        "expose": {
+          "default": "all",
+          "description": "all: every introspected table, minus hidden ones. none: only tables listed under tables.",
+          "type": "string",
+          "enum": [
+            "all",
+            "none"
+          ]
+        },
+        "newColumns": {
+          "default": "visible",
+          "description": "How columns with no entry under tables.<table>.columns are treated: visible, hidden (as if hidden: true), or readOnly.",
+          "type": "string",
+          "enum": [
+            "visible",
+            "hidden",
+            "readOnly"
+          ]
+        },
+        "read": {
+          "default": "all",
+          "description": "all: everyone who can sign in may read every exposed table. granted: reading a table requires a read grant.",
+          "type": "string",
+          "enum": [
+            "all",
+            "granted"
+          ]
+        },
+        "delete": {
+          "default": "none",
+          "description": "Hard deletes. none: refused on every table unless it sets allowDelete: true. granted: a role's delete grant on a table is honored. \"*\" never grants delete.",
+          "type": "string",
+          "enum": [
+            "none",
+            "granted"
+          ]
+        },
+        "requireReason": {
+          "default": [
+            "create",
+            "update",
+            "delete"
+          ],
+          "description": "Writes that must say why (an internal note, stored in the audit log), on tables that don't set their own requireReason. [] makes reasons optional.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "create",
+              "update",
+              "delete"
+            ]
+          }
+        },
+        "reasonMinLength": {
+          "default": 10,
+          "description": "The shortest required reason, in characters after trimming, so \".\" or \"fix\" doesn't count.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2000
+        },
+        "sharedViews": {
+          "default": "both",
+          "description": "Where shared grid views come from. config: only tables.<table>.views. ui: only views shared in the UI. both: either.",
+          "type": "string",
+          "enum": [
+            "config",
+            "ui",
+            "both"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "tables": {
+      "default": {},
+      "description": "Per-table config, keyed by \"table\" (default schema) or \"schema.table\".",
+      "type": "object",
+      "propertyNames": {
+        "type": "string",
+        "pattern": "^[^.]+(\\.[^.]+)?$"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "hidden": {
+            "description": "Remove the table completely: it doesn't appear anywhere, and requesting it returns the same 404 as a table that doesn't exist.",
+            "type": "boolean"
+          },
+          "label": {
+            "description": "The name shown in the UI.",
+            "type": "string",
+            "minLength": 1
+          },
+          "displayField": {
+            "description": "Column used to represent this table's rows elsewhere, such as foreign key links and pickers.",
+            "type": "string",
+            "minLength": 1
+          },
+          "defaultSort": {
+            "description": "The grid's initial sort, and the order of API lists and exports that don't name one.",
+            "type": "object",
+            "properties": {
+              "column": {
+                "type": "string",
+                "minLength": 1
+              },
+              "direction": {
+                "default": "asc",
+                "type": "string",
+                "enum": [
+                  "asc",
+                  "desc"
+                ]
+              }
+            },
+            "required": [
+              "column"
+            ],
+            "additionalProperties": false
+          },
+          "columnOrder": {
+            "description": "Columns the grid shows first, left to right; the rest follow in the default order.",
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "searchable": {
+            "description": "Columns the grid's free-text search matches against. Default: every visible text column.",
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "columns": {
+            "default": {},
+            "description": "Per-column config, keyed by column name.",
+            "type": "object",
+            "propertyNames": {
+              "type": "string",
+              "minLength": 1
+            },
+            "additionalProperties": {
+              "type": "object",
+              "properties": {
+                "hidden": {
+                  "description": "Remove the column completely: never selected, returned, shown, or accepted as input.",
+                  "type": "boolean"
+                },
+                "readOnly": {
+                  "description": "Show the column but never accept writes to it.",
+                  "type": "boolean"
+                },
+                "label": {
+                  "description": "The name shown in the UI.",
+                  "type": "string",
+                  "minLength": 1
+                },
+                "readableBy": {
+                  "description": "Only these roles see the column; to everyone else it is hidden.",
+                  "minItems": 1,
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "writableBy": {
+                  "description": "Only these roles may write the column; everyone else sees it read-only. Each must also be in readableBy when both are set.",
+                  "minItems": 1,
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "deny": {
+            "description": "Actions nobody may perform on this table, whatever their roles grant. Beats every grant.",
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "read",
+                "create",
+                "update",
+                "delete",
+                "export"
+              ]
+            }
+          },
+          "allowDelete": {
+            "description": "Turn hard delete on (true) or off (false) for this table, overriding defaults.delete. A role still needs delete on the table by name, and a deny that includes delete wins.",
+            "type": "boolean"
+          },
+          "requireReason": {
+            "description": "Writes on this table that must say why, stored in the audit log. Overrides defaults.requireReason either way ([] makes reasons optional here).",
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "create",
+                "update",
+                "delete"
+              ]
+            }
+          },
+          "updatablePrimaryKey": {
+            "description": "Let updates change primary key columns. A new key gives the row a new record id and splits its audit history. Only for natural keys that really do change.",
+            "type": "boolean"
+          },
+          "insertablePrimaryKey": {
+            "description": "Let creates set primary key columns that have a default (sequence, identity, or default expression). An explicit key doesn't advance the sequence.",
+            "type": "boolean"
+          },
+          "views": {
+            "description": "Shared grid views of this table, read-only in the UI.",
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "key": {
+                  "type": "string",
+                  "maxLength": 100,
+                  "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+                  "description": "Stable id, unique across all tables. Links use ?view=config:<key>, so keep it stable."
+                },
+                "name": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 100,
+                  "description": "Shown in the Views menu and the sidebar."
+                },
+                "filter": {
+                  "description": "A filter, as the list endpoint takes it: { field, op, value }, or { and: [...] }, { or: [...] }, { not: ... } around others. Checked at startup."
+                },
+                "search": {
+                  "description": "Free-text search.",
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1000
+                },
+                "sort": {
+                  "description": "The sort, as { column, direction: asc | desc }.",
+                  "minItems": 1,
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "column": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "direction": {
+                        "default": "asc",
+                        "type": "string",
+                        "enum": [
+                          "asc",
+                          "desc"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "column"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "columns": {
+                  "description": "Visible columns, in the grid's usual order. Without it, every column is shown.",
+                  "minItems": 1,
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "sidebar": {
+                  "description": "Give the view its own entry in the sidebar, under Queues.",
+                  "type": "boolean"
+                },
+                "default": {
+                  "description": "Apply this view when the table is opened without other grid state. One per table.",
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "key",
+                "name"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "softDelete": {
+            "description": "Deleting a row sets column instead of removing it, under the same delete grant. Deleted rows are left out of lists unless asked for; roles granted update may restore them.",
+            "type": "object",
+            "properties": {
+              "column": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Set on delete: a timestamp to now(), a boolean to true."
+              },
+              "by": {
+                "description": "Set to the actor's user id (see actor) on delete, null without one; cleared on restore.",
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "column"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "roles": {
+      "default": {},
+      "description": "Roles grant actions on tables. Create, update and delete are denied unless a role grants them.",
+      "type": "object",
+      "propertyNames": {
+        "type": "string",
+        "minLength": 1
+      },
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "grants": {
+            "default": {},
+            "description": "Actions this role may perform, keyed by table (\"users\", \"billing.invoices\") or \"*\" for every exposed table. \"*\" can't grant delete.",
+            "type": "object",
+            "propertyNames": {
+              "type": "string",
+              "pattern": "^(\\*|[^.*]+(\\.[^.*]+)?)$"
+            },
+            "additionalProperties": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "read",
+                  "create",
+                  "update",
+                  "delete",
+                  "export"
+                ]
+              }
+            }
+          },
+          "admin": {
+            "default": [],
+            "description": "Warden administration areas this role may use: schema (drift page), audit (audit log), roles (assigning roles), views (sharing and managing shared views).",
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "schema",
+                "audit",
+                "roles",
+                "views"
+              ]
+            }
+          },
+          "actions": {
+            "default": [],
+            "description": "Custom actions this role may run, or \"*\" for all. Running one doesn't need the table grants it writes with, but a table's deny still disables it.",
+            "type": "array",
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "const": "*"
+                },
+                {
+                  "type": "string",
+                  "pattern": "^[a-z][a-z0-9-]*$"
+                }
+              ]
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "actions": {
+      "default": {},
+      "description": "Per custom action (from WARDEN_ACTIONS), settings that override the action's own.",
+      "type": "object",
+      "propertyNames": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9-]*$"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "disabled": {
+            "description": "Nobody may run it, whatever their roles grant.",
+            "type": "boolean"
+          },
+          "requireReason": {
+            "description": "Whether running it must say why. Overrides the action's own requireReason either way; a table's requireReason covering a write the action may make still requires one.",
+            "type": "boolean"
+          },
+          "label": {
+            "description": "Overrides the action's own label.",
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "access": {
+      "description": "Required. Who may sign in, and which roles they get, from the claims in the ID token.",
+      "type": "object",
+      "properties": {
+        "groupsClaim": {
+          "default": "groups",
+          "description": "ID token claim holding the user's groups: a list of strings, or one string.",
+          "type": "string",
+          "minLength": 1
+        },
+        "groups": {
+          "default": {},
+          "description": "Roles for each IdP group. Group names match exactly.",
+          "type": "object",
+          "propertyNames": {
+            "type": "string",
+            "minLength": 1
+          },
+          "additionalProperties": {
+            "minItems": 1,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "emailDomains": {
+          "default": {},
+          "description": "Roles for everyone whose email is at each domain (exact match, not subdomains; ASCII, punycode for internationalized domains).",
+          "type": "object",
+          "propertyNames": {
+            "type": "string",
+            "allOf": [
+              {
+                "type": "string",
+                "pattern": "^[^@\\s]+\\.[^@\\s]+$"
+              },
+              {
+                "type": "string",
+                "pattern": "^[\\x21-\\x7e]+$"
+              }
+            ]
+          },
+          "additionalProperties": {
+            "minItems": 1,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "requireVerifiedEmail": {
+          "default": true,
+          "description": "Only match emailDomains and role assignments, and only record the email, when the IdP says it is verified (email_verified: true). Turn off only for IdPs that never send the claim and don't let users set their own email.",
+          "type": "boolean"
+        },
+        "allowAll": {
+          "default": false,
+          "description": "Let in everyone the IdP authenticates, with no roles unless a rule or assignment gives some. Only for IdPs that already restrict who can sign in.",
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "audit": {
+      "description": "Where the audit log is written.",
+      "default": {},
+      "type": "object",
+      "properties": {
+        "store": {
+          "default": "warden",
+          "description": "warden: warden.audit_log. table: a table you own, named by audit.table.",
+          "type": "string",
+          "enum": [
+            "warden",
+            "table"
+          ]
+        },
+        "table": {
+          "description": "\"table\" (in the first of schemas) or \"schema.table\". Required with store: table.",
+          "type": "string",
+          "pattern": "^[^.]+(\\.[^.]+)?$"
+        },
+        "columns": {
+          "description": "The column each audit field is written to. Leave it out to use warden.audit_log's column names.",
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "occurredAt": {
+              "type": "string",
+              "minLength": 1
+            },
+            "requestId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "actorSubject": {
+              "type": "string",
+              "minLength": 1
+            },
+            "actorEmail": {
+              "type": "string",
+              "minLength": 1
+            },
+            "actorUserId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "actorRoles": {
+              "type": "string",
+              "minLength": 1
+            },
+            "action": {
+              "type": "string",
+              "minLength": 1
+            },
+            "entity": {
+              "type": "string",
+              "minLength": 1
+            },
+            "recordId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "primaryKey": {
+              "type": "string",
+              "minLength": 1
+            },
+            "before": {
+              "type": "string",
+              "minLength": 1
+            },
+            "after": {
+              "type": "string",
+              "minLength": 1
+            },
+            "diff": {
+              "type": "string",
+              "minLength": 1
+            },
+            "details": {
+              "type": "string",
+              "minLength": 1
+            },
+            "reason": {
+              "type": "string",
+              "minLength": 1
+            },
+            "written": {
+              "type": "string",
+              "minLength": 1
+            },
+            "parentId": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "additionalProperties": false
+        },
+        "source": {
+          "description": "Tags Warden's entries (column = value), for a table that also holds the application's own.",
+          "type": "object",
+          "properties": {
+            "column": {
+              "type": "string",
+              "minLength": 1
+            },
+            "value": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "column",
+            "value"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "actor": {
+      "description": "Maps each signed-in user to a row of your own users table, by verified email, so audit entries record their internal user id.",
+      "type": "object",
+      "properties": {
+        "table": {
+          "type": "string",
+          "pattern": "^[^.]+(\\.[^.]+)?$",
+          "description": "The users table: \"table\" (in the first schema) or \"schema.table\". It may be hidden."
+        },
+        "matchColumn": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Text column matched, ignoring case, against the user's verified email."
+        },
+        "idColumn": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Column whose value (as text) is recorded as the actor's user id."
+        },
+        "required": {
+          "default": false,
+          "description": "Deny sign-in to users with no single matching row, and to everyone if the mapping is broken.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "table",
+        "matchColumn",
+        "idColumn"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false,
+  "title": "Warden config",
+  "description": "warden.config.yaml or warden.config.json. See docs/config.md."
+}

@@ -4,6 +4,7 @@ Warden needs one decision from you before it starts: who may sign in ([`access`]
 
 - [Loading the config](#loading-the-config)
 - [Errors and warnings](#errors-and-warnings)
+- [Editor support](#editor-support)
 - [`schemas`](#schemas)
 - [`defaults`](#defaults)
 - [`tables`](#tables)
@@ -54,6 +55,41 @@ Invalid Warden config /config/warden.config.yaml:
 ```
 
 **Config that doesn't match the database only warns.** A table or column that the config names but the database doesn't have is ignored, and Warden logs a warning with the key path, for example `config: table "public.legacy_orders" does not exist`. Dropping a column must never take the backoffice down, so check the startup log after schema changes.
+
+## Editor support
+
+Warden has a JSON Schema for the config file, `warden.config.schema.json`, generated from the schema Warden itself loads the file with. With it, an editor completes keys, shows what each key does on hover, and flags misspelled keys, wrong types and unknown values as you type.
+
+Every [GitHub release](https://github.com/laclemen92/warden/releases) has the schema for that version attached, at `https://github.com/laclemen92/warden/releases/download/v<version>/warden.config.schema.json`. Use the version of the image you run, or save a copy next to your config. In this repository it's `packages/config/warden.config.schema.json`.
+
+**YAML**, in VS Code with Red Hat's [YAML extension](https://marketplace.visualstudio.com/items?itemName=redhat.vscode-yaml) or any editor using `yaml-language-server`: put a comment at the top of the file naming the schema, as a path relative to the file or a URL. [`examples/basic/warden.config.yaml`](../examples/basic/warden.config.yaml) does this.
+
+```yaml
+# yaml-language-server: $schema=./warden.config.schema.json
+access:
+  allowAll: true
+```
+
+To leave the file untouched, map the schema to the file name in the editor's settings instead (`.vscode/settings.json` in VS Code):
+
+```jsonc
+{
+  "yaml.schemas": {
+    "./warden.config.schema.json": ["warden.config.yaml", "warden.config.yml"],
+  },
+}
+```
+
+**JSON**: add a top-level `$schema` key. VS Code needs no extension. Warden ignores `$schema`; it's the only key it accepts without using, so every other unknown key still fails startup.
+
+```json
+{
+  "$schema": "./warden.config.schema.json",
+  "access": { "allowAll": true }
+}
+```
+
+The schema checks each key on its own: names, types, allowed values and formats. Rules that span several keys only run when Warden starts, so a file the editor accepts can still fail with a `ConfigError`. These include roles that must be defined under `roles`, a hidden column used as a `displayField`, a `schema.table` key whose schema isn't in `schemas`, reserved custom action names, duplicate view keys, and the `audit` column mapping.
 
 ## `schemas`
 

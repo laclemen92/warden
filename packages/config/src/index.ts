@@ -35,3 +35,4 @@ export {
   type LoadConfigOptions,
   type LoadedConfig,
 } from './load.js';
+export { configJsonSchema } from './json-schema.js';

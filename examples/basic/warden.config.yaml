@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=../../packages/config/warden.config.schema.json
 # Warden exposes every introspected table and column by default.
 # This file narrows and customizes what is exposed.
 

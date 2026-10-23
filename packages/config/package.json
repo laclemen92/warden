@@ -12,15 +12,19 @@
     "./schema": {
       "types": "./dist/schema.d.ts",
       "default": "./dist/schema.js"
-    }
+    },
+    "./warden.config.schema.json": "./warden.config.schema.json"
   },
   "files": [
-    "dist"
+    "dist",
+    "warden.config.schema.json"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json",
-    "test": "vitest run --passWithNoTests"
+    "test": "vitest run --passWithNoTests",
+    "schema:json": "tsc -p tsconfig.build.json && node scripts/json-schema.mjs",
+    "schema:check": "tsc -p tsconfig.build.json && node scripts/json-schema.mjs --check"
   },
   "dependencies": {
     "yaml": "^2.9.1",
