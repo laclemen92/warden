@@ -1,4 +1,4 @@
-// Run with `node --test .github/scripts/`.
+// Run with `node --test .github/scripts/*.test.mjs`.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { bumpOf, draftBody, highestBump, nextVersion, upgradeNotes } from './next-version.mjs';
@@ -63,6 +63,12 @@ test('extracts upgrade notes from a PR body', () => {
     upgradeNotes('## Breaking changes / upgrade notes\r\n\r\nRe-run the grants.\r\n\r\nCloses #2'),
     'Re-run the grants.',
   );
+});
+
+test('keeps headings inside code fences in upgrade notes', () => {
+  const notes =
+    'Re-run the grants:\n\n```sh\n# as the owner role\npsql -f grants.sql\n```\n\n~~~sql\n## not a heading\n~~~';
+  assert.equal(upgradeNotes(template(notes)), notes);
 });
 
 test('builds the draft body', () => {

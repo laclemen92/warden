@@ -55,9 +55,20 @@ export function upgradeNotes(body) {
   const text = body.replace(/\r\n/g, '\n');
   const start = UPGRADE_HEADING.exec(text);
   if (!start) return null;
-  const rest = text.slice(start.index + start[0].length);
-  const end = /^#{1,3}\s/m.exec(rest);
-  const section = (end ? rest.slice(0, end.index) : rest)
+  const lines = text.slice(start.index + start[0].length).split('\n');
+  // A `#` line inside a code fence (a shell or SQL comment) doesn't end the section.
+  let fenced = false;
+  let end = lines.length;
+  for (const [i, line] of lines.entries()) {
+    if (/^\s*(```|~~~)/.test(line)) fenced = !fenced;
+    else if (!fenced && /^#{1,3}\s/.test(line)) {
+      end = i;
+      break;
+    }
+  }
+  const section = lines
+    .slice(0, end)
+    .join('\n')
     .replace(/<!--[\s\S]*?-->/g, '')
     .replace(/^Closes #\d+.*$/gim, '')
     .trim();

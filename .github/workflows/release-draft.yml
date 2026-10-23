@@ -27,7 +27,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version-file: .nvmrc
-      - run: node --test .github/scripts/
+      - run: node --test .github/scripts/*.test.mjs
 
   draft:
     needs: test
@@ -42,15 +42,20 @@ jobs:
         with:
           ref: main
           fetch-depth: 0
+      # PRs are collected since the last stable tag, so a release cut after an rc still carries the
+      # upgrade notes of PRs merged before the rc. The version is bumped from the latest tag.
       - id: range
         run: |
           tag="$(git describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*' HEAD)"
-          echo "Last version tag on main: $tag"
-          git log --format=%H "$tag..HEAD" > "$RUNNER_TEMP/shas"
+          since="$(git describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*' --exclude 'v*-*' HEAD 2>/dev/null || echo "$tag")"
+          echo "Last version tag on main: $tag; collecting PRs since $since"
+          git log --format=%H "$since..HEAD" > "$RUNNER_TEMP/shas"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "since=$since" >> "$GITHUB_OUTPUT"
       - uses: actions/github-script@v8
         env:
           LAST_TAG: ${{ steps.range.outputs.tag }}
+          SINCE_TAG: ${{ steps.range.outputs.since }}
         with:
           script: |
             const fs = require('node:fs');
@@ -59,6 +64,7 @@ jobs:
             );
             const { owner, repo } = context.repo;
             const lastTag = process.env.LAST_TAG;
+            const sinceTag = process.env.SINCE_TAG;
             const shas = fs
               .readFileSync(`${process.env.RUNNER_TEMP}/shas`, 'utf8')
               .split('\n')
@@ -84,7 +90,7 @@ jobs:
             const merged = [...prs.values()].sort((a, b) => a.number - b.number);
             const bump = highestBump(merged);
             const next = nextVersion(lastTag, bump);
-            core.info(`${merged.length} PRs since ${lastTag}: ${bump} bump, next ${next ?? 'none'}`);
+            core.info(`${merged.length} PRs since ${sinceTag}: ${bump} bump, next ${next ?? 'none'}`);
 
             const drafts = (await github.paginate(github.rest.repos.listReleases, { owner, repo })).filter(
               (r) => r.draft && (r.body ?? '').includes(DRAFT_MARKER),
@@ -99,7 +105,7 @@ jobs:
               repo,
               tag_name: `v${next}`,
               target_commitish: 'main',
-              previous_tag_name: lastTag,
+              previous_tag_name: sinceTag,
             });
             const release = {
               owner,
@@ -107,7 +113,7 @@ jobs:
               tag_name: `v${next}`,
               target_commitish: 'main',
               name: `v${next} (draft)`,
-              body: draftBody({ repo: `${owner}/${repo}`, lastTag, next, bump, prs: merged, generatedNotes: generated.body }),
+              body: draftBody({ repo: `${owner}/${repo}`, lastTag: sinceTag, next, bump, prs: merged, generatedNotes: generated.body }),
               draft: true,
               prerelease: false,
             };
@@ -118,4 +124,4 @@ jobs:
               await github.rest.repos.createRelease(release);
             }
             for (const d of stale) await github.rest.repos.deleteRelease({ owner, repo, release_id: d.id });
-            await core.summary.addRaw(`Suggested next version: **v${next}** (${bump} since ${lastTag})`).write();
+            await core.summary.addRaw(`Suggested next version: **v${next}** (${bump} since ${sinceTag})`).write();
