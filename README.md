@@ -39,6 +39,8 @@ access: # who may sign in (required)
 
 See the [configuration reference](docs/config.md) for every option and [database setup](docs/database.md) for migrations, database roles, and the audit log.
 
+For the people using it day to day, [Using Warden](docs/using-warden.md) covers search, filters, sorting, views, editing, export, actions and keyboard shortcuts. The same guide is in the app under **Help**.
+
 ## Quickstart
 
 Requires Docker.

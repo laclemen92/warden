@@ -55,6 +55,7 @@ Put logic in `packages/core` when it can be pure; keep SQL in `pg-adapter`; keep
 - Postgres values: dates/times come back as Postgres text (not JS `Date`); `int8`/`numeric` are strings. Keep it that way: cursors depend on it.
 - Comments explain _why_, sparingly. Match the surrounding style.
 - New dependency: add it to the package that uses it with `pnpm --filter`. Shared dev tooling goes at the root. Check the latest version first.
+- New shortcuts or mouse modifiers go in the shortcuts module (`apps/web/src/lib/shortcuts.ts`) and `docs/using-warden.md` in the same PR.
 - **Config changes are documented in the same PR.** Adding, changing, or removing a key in `packages/config/src/schema.ts` updates `docs/config.md` (the config reference) and `examples/basic/warden.config.yaml`.
 
 ## Tests
