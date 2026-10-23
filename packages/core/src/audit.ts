@@ -51,7 +51,7 @@ export interface AuditEntry {
   after: Record<string, unknown> | null;
   diff: AuditDiff;
   /** For entries that don't change a row (exports, custom actions, ...), what they did. */
-  details: ExportDetails | RevokeSessionsDetails | ActionDetails | null;
+  details: ExportDetails | RevokeSessionsDetails | ActionDetails | SoftDeleteDetails | null;
   /** The custom action this change was part of. */
   parent: { id: string; action: string } | null;
   /**
@@ -60,6 +60,21 @@ export interface AuditEntry {
    */
   source?: string | null;
 }
+
+/**
+ * Set on a soft delete (a `delete` entry whose row is still there, with the soft-delete column
+ * set) and on a restore (an `update` entry that clears it).
+ */
+export interface SoftDeleteDetails {
+  softDelete: 'delete' | 'restore';
+}
+
+export const isSoftDeleteDetails = (
+  details: AuditEntry['details'] | undefined,
+): details is SoftDeleteDetails =>
+  details != null &&
+  'softDelete' in details &&
+  (details.softDelete === 'delete' || details.softDelete === 'restore');
 
 /**
  * A custom action's parent entry: what was asked for. Every row it changed has its own entry
@@ -118,6 +133,8 @@ export interface ExportDetails {
   /** The fields `q` was matched against. */
   searchFields?: string[];
   sort?: string;
+  /** Soft-deleted rows were included, or the only ones exported; absent when left out. */
+  deleted?: 'include' | 'only';
   /**
    * Set when the filter, search, or sort named a field the caller can't read now, so it was left
    * out. The entry still shows that the export happened.
@@ -153,12 +170,14 @@ export function projectAuditEntry(
     before: entry.before && pick(entry.before, visible),
     after: entry.after && pick(entry.after, visible),
     diff: pick(entry.diff, visible),
-    // Entities' entries have export or custom action details.
+    // Entities' entries have export, custom action, or soft delete details.
     details: isActionDetails(entry.details)
       ? projectActionDetails(entry.details, entities)
       : entry.details && 'columns' in entry.details
         ? projectDetails(entry.details, visible)
-        : null,
+        : isSoftDeleteDetails(entry.details)
+          ? { softDelete: entry.details.softDelete }
+          : null,
   };
 }
 

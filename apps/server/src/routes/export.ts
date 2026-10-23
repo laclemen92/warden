@@ -12,7 +12,13 @@ import {
   type Policy,
   type AuditStore,
 } from '@wardenhq/core';
-import { openExport, recordExport, type Database, type RowExport } from '@wardenhq/pg-adapter';
+import {
+  openExport,
+  recordExport,
+  type Database,
+  type DeletedRows,
+  type RowExport,
+} from '@wardenhq/pg-adapter';
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { createSlots } from '../slots.js';
 import type { Views } from '../views.js';
@@ -55,6 +61,7 @@ interface ExportQuery {
   sort?: string;
   /** Comma-separated; every visible column when absent. */
   columns?: string;
+  deleted: DeletedRows;
 }
 
 const exportQuerySchema = {
@@ -64,6 +71,8 @@ const exportQuerySchema = {
     q: { type: 'string', maxLength: 1000 },
     sort: { type: 'string', maxLength: 1000 },
     columns: { type: 'string', maxLength: 20_000 },
+    /** Soft-deleted rows, as in the list endpoint. */
+    deleted: { type: 'string', enum: ['exclude', 'include', 'only'], default: 'exclude' },
   },
 } as const;
 
@@ -150,6 +159,7 @@ export function registerExportRoutes(
         sort: sort.sort,
         ...(combined ? { filter: combined } : {}),
         maxRows: MAX_EXPORT_ROWS,
+        deleted: req.query.deleted,
         deadlineMs,
         idleTimeoutMs,
         onTimeout: (reason) => {
@@ -209,6 +219,9 @@ export function registerExportRoutes(
             // shown neither the search text nor the count.
             ...(q ? { q, searchFields: search ? filterFields(search) : [] } : {}),
             ...(sortInput ? { sort: sortInput } : {}),
+            ...(entity.softDelete && req.query.deleted !== 'exclude'
+              ? { deleted: req.query.deleted }
+              : {}),
           },
         });
       } catch (err) {

@@ -67,7 +67,7 @@ import {
   writeGridState,
   type GridUpdate,
 } from '@/lib/grid-state';
-import { recordPath, type RecordItem, type RecordList } from '@/lib/records';
+import { isSoftDeleted, recordPath, type RecordItem, type RecordList } from '@/lib/records';
 import { FROM_PARAM, useSavedView, useViewList, type SavedView } from '@/lib/saved-views';
 
 /** Params that make up a grid's state. A table opened without any gets its default view. */
@@ -303,13 +303,32 @@ export function EntityGrid({ entity }: { entity: Entity }) {
         );
       },
     });
+    const deletedColumn = helper.display({
+      id: '_deleted',
+      header: () => <span className="sr-only">Deleted</span>,
+      cell: (info) =>
+        isSoftDeleted(entity, info.row.original.values) && (
+          <Badge variant="destructive">Deleted</Badge>
+        ),
+    });
     // Up front, so the row menu doesn't scroll out of view on wide tables.
     return [
       ...(selectable ? [selectColumn] : []),
       ...(addressable && rowActions.length > 0 ? [actionsColumn] : []),
+      ...(state.showDeleted ? [deletedColumn] : []),
       ...dataColumns,
     ];
-  }, [addressable, dataColumns, entity, pageIds, rowActions, selectable, selected, url]);
+  }, [
+    addressable,
+    dataColumns,
+    entity,
+    pageIds,
+    rowActions,
+    selectable,
+    selected,
+    state.showDeleted,
+    url,
+  ]);
 
   const sorting = useMemo<SortingState>(
     () => state.sort.map((t) => ({ id: t.field, desc: t.direction === 'desc' })),
@@ -377,6 +396,15 @@ export function EntityGrid({ entity }: { entity: Entity }) {
           columns={state.columns}
           onChange={(next) => update({ columns: next })}
         />
+        {entity.softDelete && (
+          <label className="flex items-center gap-2 text-sm">
+            <Checkbox
+              checked={state.showDeleted === true}
+              onCheckedChange={(checked) => update({ showDeleted: checked === true })}
+            />
+            Show deleted
+          </label>
+        )}
         <ul aria-label="Active filters" className="flex flex-wrap items-center gap-1.5">
           {conditions === undefined ? (
             <li>

@@ -25,15 +25,19 @@ import {
   getRow,
   listRows,
   mapWriteError,
+  restoreRow,
   rowVersion,
+  softDeleteRow,
   updateRow,
   type Database,
+  type DeletedRows,
   type Row,
   type WriteAction,
   type WriteOptions,
 } from '@wardenhq/pg-adapter';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { Views } from '../views.js';
+import { RESTORE_ROUTE } from './policy.js';
 import { NO_NUL } from './schemas.js';
 
 export const DEFAULT_LIMIT = 50;
@@ -48,6 +52,7 @@ interface ListQuery {
   offset?: number;
   cursor?: string;
   count: boolean;
+  deleted: DeletedRows;
 }
 
 const listQuerySchema = {
@@ -62,6 +67,8 @@ const listQuerySchema = {
     offset: { type: 'integer', minimum: 0, maximum: MAX_OFFSET },
     cursor: { type: 'string', maxLength: 10_000 },
     count: { type: 'boolean', default: false },
+    /** Soft-deleted rows: left out (the default), included, or the only ones listed. */
+    deleted: { type: 'string', enum: ['exclude', 'include', 'only'], default: 'exclude' },
   },
 } as const;
 
@@ -81,6 +88,7 @@ interface UpdateBody extends WriteBody {
 interface DeleteBody extends WriteBody {
   version?: string;
 }
+type RestoreBody = DeleteBody;
 
 // Field values are validated against the entity by `validateRecord`; these only check the shape.
 const valuesSchema = { type: 'object' } as const;
@@ -209,7 +217,7 @@ export function registerEntityRoutes(
       // Reads only ever touch the caller's view, so unreadable fields are never selected.
       const entity = lookup(req, req.params.entity)?.view;
       if (!entity) return notFound(reply);
-      const { q, limit, offset, cursor, count } = req.query;
+      const { q, limit, offset, cursor, count, deleted } = req.query;
 
       if (cursor !== undefined && offset !== undefined) {
         return badRequest(reply, 'use either cursor or offset, not both');
@@ -248,6 +256,7 @@ export function registerEntityRoutes(
         sort: sort.sort,
         limit,
         count,
+        deleted,
         ...(filter ? { filter } : {}),
         ...(offset !== undefined ? { offset } : {}),
         ...(after ? { after } : {}),
@@ -342,17 +351,50 @@ export function registerEntityRoutes(
       const reason = reasonFor(entity, 'delete', req.body);
       if (!reason.ok) return badRequest(reply, reason.message);
       const version = req.body?.version;
+      const options = {
+        ...(version !== undefined ? { version, versionEntity: view } : {}),
+        ...audited(req, reason.reason),
+      };
       let result;
       try {
-        result = await deleteRow(db, entity, decoded.filter, {
-          ...(version !== undefined ? { version, versionEntity: view } : {}),
-          ...audited(req, reason.reason),
-        });
+        result = entity.softDelete
+          ? await softDeleteRow(db, entity, decoded.filter, {
+              ...options,
+              by: req.session!.userId ?? null,
+            })
+          : await deleteRow(db, entity, decoded.filter, options);
       } catch (err) {
         return writeFailed(reply, view, 'delete', err);
       }
       if (!result.ok) return result.reason === 'conflict' ? conflict(reply) : notFound(reply);
       return reply.code(204).send();
+    },
+  );
+
+  // Needs `update` (see registerPolicy). Only soft-deleted rows can be restored; anything else 404s.
+  app.post<{ Params: { entity: string; id: string }; Body: RestoreBody | null | undefined }>(
+    RESTORE_ROUTE,
+    { schema: { body: deleteBodySchema } },
+    async (req, reply) => {
+      const found = lookup(req, req.params.entity);
+      if (!found?.entity.softDelete) return notFound(reply);
+      const { entity, view } = found;
+      const decoded = decodeRecordId(view, req.params.id);
+      if (!decoded.ok) return notFound(reply);
+      const reason = reasonFor(entity, 'update', req.body);
+      if (!reason.ok) return badRequest(reply, reason.message);
+      const version = req.body?.version;
+      let result;
+      try {
+        result = await restoreRow(db, entity, decoded.filter, {
+          ...(version !== undefined ? { version, versionEntity: view } : {}),
+          ...audited(req, reason.reason),
+        });
+      } catch (err) {
+        return writeFailed(reply, view, 'update', err);
+      }
+      if (!result.ok) return result.reason === 'conflict' ? conflict(reply) : notFound(reply);
+      return written(req, view, result.row);
     },
   );
 }

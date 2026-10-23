@@ -1,6 +1,6 @@
 import { useId, useState, type MouseEvent } from 'react';
 import type { Entity, Field, Relation } from '@wardenhq/core';
-import { Pencil, Trash2 } from 'lucide-react';
+import { Pencil, RotateCcw, Trash2 } from 'lucide-react';
 import { Link, useNavigate, useParams } from 'react-router';
 import { RecordActionsMenu } from '@/components/actions-menu';
 import { AuditEntryItem } from '@/components/audit-entry';
@@ -17,6 +17,7 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog';
+import { Badge } from '@/components/ui/badge';
 import { Button, buttonVariants } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -25,8 +26,10 @@ import { useRecordHistory } from '@/lib/audit';
 import { useCan } from '@/lib/capabilities';
 import {
   editRecordPath,
+  isSoftDeleted,
   recordPath,
   useDeleteRecord,
+  useRestoreRecord,
   useChildRecords,
   useParentRecord,
   useRecord,
@@ -68,6 +71,7 @@ function RecordView({ entity, id, entities }: { entity: Entity; id: string; enti
 
   const row = record.values;
   const children = entity.relations.filter((r) => r.kind === 'hasMany');
+  const deleted = isSoftDeleted(entity, row);
 
   return (
     <div className="space-y-8">
@@ -79,14 +83,19 @@ function RecordView({ entity, id, entities }: { entity: Entity; id: string; enti
           >
             {entity.label}
           </Link>
-          <h1 className="text-2xl font-semibold break-words">
+          <h1 className="flex flex-wrap items-center gap-2 text-2xl font-semibold break-words">
             {displayText(row[entity.displayField])}
+            {deleted && <Badge variant="destructive">Deleted</Badge>}
           </h1>
         </div>
         <div className="flex gap-2">
           <RecordActionsMenu entity={entity} id={id} />
           <EditRecord entity={entity} id={id} />
-          <DeleteRecord entity={entity} record={{ ...record, id }} />
+          {deleted ? (
+            <RestoreRecord entity={entity} record={{ ...record, id }} />
+          ) : (
+            <DeleteRecord entity={entity} record={{ ...record, id }} />
+          )}
         </div>
       </div>
 
@@ -257,7 +266,9 @@ function DeleteRecord({ entity, record }: { entity: Entity; record: RecordItem &
         <AlertDialogHeader>
           <AlertDialogTitle>Delete {title}?</AlertDialogTitle>
           <AlertDialogDescription>
-            This permanently deletes the record from {entity.label}. It can't be undone.
+            {entity.softDelete
+              ? `This marks the record as deleted. It's hidden from ${entity.label} unless deleted records are shown, and can be restored.`
+              : `This permanently deletes the record from ${entity.label}. It can't be undone.`}
           </AlertDialogDescription>
         </AlertDialogHeader>
         <InternalNote
@@ -279,6 +290,100 @@ function DeleteRecord({ entity, record }: { entity: Entity; record: RecordItem &
             onClick={confirm}
           >
             {remove.isPending ? 'Deleting…' : 'Delete'}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+}
+
+function restoreErrorMessage(error: Error): string {
+  if (!(error instanceof ApiError)) return "Couldn't restore this record.";
+  const rejected = rejectedNote(error.message);
+  if (rejected) return rejected;
+  if (error.status === 403) return "You don't have permission to restore this record.";
+  if (error.status === 404) return 'This record is no longer deleted, or no longer exists.';
+  if (error.status === 409) {
+    return error.message === STALE_MESSAGE
+      ? 'This record changed since you opened it. Review the current values and try again.'
+      : "This record can't be restored: it conflicts with existing records.";
+  }
+  return "Couldn't restore this record.";
+}
+
+/** Restoring changes the record, so it is shown to users who may update. */
+function RestoreRecord({
+  entity,
+  record,
+}: {
+  entity: Entity;
+  record: RecordItem & { id: string };
+}) {
+  const canUpdate = useCan(entity.key, 'update');
+  const restore = useRestoreRecord(entity);
+  const [open, setOpen] = useState(false);
+  const [reason, setReason] = useState('');
+  const reasonId = useId();
+  if (!canUpdate) return null;
+
+  const reasonMinLength = entity.requireReason?.includes('update')
+    ? (entity.reasonMinLength ?? 1)
+    : undefined;
+  const title = displayText(record.values[entity.displayField]);
+  const confirm = (event: MouseEvent) => {
+    event.preventDefault();
+    const trimmed = reason.trim();
+    restore.mutate(
+      { ...record, ...(trimmed ? { reason: trimmed } : {}) },
+      {
+        onSuccess: () => {
+          setOpen(false);
+          setReason('');
+        },
+      },
+    );
+  };
+
+  return (
+    <AlertDialog
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next);
+        if (!next) {
+          restore.reset();
+          setReason('');
+        }
+      }}
+    >
+      <AlertDialogTrigger asChild>
+        <Button variant="outline">
+          <RotateCcw />
+          Restore
+        </Button>
+      </AlertDialogTrigger>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Restore {title}?</AlertDialogTitle>
+          <AlertDialogDescription>The record shows in {entity.label} again.</AlertDialogDescription>
+        </AlertDialogHeader>
+        <InternalNote
+          id={reasonId}
+          value={reason}
+          minLength={reasonMinLength}
+          onChange={setReason}
+        />
+        {restore.error && (
+          <p role="alert" className="text-sm text-destructive">
+            {restoreErrorMessage(restore.error)}
+          </p>
+        )}
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction
+            disabled={restore.isPending || noteProblem(reason, reasonMinLength) !== null}
+            onClick={confirm}
+          >
+            {restore.isPending ? 'Restoring…' : 'Restore'}
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>

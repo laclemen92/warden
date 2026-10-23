@@ -203,6 +203,18 @@ const tableConfigSchema = z
     insertablePrimaryKey: z.boolean().optional(),
     /** Shared grid views of this table, read-only in the UI. */
     views: z.array(viewConfigSchema).optional(),
+    /**
+     * Deleting a row sets `column` (a timestamp to `now()`, a boolean to `true`) instead of
+     * removing it, under the same `delete` grant. Rows with it set are left out of lists unless
+     * asked for, and roles granted `update` may restore them. Independent of `allowDelete`.
+     */
+    softDelete: z
+      .strictObject({
+        column: name,
+        /** Set to the actor's user id (see `actor`) on delete, null without one; cleared on restore. */
+        by: name.optional(),
+      })
+      .optional(),
   })
   .superRefine((table, ctx) => {
     for (const [column, config] of Object.entries(table.columns)) {
@@ -278,6 +290,34 @@ const tableConfigSchema = z
         path: ['views', i, 'default'],
         message: 'only one view per table can be the default',
       });
+    }
+    // Everyone who can see the table must be able to tell a deleted row from a live one.
+    if (table.softDelete) {
+      const { column, by } = table.softDelete;
+      const columns: [string, string][] = [['column', column]];
+      if (by) columns.push(['by', by]);
+      for (const [key, name] of columns) {
+        const config = table.columns[name];
+        const problem = config?.hidden
+          ? 'is hidden'
+          : config?.readableBy
+            ? 'has readableBy'
+            : undefined;
+        if (problem) {
+          ctx.addIssue({
+            code: 'custom',
+            path: ['softDelete', key],
+            message: `"${name}" ${problem} and cannot be used for soft delete`,
+          });
+        }
+      }
+      if (by === column) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['softDelete', 'by'],
+          message: '`by` must be a different column from `column`',
+        });
+      }
     }
   });
 

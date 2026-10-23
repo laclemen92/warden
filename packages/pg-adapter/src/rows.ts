@@ -19,6 +19,33 @@ const from = (entity: Entity) => sql`${entityTable(entity)} as ${sql.id(ALIAS)}`
 // Only exposed fields are ever selected, so hidden columns never leave the database.
 const selection = (entity: Entity) => sql.join(entity.fields.map((f) => column(f.name)));
 
+/**
+ * Which rows of a soft-deleting entity to include: live ones (the default), all, or only the
+ * deleted ones. Ignored for entities that don't soft-delete.
+ */
+export type DeletedRows = 'exclude' | 'include' | 'only';
+
+/** Whether a row of a soft-deleting entity is deleted: its column set (true, for a boolean). */
+function isDeletedSql(entity: Entity, alias = ALIAS): RawBuilder<SqlBool> | undefined {
+  const softDelete = entity.softDelete;
+  if (!softDelete) return undefined;
+  const col = sql.id(alias, softDelete.column);
+  return softDelete.kind === 'boolean'
+    ? sql<SqlBool>`${col} is true`
+    : sql<SqlBool>`${col} is not null`;
+}
+
+/** The condition that keeps `deleted` rows of a soft-deleting entity, if any. */
+export function deletedCondition(
+  entity: Entity,
+  deleted: DeletedRows = 'exclude',
+  alias = ALIAS,
+): RawBuilder<SqlBool> | undefined {
+  const isDeleted = isDeletedSql(entity, alias);
+  if (!isDeleted || deleted === 'include') return undefined;
+  return deleted === 'only' ? isDeleted : sql<SqlBool>`not (${isDeleted})`;
+}
+
 export interface ListOptions {
   /** Must already be validated against the entity. */
   filter?: Filter;
@@ -29,6 +56,7 @@ export interface ListOptions {
   /** Keyset position from a decoded cursor; requires `sort` to end with the primary key. */
   after?: CursorValues;
   count?: boolean;
+  deleted?: DeletedRows;
 }
 
 export interface ListResult {
@@ -42,11 +70,13 @@ export async function listRows(
   entity: Entity,
   options: ListOptions,
 ): Promise<ListResult> {
-  const { filter, sort, limit, offset = 0, after, count = false } = options;
+  const { filter, sort, limit, offset = 0, after, count = false, deleted } = options;
 
-  const conditions: Expression<SqlBool>[] = [];
-  if (filter) conditions.push(compileFilter(filter, ALIAS));
-  if (after) conditions.push(keysetAfter(sort, after));
+  const matching: Expression<SqlBool>[] = [];
+  if (filter) matching.push(compileFilter(filter, ALIAS));
+  const live = deletedCondition(entity, deleted);
+  if (live) matching.push(live);
+  const conditions = after ? [...matching, keysetAfter(sort, after)] : matching;
   const where = conditions.length > 0 ? sql`where ${sql.join(conditions, sql` and `)}` : sql``;
 
   // Fetch one extra row to learn whether another page exists without a count.
@@ -57,7 +87,7 @@ export async function listRows(
   const result: ListResult = { rows: rows.slice(0, limit), hasMore: rows.length > limit };
   if (count) {
     const { rows: countRows } = await sql<{ total: string }>`
-      select count(*) as total from ${from(entity)} ${filter ? sql`where ${compileFilter(filter, ALIAS)}` : sql``}`.execute(
+      select count(*) as total from ${from(entity)} ${matching.length > 0 ? sql`where ${sql.join(matching, sql` and `)}` : sql``}`.execute(
       db,
     );
     result.total = Number(countRows[0]?.total ?? 0);
@@ -90,6 +120,7 @@ export interface ExportOptions {
   idleTimeoutMs?: number;
   /** Called once the deadline or idle timeout has ended the export. */
   onTimeout?: (reason: ExportTimeout) => void;
+  deleted?: DeletedRows;
 }
 
 export type ExportTimeout = 'deadline' | 'idle';
@@ -117,7 +148,16 @@ const EXPORT_CURSOR = sql.id('warden_export');
 export async function openExport(
   db: Database,
   entity: Entity,
-  { filter, sort, batchSize = 1000, maxRows, deadlineMs, idleTimeoutMs, onTimeout }: ExportOptions,
+  {
+    filter,
+    sort,
+    batchSize = 1000,
+    maxRows,
+    deadlineMs,
+    idleTimeoutMs,
+    onTimeout,
+    deleted,
+  }: ExportOptions,
 ): Promise<RowExport> {
   const trx = await db
     .startTransaction()
@@ -155,7 +195,11 @@ export async function openExport(
     deadline = setTimeout(() => timeOut('deadline'), deadlineMs).unref();
   }
   try {
-    const where = filter ? sql`where ${compileFilter(filter, ALIAS)}` : sql``;
+    const conditions: Expression<SqlBool>[] = [];
+    if (filter) conditions.push(compileFilter(filter, ALIAS));
+    const live = deletedCondition(entity, deleted);
+    if (live) conditions.push(live);
+    const where = conditions.length > 0 ? sql`where ${sql.join(conditions, sql` and `)}` : sql``;
     const matching = sql`select 1 from ${from(entity)} ${where}`;
     const { rows } = await sql<{ total: string }>`
       select count(*) as total from (${

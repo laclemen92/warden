@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import {
   isActionDetails,
+  isSoftDeleteDetails,
   parseSortFields,
   type ActionDetails,
   type Entity,
@@ -198,8 +199,13 @@ export function AuditEntryItem({
   const actionDetails = isActionDetails(entry.details) ? entry.details : null;
   const parentLabel = useActionLabel(entry.parent?.action);
   const ownLabel = useActionLabel(actionDetails ? entry.action : undefined);
+  const softDelete = isSoftDeleteDetails(entry.details) ? entry.details.softDelete : undefined;
+  // A soft-deleted row is still there to link to.
   const recordLink =
-    entity && entity.primaryKey.length > 0 && entry.recordId !== null && entry.action !== 'delete'
+    entity &&
+    entity.primaryKey.length > 0 &&
+    entry.recordId !== null &&
+    (entry.action !== 'delete' || softDelete !== undefined)
       ? recordPath(entity, entry.recordId)
       : undefined;
 
@@ -209,6 +215,9 @@ export function AuditEntryItem({
         <Badge variant={ACTION_VARIANTS[entry.action] ?? 'outline'}>
           {ownLabel ?? entry.action}
         </Badge>
+        {softDelete && (
+          <Badge variant="outline">{softDelete === 'delete' ? 'soft delete' : 'restore'}</Badge>
+        )}
         {showRecord && (
           <span className="font-medium">
             {entity?.label ?? accessEntity ?? entry.entity}

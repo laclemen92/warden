@@ -166,7 +166,7 @@ export function auditHook({
   parentId,
   store = WARDEN_STORE,
 }: AuditContext): WriteHook {
-  return async (trx, { action, entity, before, after, written }) => {
+  return async (trx, { action, entity, before, after, written, details }) => {
     // The row as it now is; on delete, as it was. An update that changes the key is filed under
     // the new id.
     const row = (after ?? before)!;
@@ -185,6 +185,7 @@ export function auditHook({
       diff: auditDiff(before, after),
       reason: reason ?? null,
       written: written ? [...written] : null,
+      ...(details ? { details } : {}),
       parentId: parentId ?? null,
     });
   };

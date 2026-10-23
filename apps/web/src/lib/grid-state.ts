@@ -17,6 +17,8 @@ export interface GridState {
   /** 1-based. */
   page: number;
   pageSize: number;
+  /** Include soft-deleted rows; only ever set for entities that soft-delete. */
+  showDeleted?: true;
 }
 
 export function parseSort(value: string | null): SortTerm[] {
@@ -55,6 +57,7 @@ export function readGridState(params: URLSearchParams, entity: Entity): GridStat
     ...(columns.length > 0 && columns.length < entity.fields.length ? { columns } : {}),
     page: positiveInt(params.get('page')) ?? 1,
     pageSize: PAGE_SIZES.find((s) => s === pageSize) ?? DEFAULT_PAGE_SIZE,
+    ...(entity.softDelete && params.get('deleted') === 'include' ? { showDeleted: true } : {}),
   };
 }
 
@@ -67,6 +70,7 @@ export interface GridUpdate {
   columns?: string[] | null;
   page?: number;
   pageSize?: number;
+  showDeleted?: boolean;
 }
 
 /**
@@ -82,6 +86,7 @@ export function writeGridState(params: URLSearchParams, update: GridUpdate): URL
   if (update.filter !== undefined) set('filter', update.filter ?? undefined);
   if (update.q !== undefined) set('q', update.q.trim());
   if (update.columns !== undefined) set('columns', update.columns?.join(','));
+  if (update.showDeleted !== undefined) set('deleted', update.showDeleted ? 'include' : undefined);
   if (update.pageSize !== undefined) {
     set('pageSize', update.pageSize === DEFAULT_PAGE_SIZE ? undefined : String(update.pageSize));
   }
@@ -163,6 +168,7 @@ export function listUrl(entity: Entity, state: GridState): string {
   const offset = (state.page - 1) * state.pageSize;
   if (offset > 0) params.set('offset', String(offset));
   params.set('count', 'true');
+  if (state.showDeleted) params.set('deleted', 'include');
   return `/api/entities/${encodeURIComponent(entity.key)}?${params}`;
 }
 

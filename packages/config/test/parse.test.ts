@@ -199,6 +199,61 @@ tables:
     );
   });
 
+  it('parses softDelete and rejects unknown keys in it', () => {
+    const config = parseConfig(
+      `
+tables:
+  certificates:
+    softDelete: { column: deleted_at, by: deleted_by }
+    columns: { deleted_at: { readOnly: true } }
+  notes: { softDelete: { column: is_deleted } }
+`,
+      FILE,
+    );
+    expect(config.tables.certificates?.softDelete).toEqual({
+      column: 'deleted_at',
+      by: 'deleted_by',
+    });
+    expect(config.tables.notes?.softDelete).toEqual({ column: 'is_deleted' });
+    expect(issues('tables: { notes: { softDelete: { column: x, when: now } } }')).toMatchObject([
+      { path: 'tables.notes.softDelete.when' },
+    ]);
+    expect(issues('tables: { notes: { softDelete: {} } }')).toMatchObject([
+      { path: 'tables.notes.softDelete.column' },
+    ]);
+  });
+
+  it('rejects soft delete columns that some readers could not see', () => {
+    expect(
+      issues(`
+roles: { admin: {} }
+tables:
+  certificates:
+    softDelete: { column: deleted_at, by: deleted_by }
+    columns:
+      deleted_at: { hidden: true }
+      deleted_by: { readableBy: [admin] }
+`),
+    ).toMatchObject([
+      {
+        path: 'tables.certificates.softDelete.column',
+        message: '"deleted_at" is hidden and cannot be used for soft delete',
+      },
+      {
+        path: 'tables.certificates.softDelete.by',
+        message: '"deleted_by" has readableBy and cannot be used for soft delete',
+      },
+    ]);
+    expect(
+      issues('tables: { notes: { softDelete: { column: deleted_at, by: deleted_at } } }'),
+    ).toMatchObject([
+      {
+        path: 'tables.notes.softDelete.by',
+        message: '`by` must be a different column from `column`',
+      },
+    ]);
+  });
+
   it('parses the required reason defaults and rejects out-of-range lengths', () => {
     const config = parseConfig('defaults: { requireReason: [], reasonMinLength: 1 }', FILE);
     expect(config.defaults.requireReason).toEqual([]);

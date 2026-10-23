@@ -15,10 +15,12 @@ export {
 } from './actor.js';
 export { introspect, WARDEN_SCHEMA, type IntrospectOptions } from './introspect.js';
 export {
+  deletedCondition,
   getRow,
   getRows,
   listRows,
   openExport,
+  type DeletedRows,
   type ExportOptions,
   type ExportTimeout,
   type ListOptions,
@@ -34,9 +36,14 @@ export {
   lockKeyedRows,
   lockRow,
   lockRows,
+  restoreIn,
+  restoreRow,
+  softDeleteIn,
+  softDeleteRow,
   updateIn,
   rowVersion,
   updateRow,
+  type SoftDeleteOptions,
   type WriteAction,
   type WriteChange,
   type WriteHook,

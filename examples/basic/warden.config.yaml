@@ -70,6 +70,13 @@ tables:
             - { field: total, op: eq, value: 0 }
         sort: [{ column: placed_at, direction: asc }]
 
+  # Soft delete: deleting sets a column instead of removing the row, under the same `delete`
+  # grant, whether or not hard delete is on. Deleted rows are left out of lists unless "Show
+  # deleted" is on, and roles granted `update` may restore them. `by` gets the actor's user id.
+  # The example schema has no such table, so this is left commented out.
+  # certificates:
+  #   softDelete: { column: deleted_at, by: deleted_by }
+
 # Create, update and delete are denied unless a role grants them. `*` never grants delete: it is
 # granted per table, on tables that set allowDelete.
 roles:

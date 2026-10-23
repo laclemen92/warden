@@ -34,8 +34,22 @@ export interface Entity {
   requireReason?: WriteAction[];
   /** The shortest a required reason may be, once trimmed; present with `requireReason`. */
   reasonMinLength?: number;
+  /** Present when deleting sets a column instead of removing the row (`tables.<t>.softDelete`). */
+  softDelete?: SoftDelete;
   fields: Field[];
   relations: Relation[];
+}
+
+/**
+ * How an entity soft-deletes. Both columns are visible fields, readable by everyone who can see
+ * the entity (config refuses `hidden` or `readableBy` on them).
+ */
+export interface SoftDelete {
+  column: string;
+  /** `timestamp`: set to `now()`, null when live. `boolean`: set to true, false or null when live. */
+  kind: 'timestamp' | 'boolean';
+  /** Set to the actor's user id on delete, null on restore. */
+  by?: string;
 }
 
 export interface Field {
@@ -174,6 +188,27 @@ export function resolveSchema(model: SchemaModel, config: WardenConfig): Resolve
       usable(c, `${path}.columnOrder.${i}`),
     );
     if (columnOrder?.length) entity.columnOrder = columnOrder;
+    if (tableConfig?.softDelete) {
+      const softDelete = resolveSoftDelete(
+        tableConfig.softDelete,
+        table,
+        fields,
+        `${path}.softDelete`,
+        warn,
+      );
+      if (softDelete) {
+        entity.softDelete = softDelete;
+        // Only delete and restore write them, so a plain update can't stand in for a delete.
+        for (const field of fields) {
+          if (field.name !== softDelete.column && field.name !== softDelete.by) continue;
+          field.readOnly = true;
+          delete field.createOnly;
+        }
+        if (softDelete.by && !config.actor) {
+          warn(`${path}.softDelete.by`, 'is always set to null: `actor` is not configured');
+        }
+      }
+    }
 
     exposedTables.push(table);
     entities.push(entity);
@@ -276,6 +311,72 @@ function resolveFields(
     fields.push(field);
   }
   return fields;
+}
+
+const SOFT_DELETE_KINDS: Record<string, SoftDelete['kind']> = {
+  timestamp: 'timestamp',
+  timestamptz: 'timestamp',
+  bool: 'boolean',
+};
+
+/**
+ * Check `softDelete` against the table. Any mismatch is a warning and leaves the table without
+ * soft delete, so its delete falls back to the hard-delete rules.
+ */
+function resolveSoftDelete(
+  config: NonNullable<TableConfig['softDelete']>,
+  table: Table,
+  fields: Field[],
+  path: string,
+  warn: (path: string, message: string) => void,
+): SoftDelete | undefined {
+  const fallback = 'soft delete is off for this table';
+  const check = (name: string, key: string) => {
+    const column = table.columns.find((c) => c.name === name);
+    const field = fields.find((f) => f.name === name);
+    const problem = !column
+      ? 'does not exist'
+      : !field
+        ? 'is not visible'
+        : column.generated || column.identity === 'always'
+          ? 'is generated'
+          : column.isArray
+            ? 'is an array'
+            : table.primaryKey.includes(name)
+              ? 'is part of the primary key'
+              : undefined;
+    if (problem) warn(`${path}.${key}`, `column "${name}" ${problem}; ${fallback}`);
+    return problem ? undefined : column;
+  };
+  const column = check(config.column, 'column');
+  const by = config.by === undefined ? undefined : check(config.by, 'by');
+  if (!column || (config.by !== undefined && !by)) return undefined;
+  const kind = SOFT_DELETE_KINDS[column.dataType];
+  if (!kind) {
+    warn(
+      `${path}.column`,
+      `column "${column.name}" is ${column.formattedType}; expected a timestamp or boolean; ${fallback}`,
+    );
+    return undefined;
+  }
+  // Restoring clears them.
+  if (kind === 'timestamp' && !column.nullable) {
+    warn(`${path}.column`, `column "${column.name}" is not nullable; ${fallback}`);
+    return undefined;
+  }
+  // Create can't set it, so a new row needs a way to start live.
+  if (kind === 'boolean' && !column.nullable && !column.hasDefault) {
+    warn(
+      `${path}.column`,
+      `column "${column.name}" is not nullable and has no default; ${fallback}`,
+    );
+    return undefined;
+  }
+  if (by && !by.nullable) {
+    warn(`${path}.by`, `column "${by.name}" is not nullable; ${fallback}`);
+    return undefined;
+  }
+  return { column: column.name, kind, ...(by ? { by: by.name } : {}) };
 }
 
 /**

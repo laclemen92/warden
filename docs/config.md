@@ -179,6 +179,34 @@ roles:
       users: [delete] # only users; nobody may delete other tables
 ```
 
+Tables that [soft-delete](#soft-delete) don't need any of this: their delete only sets a column.
+
+### Soft delete
+
+`tables.<table>.softDelete` makes deleting a row set a column instead of removing it, the way most applications delete:
+
+```yaml
+tables:
+  certificates:
+    softDelete:
+      column: deleted_at # timestamp(tz): set to now(); boolean: set to true
+      by: deleted_by_user_id # optional: set to the actor's user id
+roles:
+  support:
+    grants:
+      '*': [read, update]
+      certificates: [delete] # deleting here only sets deleted_at
+```
+
+- **Deleting** runs an `UPDATE` setting `column` (to `now()`, or `true` for a boolean) and `by`, under the same rules as any delete: a role must grant `delete` on the table by name, a `deny` that includes `delete` beats it, and [`requireReason`](#required-reasons) applies. It works whether or not [hard delete](#hard-delete) is on, and replaces it for the table's delete: the API and UI never hard-delete a row of a soft-deleting table. A row that is already deleted gets a 404, as if it were gone. The [audit log](#audit-log) records one `delete` entry, with the changed columns as its before and after and `{ "softDelete": "delete" }` as its details, in the same transaction.
+- **`by`** is set to the signed-in user's [`actor`](#actor) user id, or null when they have none. Without `actor` it is always null, and Warden warns at startup. Writing an OIDC subject or email into an application's user id column would be wrong more often than right, so Warden doesn't.
+- **Lists** leave deleted rows out: rows where `column` is set (`is not null`, or `is true` for a boolean). That covers the grid, related-record lists, record pickers, and [CSV export](#csv-export). The grid's **Show deleted** toggle includes them, marked **Deleted**; the API takes `deleted=include` (or `deleted=only`) on `GET /api/entities/<table>` and `/api/export/<table>`. A record's own page, and foreign key links to it, still show a deleted row, marked as deleted.
+- **Restoring** clears `column` (to null, or `false` for a boolean) and `by`. It is shown on a deleted record's page to roles granted `update` on the table, and is `POST /api/entities/<table>/<id>/restore` in the API. It is audited as an `update` of those columns with `{ "softDelete": "restore" }` as its details, and reasons follow `requireReason` for `update`.
+
+`column` and `by` can't be `hidden` or have `readableBy`: everyone who can see the table must be able to tell a deleted row from a live one. That fails startup. They are always read-only to create and update, whatever their column config says, so a plain update can't delete or restore a row around the `delete` grant, a `deny` or `requireReason`; only deleting and restoring set them. At startup Warden checks that both exist and are visible, that `column` is a `timestamp`, `timestamptz` or `boolean` column, that neither is generated, an array, or part of the primary key, that a timestamp `column` and `by` are nullable (restoring clears them), and that a boolean `column` is nullable or has a default (creating a row can't set it). Any mismatch is a warning, and the table then has no soft delete, so its delete falls back to the hard-delete rules (and with them off, there is no delete at all). Warden doesn't detect `deleted_at` columns on its own.
+
+[Custom actions](#actions) aren't affected: their `tx.delete` still removes rows, so it needs hard delete to be on, and their reads (`tx.get` and `tx.list`, locked or not) include deleted rows.
+
 > **Upgrading:** before this setting existed, a `delete` grant allowed hard deletes on its own. A `*: [delete]` grant now fails startup, and a table-named `delete` grant does nothing until the table sets `allowDelete: true` (or you set `defaults.delete: granted`). The startup warnings list each ignored grant.
 
 ## `tables`
@@ -199,6 +227,8 @@ Each key is a table, as `table` (in the default schema) or `schema.table`. Warde
 | `tables.<table>.requireReason`         | list of `create`, `update`, `delete`                       | Per `defaults.requireReason`                   |
 | `tables.<table>.updatablePrimaryKey`   | boolean                                                    | `false`                                        |
 | `tables.<table>.insertablePrimaryKey`  | boolean                                                    | `false`                                        |
+| `tables.<table>.softDelete.column`     | column name                                                | None                                           |
+| `tables.<table>.softDelete.by`         | column name                                                | None                                           |
 | `tables.<table>.columns`               | map of column name to [column config](#tablestablecolumns) | None                                           |
 | `tables.<table>.views`                 | list of [views](#tablestableviews)                         | None                                           |
 
@@ -223,6 +253,8 @@ Each key is a table, as `table` (in the default schema) or `schema.table`. Warde
 **`updatablePrimaryKey`** lets updates change the table's primary key columns. By default key columns without a default must be set when creating a row but are read-only afterwards: an update that sends one is rejected with `is read-only`, and the edit form shows them read-only. Changing a key gives the row a new record id, so its links stop working and its [audit history](#audit-log) splits between the old id and the new one, and an `on update cascade` foreign key changes rows in other tables (see [cascades](#cascades)). Set it only for tables with natural keys that really do change. Columns that are read-only anyway (`readOnly`, identity `GENERATED ALWAYS`, generated, or a key with a default without `insertablePrimaryKey`) stay read-only.
 
 **`insertablePrimaryKey`** lets creates set primary key columns that have a default: a `serial` or other sequence, identity `GENERATED BY DEFAULT`, or a default expression such as `gen_random_uuid()`. By default those columns are read-only, on create as well as on update, and the database generates them. In a composite key, only sequence and identity columns count: a column with a plain default, such as `created_at default now()` in a partitioned table's key, is settable on create like a key without a default. An explicit value doesn't advance the sequence, so later inserts, whether by Warden or by your application, fail with a unique violation each time the sequence reaches a key someone inserted by hand. Set it only for tables whose keys are meant to be chosen, or whose default is only a fallback. With it, these columns behave like keys without a default: settable on create, and changeable on update only with `updatablePrimaryKey`.
+
+**`softDelete`** makes deleting a row set a column instead of removing it. See [Soft delete](#soft-delete).
 
 A column hidden in the same table can't be the `displayField`, the `defaultSort` column, in `columnOrder`, or `searchable`. That fails startup. A column that doesn't exist, or is hidden by `defaults.newColumns: hidden`, is dropped from these settings with a warning.
 
@@ -647,7 +679,7 @@ Every create, update, and delete made through Warden is recorded in the [audit l
 
 A [custom action](#actions) records one entry for the run, with its name, input (sensitive fields redacted), target records and reason, and an entry for every row it changed that links back to it. A record's History shows those as part of the action; on the audit log page, an action's entry links to the rows it changed. The rows it changed are shown like any other change, field by field. The action's own entry is different: its input isn't made of the record's fields and may hold anything, so a record's History shows it only to users who could run the action now, and to users with `admin: [audit]`. Everyone else sees neither that entry nor the action's name: rows it changed lose their link to it. Input fields that pick records of a table the user can't read are left out for everyone.
 
-Both show an entry only for entities the user may read now, and only the fields they may read now: columns since hidden by config or restricted by a [field-level rule](#field-level-rules) are left out. An update is listed only if it changed a field the user can read that the request itself set; columns the database changed on its own, such as an `updated_at` maintained by a trigger, don't count. So an update to a salary only HR can read, with its reason, doesn't appear for anyone else at all. Creates and deletes are always listed, with their reason, since anyone who can read the table can see a row appear or go. Older updates, recorded before Warden tracked which fields a request set, can't tell the two apart: they are listed if any readable field changed, but their reason is shown only to users who can read every changed field. Schema drift acknowledgements are recorded in the log but not shown. [Exports](#csv-export) are listed with what they included.
+Both show an entry only for entities the user may read now, and only the fields they may read now: columns since hidden by config or restricted by a [field-level rule](#field-level-rules) are left out. An update is listed only if it changed a field the user can read that the request itself set; columns the database changed on its own, such as an `updated_at` maintained by a trigger, don't count. So an update to a salary only HR can read, with its reason, doesn't appear for anyone else at all. Creates and deletes are always listed, with their reason, since anyone who can read the table can see a row appear or go. A [soft delete](#soft-delete) is a `delete` entry whose after shows the row still there with its soft-delete column set; a restore is an `update`; both are flagged in their details. Older updates, recorded before Warden tracked which fields a request set, can't tell the two apart: they are listed if any readable field changed, but their reason is shown only to users who can read every changed field. Schema drift acknowledgements are recorded in the log but not shown. [Exports](#csv-export) are listed with what they included.
 
 Entry ids are sequential across the whole log, and a page's cursor is the last entry's id, so the gaps between the ids someone can see roughly show how much was recorded that they can't, such as how busy a hidden table is. Saved view ids are sequential in the same way. Only the volume shows, never what changed, and Warden accepts this rather than make ids opaque.
 

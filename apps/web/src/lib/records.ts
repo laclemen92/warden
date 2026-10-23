@@ -32,6 +32,14 @@ export interface RecordList {
   total?: number;
 }
 
+/** Whether a row of an entity that soft-deletes is deleted, as the server decides it. */
+export function isSoftDeleted(entity: Entity, row: Row): boolean {
+  const softDelete = entity.softDelete;
+  if (!softDelete) return false;
+  const value = row[softDelete.column];
+  return softDelete.kind === 'boolean' ? value === true : value !== null && value !== undefined;
+}
+
 export function recordPath(entity: Pick<Entity, 'key'>, id: string): string {
   return `${entityPath(entity)}/${encodeURIComponent(id)}`;
 }
@@ -120,17 +128,40 @@ export function useDeleteRecord(entity: Entity) {
         }),
       }),
     onSuccess: (_, record) => {
-      // Other tables' rows can change too (cascades, set null), so refetch every list. The
-      // deleted record itself is left alone: refetching it would only 404 while the page leaves.
+      // Other tables' rows can change too (cascades, set null), so refetch every list. A
+      // hard-deleted record itself is left alone: refetching it would only 404 while the page
+      // leaves. A soft-deleted one is still there, now marked deleted.
       const deleted = JSON.stringify(['record', entity.key, record.id]);
       void queryClient.invalidateQueries({
         predicate: ({ queryKey }) =>
-          isRecordQuery(queryKey) && JSON.stringify(queryKey) !== deleted,
+          isRecordQuery(queryKey) &&
+          (entity.softDelete !== undefined || JSON.stringify(queryKey) !== deleted),
       });
     },
     // A conflict means the record changed (or another write raced); show its current state.
     onError: (_, record) =>
       queryClient.invalidateQueries({ queryKey: ['record', entity.key, record.id] }),
+  });
+}
+
+/** Restore a soft-deleted record. Like an update, a stale version fails with 409. */
+export function useRestoreRecord(entity: Entity) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ reason, ...record }: RecordItem & { id: string; reason?: string }) =>
+      apiFetch<WrittenRecord>(
+        `${recordsUrl(entity.key)}/${encodeURIComponent(record.id)}/restore`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            ...(record.version ? { version: record.version } : {}),
+            ...(reason ? { reason } : {}),
+          }),
+        },
+      ),
+    onSettled: () =>
+      queryClient.invalidateQueries({ predicate: ({ queryKey }) => isRecordQuery(queryKey) }),
   });
 }
 
@@ -141,7 +172,12 @@ export function useParentRecord(relation: Relation, row: Row) {
     queryKey: ['parent', relation.entity, filter],
     enabled: filter !== null,
     queryFn: async () => {
-      const params = new URLSearchParams({ filter: JSON.stringify(filter), limit: '1' });
+      // The row still points at a soft-deleted parent, so link to it.
+      const params = new URLSearchParams({
+        filter: JSON.stringify(filter),
+        limit: '1',
+        deleted: 'include',
+      });
       const list = await apiFetch<RecordList>(`${recordsUrl(relation.entity)}?${params}`);
       return list.items[0] ?? null;
     },

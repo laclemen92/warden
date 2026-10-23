@@ -77,3 +77,4 @@ export {
   viewKeyFor,
   viewsConfigYaml,
 } from './config-view.js';
+export { isSoftDeleteDetails } from './audit.js';
