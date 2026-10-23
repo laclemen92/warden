@@ -41,7 +41,10 @@ export interface WardenOptions {
   cwd?: string;
   webDir?: string;
   logger?: AppOptions['logger'];
-  /** Signed-in users' API tokens, for HTTP actions with `auth: { type: 'user' }`. */
+  /**
+   * Signed-in users' API tokens, for HTTP actions with `auth: { type: 'user' }`. Defaults to the
+   * tokens sessions keep for `OIDC_AUDIENCE`; tests pass their own.
+   */
   userTokens?: UserTokenProvider;
 }
 
@@ -242,10 +245,21 @@ export async function createWarden({
       policy,
       config,
     );
+    // Created before routes so HTTP actions in `user` mode can use the sessions' API tokens.
+    // Discovery is lazy, so this doesn't contact the IdP.
+    const oidc = createOidcClient(authSettings);
+    const sessions = createSessions(db, authSettings, (token) => oidc.refresh(token));
     const { http, problems: httpProblems } = prepareHttpActions(
       loadedActions,
       actionPolicy.actions,
-      { env, allowHttp, userTokens },
+      {
+        env,
+        allowHttp,
+        userTokens: userTokens ?? {
+          audience: oidc.audience,
+          accessTokenFor: (req) => sessions.accessTokenFor(req),
+        },
+      },
     );
     const startupErrors = [...actionErrors, ...httpProblems];
     if (startupErrors.length > 0) throw new ActionsError(env.WARDEN_ACTIONS!, startupErrors);
@@ -275,10 +289,9 @@ export async function createWarden({
     // The first start records the schema drift baseline.
     await ensureSchemaSnapshot(db, model);
 
-    const oidc = createOidcClient(authSettings);
     const auth = {
       sessionSecret: authSettings.sessionSecret,
-      sessions: createSessions(db, authSettings, (token) => oidc.refresh(token)),
+      sessions,
       oidc,
       ...(config.access ? { access: config.access } : {}),
       roles: config.roles,

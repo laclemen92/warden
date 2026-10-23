@@ -271,9 +271,11 @@ export function prepareHttpActions(
       }
       case 'user': {
         if (!userTokens) {
+          problem('http.auth type "user" needs a provider of users\' API tokens');
+        } else if (userTokens.audience === undefined) {
           problem(
-            'http.auth type "user" is not available yet: Warden does not keep users\' API ' +
-              'tokens; use "hmac" or "client_credentials"',
+            `http.auth type "user" needs OIDC_AUDIENCE set to "${auth.audience}", so sign-in ` +
+              'keeps an access token for it',
           );
         } else if (userTokens.audience !== auth.audience) {
           problem(`http.auth.audience "${auth.audience}" is not the audience login requests`);

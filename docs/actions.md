@@ -333,7 +333,7 @@ Users never paste tokens. Pick one mode per action:
 - Secrets are read from the named environment variables at startup. A variable that isn't set fails startup, as does a `tokenUrl` that isn't https (with the same loopback exception).
 - `client_credentials` needs `secretEnv` too: the M2M token only says the caller is Warden (any client with a token for the audience could send it), so the signature is what vouches for the actor in `X-Warden-Context`.
 - `client_credentials` posts `grant_type=client_credentials` with the client id and secret (and `audience`, `scope`) to `tokenUrl`, caches the token until a minute before it expires, and on a `401` from your API fetches a new one and retries once.
-- `user` needs Warden to keep the user's API token at sign-in, which it doesn't do yet, so for now an action using it fails startup. Once it does, an action whose `audience` isn't the one login requests (`OIDC_AUDIENCE`) will fail startup too. When the token can't be had or refreshed, the run is a `401` "Sign in again to continue" and the API isn't called.
+- `user` sends the access token Warden keeps from sign-in for `OIDC_AUDIENCE` (see [Auth0](auth0.md) for setting up an API audience and refresh tokens), refreshed first if it is about to expire. An action whose `audience` isn't `OIDC_AUDIENCE`, or any `user` action when `OIDC_AUDIENCE` isn't set, fails startup. When the token can't be had or refreshed, the run is a `401` "Sign in again to continue" and the API isn't called.
 - Tokens and secrets are never sent to the browser, logged, or written to the audit log.
 
 ### Verifying the signature

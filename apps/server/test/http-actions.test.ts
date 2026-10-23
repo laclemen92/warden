@@ -689,7 +689,7 @@ describe('HTTP actions at startup', () => {
     const err = await start({}).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(ActionsError);
     expect((err as ActionsError).problems.join('\n')).toMatch(
-      /action "as-user": http.auth type "user" is not available yet/,
+      /action "as-user": http.auth type "user" needs OIDC_AUDIENCE set to "https:\/\/api.test"/,
     );
     const other = await start({}, { ...userTokens, audience: 'https://other.test' }).catch(
       (e: unknown) => e,
@@ -697,6 +697,25 @@ describe('HTTP actions at startup', () => {
     expect((other as ActionsError).problems).toContain(
       'action "as-user": http.auth.audience "https://api.test" is not the audience login requests',
     );
+  });
+
+  it("user: without a provider passed in, sends the access token the user's session keeps", async () => {
+    const app = await start({ OIDC_AUDIENCE: 'https://api.test' });
+    try {
+      const editor = await login(app, 'editor');
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/actions/as-user/run',
+        headers: { cookie: editor },
+        payload: { reason: REASON },
+      });
+      expect(res.statusCode, res.body).toBe(200);
+      const sent = calls('/as-user').at(-1)!.headers.authorization;
+      expect(sent).toMatch(/^Bearer \S+$/);
+      expect(sent).not.toContain('user-token-');
+    } finally {
+      await app.close();
+    }
   });
 
   it('refuses a fixed http URL off loopback unless WARDEN_ACTION_ALLOW_HTTP is on', async () => {
