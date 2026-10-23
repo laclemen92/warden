@@ -6,6 +6,8 @@ export class ApiError extends Error {
     message: string,
     /** Field errors from a rejected write (400 invalid record, 409 conflict). */
     readonly details: FieldError[] = [],
+    /** The parsed error body, for routes that say more than a message. */
+    readonly body: unknown = null,
   ) {
     super(message);
     this.name = 'ApiError';
@@ -28,6 +30,7 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
       res.status,
       message || `Request failed (${res.status})`,
       fieldErrors(body?.details),
+      body,
     );
   }
   // No Content (e.g. a delete) has no body to parse.

@@ -1,9 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import {
+  MAX_AUDIT_BODY_BYTES,
   apiBodyMessage,
+  auditedBody,
   checkActionDefinitions,
   checkActionUrl,
   cleanApiMessage,
+  redactJson,
+  stepsProgress,
+  type HttpStepSpec,
 } from '../src/index.js';
 
 const hmac = { type: 'hmac', secretEnv: 'API_SECRET' };
@@ -122,5 +127,169 @@ describe('cleanApiMessage', () => {
     expect(apiBodyMessage({ error: 'Not found' })).toBe('Not found');
     expect(apiBodyMessage({ error: { code: 1 } })).toBeUndefined();
     expect(apiBodyMessage('plain text')).toBe('plain text');
+  });
+});
+
+const stepsAction = (http: Record<string, unknown>) =>
+  checkActionDefinitions([
+    { name: 'chain', label: 'Chain', on: 'users', http: { auth: hmac, ...http } },
+  ]);
+const errorsOf = (http: Record<string, unknown>) => {
+  const result = stepsAction(http);
+  return result.ok ? [] : result.errors;
+};
+
+describe('multi-step HTTP action definitions', () => {
+  it('checks each step and fills in defaults', () => {
+    const result = stepsAction({
+      timeoutMs: 2000,
+      steps: [
+        { name: 'payout', url: 'https://api.example.com/p', auditBody: { redact: ['token'] } },
+        {
+          name: 'claim',
+          url: () => 'https://api.example.com/c',
+          method: 'PUT',
+          when: () => true,
+          timeoutMs: 500,
+          compensate: { url: () => 'https://api.example.com/undo' },
+        },
+      ],
+    });
+    expect(result.ok && result.specs[0]!.http).toEqual({
+      method: 'POST',
+      auth: hmac,
+      timeoutMs: 2000,
+      perRecord: false,
+      concurrency: 1,
+      steps: [
+        {
+          name: 'payout',
+          method: 'POST',
+          url: 'https://api.example.com/p',
+          timeoutMs: 2000,
+          conditional: false,
+          auditBody: { redact: ['token'] },
+        },
+        {
+          name: 'claim',
+          method: 'PUT',
+          timeoutMs: 500,
+          conditional: true,
+          compensate: { method: 'POST', timeoutMs: 500 },
+        },
+      ],
+    });
+  });
+
+  it('refuses bad steps', () => {
+    const url = 'https://api.example.com';
+    const at = (message: string) => `action "chain": http.${message}`;
+    expect(errorsOf({ steps: [] })).toEqual([at('steps must be a non-empty array')]);
+    expect(errorsOf({ url, steps: [{ name: 'a', url }] })).toEqual([
+      at("url can't be used with steps; set it on each step"),
+    ]);
+    expect(
+      errorsOf({
+        steps: [
+          { name: 'a', url },
+          { name: 'a', url },
+        ],
+      }),
+    ).toEqual([at('steps[1].name "a" repeats an earlier step')]);
+    expect(errorsOf({ steps: [{ name: 'Bad-name', url }] })[0]).toMatch(
+      /steps\[0\]\.name must match/,
+    );
+    expect(errorsOf({ steps: [{ name: 'a' }] })).toEqual([
+      at('steps[0].url must be a string or a function'),
+    ]);
+    expect(errorsOf({ steps: [{ name: 'a', url, when: true }] })).toEqual([
+      at('steps[0].when must be a function'),
+    ]);
+    expect(errorsOf({ steps: [{ name: 'a', url, retries: 3 }] })).toEqual([
+      at('steps[0].retries is not a known key'),
+    ]);
+    expect(errorsOf({ steps: [{ name: 'a', url, compensate: {} }] })).toEqual([
+      at('steps[0].compensate.url must be a string or a function'),
+    ]);
+    expect(errorsOf({ steps: [{ name: 'a', url, auditBody: { redact: 'token' } }] })).toEqual([
+      at('steps[0].auditBody must be true or { redact: [key, ...] }'),
+    ]);
+    expect(errorsOf({ steps: [{ name: 'a', url, timeoutMs: 120_000 }] })).toEqual([
+      at('steps[0].timeoutMs must be a positive integer of at most 60000'),
+    ]);
+  });
+});
+
+describe('step response bodies in the audit log', () => {
+  it('redacts keys at any depth, ignoring case', () => {
+    expect(
+      redactJson({ Token: 'x', nested: [{ token: 'y', keep: 1 }], ok: true }, ['token']),
+    ).toEqual({ Token: '[redacted]', nested: [{ token: '[redacted]', keep: 1 }], ok: true });
+  });
+
+  it('leaves out a body too large to keep', () => {
+    expect(auditedBody({ a: 1 }, [])).toEqual({ body: { a: 1 } });
+    expect(auditedBody({ a: 'x'.repeat(MAX_AUDIT_BODY_BYTES) }, [])).toEqual({
+      bodyOmitted: true,
+    });
+  });
+});
+
+describe('stepsProgress', () => {
+  const steps = ['a', 'b', 'c'].map((name): HttpStepSpec => ({
+    name,
+    method: 'POST',
+    timeoutMs: 1000,
+    conditional: false,
+  }));
+
+  it('collects the steps done across tries', () => {
+    const progress = stepsProgress(steps, [
+      {
+        attempt: '1',
+        result: 'partial',
+        steps: [
+          { name: 'a', result: 'ok', status: 201, body: { id: 1 } },
+          { name: 'b', result: 'failed', status: 502 },
+          { name: 'c', result: 'not_attempted' },
+        ],
+      },
+      {
+        attempt: '1',
+        result: 'partial',
+        steps: [
+          { name: 'a', result: 'ok', earlier: true },
+          { name: 'b', result: 'skipped' },
+          { name: 'c', result: 'rejected', status: 409 },
+        ],
+      },
+    ]);
+    expect([...progress.done]).toEqual([
+      ['a', { result: 'ok', status: 201, body: { id: 1 }, kept: true }],
+      ['b', { result: 'skipped', kept: false }],
+    ]);
+    expect(progress).toMatchObject({ compensated: false, finished: false });
+  });
+
+  it('notices undo calls and a finished chain', () => {
+    const undone = stepsProgress(steps, [
+      {
+        attempt: '1',
+        result: 'partial',
+        steps: [
+          { name: 'a', result: 'ok', compensation: { result: 'failed' } },
+          { name: 'b', result: 'failed' },
+        ],
+      },
+    ]);
+    expect(undone.compensated).toBe(true);
+    const finished = stepsProgress(steps, [
+      {
+        attempt: '1',
+        result: 'ok',
+        steps: steps.map((s) => ({ name: s.name, result: 'ok' as const })),
+      },
+    ]);
+    expect(finished.finished).toBe(true);
   });
 });

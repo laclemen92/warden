@@ -1,14 +1,20 @@
 import { createHash, createHmac } from 'node:crypto';
-import type { Actor } from '@wardenhq/actions';
+import { ActionError, type Actor, type StepResponse } from '@wardenhq/actions';
 import {
   apiBodyMessage,
+  auditedBody,
   checkActionUrl,
   cleanApiMessage,
+  compensationIdempotencyKey,
+  stepIdempotencyKey,
   type HttpActionOutcome,
   type HttpActionSpec,
   type HttpAuthSpec,
   type HttpCallResult,
+  type HttpStepOutcome,
+  type HttpStepSpec,
   type ResolvedAction,
+  type StepsProgress,
 } from '@wardenhq/core';
 import type { FastifyBaseLogger, FastifyRequest } from 'fastify';
 import type { LoadedAction } from './actions.js';
@@ -206,6 +212,19 @@ export interface HttpActions {
   allowHttp: boolean;
 }
 
+/** Most steps a multi-step HTTP action may have, unless `WARDEN_ACTION_MAX_STEPS` says otherwise. */
+export const DEFAULT_MAX_STEPS = 5;
+
+/** `WARDEN_ACTION_MAX_STEPS`: a whole number from 1 to 20; 5 by default. */
+export function parseMaxSteps(value: string | undefined): number {
+  const text = value?.trim();
+  if (!text) return DEFAULT_MAX_STEPS;
+  const n = /^\d+$/.test(text) ? Number(text) : 0;
+  if (n < 1 || n > 20)
+    throw new Error('WARDEN_ACTION_MAX_STEPS must be a whole number from 1 to 20');
+  return n;
+}
+
 /** `WARDEN_ACTION_ALLOW_HTTP`: off by default. */
 export function parseAllowHttp(value: string | undefined): boolean {
   const normalized = value?.trim().toLowerCase() || 'false';
@@ -226,9 +245,11 @@ export function prepareHttpActions(
     env: Record<string, string | undefined>;
     allowHttp: boolean;
     userTokens?: UserTokenProvider | undefined;
+    /** Most steps an action may have. Default `DEFAULT_MAX_STEPS`. */
+    maxSteps?: number;
   },
 ): { http: HttpActions; problems: string[] } {
-  const { env, allowHttp, userTokens } = options;
+  const { env, allowHttp, userTokens, maxSteps = DEFAULT_MAX_STEPS } = options;
   const problems: string[] = [];
   const actions = new Map<string, HttpAction>();
   const cache = new ClientCredentialsCache();
@@ -245,6 +266,19 @@ export function prepareHttpActions(
     if (http.url !== undefined) {
       const bad = checkActionUrl(http.url, allowHttp);
       if (bad) problem(`http.url ${bad}`);
+    }
+    if (http.steps && http.steps.length > maxSteps) {
+      problem(
+        `http.steps has ${http.steps.length} steps; at most ${maxSteps} are allowed ` +
+          '(WARDEN_ACTION_MAX_STEPS)',
+      );
+    }
+    for (const [i, step] of (http.steps ?? []).entries()) {
+      const bad = step.url !== undefined ? checkActionUrl(step.url, allowHttp) : undefined;
+      if (bad) problem(`http.steps[${i}].url ${bad}`);
+      const undo = step.compensate?.url;
+      const badUndo = undo !== undefined ? checkActionUrl(undo, allowHttp) : undefined;
+      if (badUndo) problem(`http.steps[${i}].compensate.url ${badUndo}`);
     }
     const auth = http.auth;
     let authenticator: Authenticator;
@@ -303,6 +337,8 @@ interface CallOutcome {
   resultId?: string;
   /** Per-record results the API reported, keyed by Warden record id. */
   records?: { id: string; result: HttpCallResult; message?: string }[];
+  /** A 2xx's JSON body, unless it was cut off at `MAX_RESPONSE_BYTES`. */
+  json?: unknown;
 }
 
 /** The response body as text, reading at most `MAX_RESPONSE_BYTES`. */
@@ -365,17 +401,21 @@ export interface HttpRunOptions {
   method: HttpActionSpec['method'];
   plans: HttpRequestPlan[];
   context: Omit<WardenContext, 'records' | 'recordCount'>;
+  /** Replaced when a 401 gets fresh ones, so later requests of the run use them. */
   credentials: Credentials;
   log: FastifyBaseLogger;
 }
 
+type CallOptions = Omit<HttpRunOptions, 'method' | 'plans'>;
+
 /** Make one request, retrying once with fresh credentials after a 401 when that can help. */
 async function callOnce(
-  options: HttpRunOptions,
+  options: CallOptions,
   plan: HttpRequestPlan,
   idempotencyKey: string,
+  { method, timeoutMs }: { method: HttpActionSpec['method']; timeoutMs: number },
 ): Promise<CallOutcome> {
-  const { req, action, method, context, log } = options;
+  const { req, action, context, log } = options;
   let credentials = options.credentials;
   for (let attempt = 0; ; attempt++) {
     const url = new URL(plan.url);
@@ -411,7 +451,7 @@ async function callOnce(
         headers,
         body: plan.body,
         redirect: 'manual',
-        signal: AbortSignal.timeout(action.spec.timeoutMs),
+        signal: AbortSignal.timeout(timeoutMs),
       });
     } catch (err) {
       const timedOut = err instanceof Error && err.name === 'TimeoutError';
@@ -427,6 +467,7 @@ async function callOnce(
       log.info({ endpoint: endpointOf(method, plan.url) }, 'action API answered 401; new token');
       try {
         credentials = await action.authenticator.credentials(req, true);
+        options.credentials = credentials;
       } catch (err) {
         log.error({ err }, 'could not renew the M2M token');
         return { result: 'failed', status };
@@ -438,12 +479,17 @@ async function callOnce(
       const message = apiBodyMessage(body);
       const resultId = idOf((body as { id?: unknown } | null)?.id);
       const records = reportedRecords(body, plan.records);
+      // A body that filled the buffer was probably cut off, so it isn't handed on.
+      const whole = Buffer.byteLength(text) < MAX_RESPONSE_BYTES - 4;
+      const json =
+        whole && /\bjson\b/i.test(res.headers.get('content-type') ?? '') ? body : undefined;
       return {
         result: 'ok',
         status,
         ...(message ? { message } : {}),
         ...(resultId ? { resultId } : {}),
         ...(records ? { records } : {}),
+        ...(json !== undefined ? { json } : {}),
       };
     }
     if (status >= 400 && status < 500) {
@@ -502,7 +548,10 @@ export async function runHttpAction(
       const i = next++;
       // One key per request, so retrying any of them is safe.
       const key = perRecord ? `${auditId}.${i + 1}` : auditId;
-      outcomes[i] = await callOnce(options, plans[i]!, key);
+      outcomes[i] = await callOnce(options, plans[i]!, key, {
+        method,
+        timeoutMs: action.spec.timeoutMs,
+      });
     }
   };
   await Promise.all(
@@ -618,6 +667,264 @@ function userMessage(o: CallOutcome): string | undefined {
     );
   }
   return o.timedOut ? TIMEOUT_MESSAGE : FAILED_MESSAGE;
+}
+
+/**
+ * On a retry, a later step read the body of an earlier step whose body wasn't kept, so the
+ * request can't be rebuilt.
+ */
+export class MissingStepResponse extends Error {
+  constructor(readonly step: string) {
+    super(`step "${step}" kept no response body to retry with`);
+    this.name = 'MissingStepResponse';
+  }
+}
+
+/** A step as a run sees it: its settings, and its requests built from earlier answers. */
+export interface StepRunner {
+  spec: HttpStepSpec;
+  /** The step's request, or null when its `when` skips it. Throws what the module throws. */
+  plan(prev: Record<string, StepResponse>): HttpRequestPlan | null;
+  /** Its undo call's request, for a step with `compensate`. */
+  compensation(prev: Record<string, StepResponse>): HttpRequestPlan;
+}
+
+export interface StepsRunOptions extends CallOptions {
+  steps: readonly StepRunner[];
+  /** The attempt's entry: steps' keys derive from it, on retries too. */
+  auditId: string;
+  deadlineMs: number;
+  /** Steps that completed in earlier tries of the attempt. They aren't sent again. */
+  done: StepsProgress['done'];
+  /** Whether "Retry remaining steps" can be offered if this fails. */
+  retryable: boolean;
+}
+
+/** How one step went, as the user is told. */
+export interface StepView {
+  name: string;
+  result: HttpStepOutcome['result'];
+  message?: string;
+  compensation?: { result: HttpCallResult; message?: string };
+}
+
+const STEP_BUILD_MESSAGE = "the action couldn't build this step's request";
+const RETRY_STATE_MESSAGE =
+  "can't retry: this step needs an earlier step's response, which wasn't kept; run the action again";
+const COMPENSATION_FAILED = 'undoing this step failed';
+
+interface StepFailure {
+  statusCode: number;
+  error: string;
+  message: string;
+}
+
+/** The user-facing failure for a step's outcome. */
+function stepFailure(o: CallOutcome): StepFailure {
+  if (o.result === 'rejected') {
+    const forbidden = o.status === 401 || o.status === 403;
+    return {
+      statusCode: forbidden ? 403 : 400,
+      error: forbidden ? 'Forbidden' : 'Bad Request',
+      message: o.message ?? (forbidden ? FORBIDDEN_MESSAGE : REJECTED_MESSAGE),
+    };
+  }
+  return o.timedOut
+    ? { statusCode: 504, error: 'Gateway Timeout', message: TIMEOUT_MESSAGE }
+    : { statusCode: 502, error: 'Bad Gateway', message: FAILED_MESSAGE };
+}
+
+/** An earlier try's answer. Its body is there only if the step kept it. */
+function restoredResponse(name: string, done: { status?: number; body?: unknown; kept: boolean }) {
+  return Object.freeze({
+    status: done.status ?? 200,
+    get body(): unknown {
+      if (!done.kept) throw new MissingStepResponse(name);
+      return done.body;
+    },
+  });
+}
+
+/**
+ * Run a multi-step action's steps in order, from the first one not done yet. The first failure
+ * stops the chain: later steps aren't called, and the steps that completed are undone in reverse
+ * order where they have `compensate` (best effort). No step starts after the deadline, and a step
+ * in flight is cut off at it.
+ */
+export async function runHttpSteps(options: StepsRunOptions): Promise<HttpRunResult> {
+  const { steps, auditId, log, done } = options;
+  const stopAt = Date.now() + options.deadlineMs;
+  const prev: Record<string, StepResponse> = {};
+  for (const [name, d] of done) if (d.result === 'ok') prev[name] = restoredResponse(name, d);
+  const outcomes: HttpStepOutcome[] = [];
+  /** What the user is told about each step, by index. */
+  const shown: (string | undefined)[] = [];
+  const completed: number[] = [];
+  // In an object, since `fail` sets it.
+  const state: { failure?: StepFailure & { step: HttpStepOutcome } } = {};
+  let lastMessage: string | undefined;
+  const fail = (step: HttpStepOutcome, f: StepFailure) => {
+    state.failure = { ...f, step };
+    shown[outcomes.length] = f.message;
+    outcomes.push(step);
+  };
+
+  for (const [i, { spec, plan: planOf }] of steps.entries()) {
+    const { name } = spec;
+    const earlier = done.get(name);
+    if (state.failure) {
+      outcomes.push({ name, result: 'not_attempted' });
+      continue;
+    }
+    if (earlier) {
+      outcomes.push({ name, result: earlier.result, earlier: true });
+      if (earlier.result === 'ok') completed.push(i);
+      continue;
+    }
+    let plan: HttpRequestPlan | null;
+    try {
+      plan = planOf({ ...prev });
+    } catch (err) {
+      if (err instanceof ActionError) {
+        const message = cleanApiMessage(err.message) ?? REJECTED_MESSAGE;
+        fail(
+          { name, result: 'rejected', message },
+          { statusCode: 400, error: 'Bad Request', message },
+        );
+      } else if (err instanceof MissingStepResponse) {
+        fail(
+          { name, result: 'failed', message: RETRY_STATE_MESSAGE },
+          { statusCode: 409, error: 'Conflict', message: RETRY_STATE_MESSAGE },
+        );
+      } else {
+        log.error({ err, step: name }, 'could not build the step request');
+        fail(
+          { name, result: 'failed', message: STEP_BUILD_MESSAGE },
+          { statusCode: 500, error: 'Internal Server Error', message: STEP_BUILD_MESSAGE },
+        );
+      }
+      continue;
+    }
+    if (!plan) {
+      outcomes.push({ name, result: 'skipped' });
+      continue;
+    }
+    const endpoint = endpointOf(spec.method, plan.url);
+    const remaining = stopAt - Date.now();
+    if (remaining <= 0) {
+      fail(
+        { name, result: 'not_attempted', endpoint, message: SKIPPED_MESSAGE },
+        { statusCode: 504, error: 'Gateway Timeout', message: SKIPPED_MESSAGE },
+      );
+      continue;
+    }
+    const started = Date.now();
+    const o = await callOnce(options, plan, stepIdempotencyKey(auditId, name), {
+      method: spec.method,
+      timeoutMs: Math.min(spec.timeoutMs, remaining),
+    });
+    const outcome: HttpStepOutcome = {
+      name,
+      result: o.result,
+      endpoint,
+      ...(o.status !== undefined ? { status: o.status } : {}),
+      durationMs: Date.now() - started,
+      ...(o.result !== 'failed' && o.message ? { message: o.message } : {}),
+      ...(o.resultId ? { resultId: o.resultId } : {}),
+    };
+    if (o.result !== 'ok') {
+      fail(outcome, stepFailure(o));
+      continue;
+    }
+    prev[name] = Object.freeze({ status: o.status!, body: o.json });
+    completed.push(i);
+    if (o.message) lastMessage = o.message;
+    if (spec.auditBody && o.json !== undefined) {
+      Object.assign(outcome, auditedBody(o.json, spec.auditBody.redact));
+    }
+    shown[outcomes.length] = o.message;
+    outcomes.push(outcome);
+  }
+
+  const { failure } = state;
+  let compensated = false;
+  if (failure) {
+    for (const i of completed.reverse()) {
+      const { spec, compensation } = steps[i]!;
+      if (!spec.compensate) continue;
+      compensated = true;
+      const outcome = outcomes[i]!;
+      let plan: HttpRequestPlan;
+      try {
+        plan = compensation({ ...prev });
+      } catch (err) {
+        log.error({ err, step: spec.name }, 'could not build the undo request');
+        outcome.compensation = { result: 'failed', message: COMPENSATION_FAILED };
+        continue;
+      }
+      const started = Date.now();
+      const o = await callOnce(options, plan, compensationIdempotencyKey(auditId, spec.name), {
+        method: spec.compensate.method,
+        timeoutMs: spec.compensate.timeoutMs,
+      });
+      outcome.compensation = {
+        result: o.result,
+        endpoint: endpointOf(spec.compensate.method, plan.url),
+        ...(o.status !== undefined ? { status: o.status } : {}),
+        durationMs: Date.now() - started,
+        ...(o.result === 'rejected' && o.message ? { message: o.message } : {}),
+        ...(o.result === 'failed' ? { message: COMPENSATION_FAILED } : {}),
+      };
+      if (o.result !== 'ok') {
+        log.warn({ step: spec.name, result: o.result, status: o.status }, 'undo call failed');
+      }
+    }
+  }
+
+  const views: StepView[] = outcomes.map((o, i) => ({
+    name: o.name,
+    result: o.result,
+    ...(shown[i] ? { message: shown[i] } : {}),
+    ...(o.compensation
+      ? {
+          compensation: {
+            result: o.compensation.result,
+            ...(o.compensation.message ? { message: o.compensation.message } : {}),
+          },
+        }
+      : {}),
+  }));
+  const step = failure?.step;
+  const outcome: HttpRunResult['outcome'] = {
+    result: !failure
+      ? 'ok'
+      : outcomes.some((o) => o.result === 'ok')
+        ? 'partial'
+        : step?.result === 'rejected'
+          ? 'rejected'
+          : 'failed',
+    ...(step?.status !== undefined ? { status: step.status } : {}),
+    steps: outcomes,
+  };
+  if (!failure) {
+    return {
+      statusCode: 200,
+      body: { auditId, result: { ...(lastMessage ? { message: lastMessage } : {}), steps: views } },
+      outcome,
+    };
+  }
+  return {
+    statusCode: failure.statusCode,
+    body: {
+      statusCode: failure.statusCode,
+      error: failure.error,
+      message: failure.message,
+      auditId,
+      steps: views,
+      retryable: options.retryable && !compensated,
+    },
+    outcome,
+  };
 }
 
 /** The actor as the API sees it in the context header. */

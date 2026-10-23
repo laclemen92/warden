@@ -9,6 +9,7 @@ import {
   type AuditStore,
   type Entity,
   type ExportDetails,
+  type HttpActionOutcome,
   type RevokeSessionsDetails,
   type StoredActionDetails,
 } from '@wardenhq/core';
@@ -475,6 +476,64 @@ export async function listAuditEntries(
       return row.action === 'revoke_sessions' ? { ...entry, details: revokeDetails(row) } : entry;
     }),
     hasMore: rows.length > limit,
+  };
+}
+
+/** An HTTP action's own entry, and the outcome entries written for it since. */
+export interface ActionAttempt {
+  id: string;
+  actorSubject: string;
+  reason: string | null;
+  recordId: string | null;
+  /** Null in a store that doesn't keep details. */
+  details: StoredActionDetails | null;
+  /** How long ago it was written. */
+  ageMs: number;
+  /** Its outcome entries' `details.outcome`, oldest first. */
+  outcomes: HttpActionOutcome[];
+}
+
+/**
+ * The entry action `action` wrote as attempt `id` (not an outcome or a retry's entry), with its
+ * outcomes. Undefined when there is no such entry.
+ */
+export async function loadActionAttempt(
+  db: Database,
+  { id, action }: { id: string; action: string },
+  store: AuditStore = WARDEN_STORE,
+): Promise<ActionAttempt | undefined> {
+  const relation = auditRelation(store);
+  const { rows } = await sql<{
+    id: string;
+    actor_subject: string;
+    reason: string | null;
+    record_id: string | null;
+    details: StoredActionDetails | null;
+    age_ms: number;
+  }>`
+    select a.id::text as id, a.actor_subject, a.reason, a.record_id, a.details,
+           (extract(epoch from (now() - a.occurred_at)) * 1000)::float8 as age_ms
+    from ${relation} as a
+    where a.id = ${id}::bigint and a.action = ${action} and a.parent_id is null
+      and coalesce(a.details ? 'input', false)
+      and not (a.details ? 'outcome') and not (a.details ? 'retryOf')`.execute(db);
+  const row = rows[0];
+  if (!row) return undefined;
+  // Outcomes are written after their attempt, so the scan starts at its id.
+  const { rows: outcomes } = await sql<{ outcome: HttpActionOutcome }>`
+    select a.details -> 'outcome' as outcome
+    from ${relation} as a
+    where a.id > ${id}::bigint and a.action = ${action}
+      and a.details -> 'outcome' ->> 'attempt' = ${id}
+    order by a.id`.execute(db);
+  return {
+    id: row.id,
+    actorSubject: row.actor_subject,
+    reason: row.reason,
+    recordId: row.record_id,
+    details: row.details,
+    ageMs: Number(row.age_ms),
+    outcomes: outcomes.map((o) => o.outcome),
   };
 }
 

@@ -53,16 +53,17 @@ Warden limits how long its database work can run or wait, so a slow query or a s
 
 So each Warden server opens at most 18 connections by default, and each replica counts its exports and actions separately.
 
-| Variable                                | Default | Description                                                                                                                                     |
-| --------------------------------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| `WARDEN_DB_IDLE_IN_TRANSACTION_TIMEOUT` | `60s`   | Postgres ends a session idle in a transaction this long (`30s`, `5m`, or seconds).                                                              |
-| `WARDEN_EXPORT_IDLE_TIMEOUT`            | `30s`   | An export ends when its client hasn't read for this long. Must be shorter than `WARDEN_DB_IDLE_IN_TRANSACTION_TIMEOUT`, which would cut it off. |
-| `WARDEN_EXPORT_DEADLINE`                | `15m`   | An export ends this long after it started, however it is going.                                                                                 |
-| `WARDEN_EXPORT_MAX_CONCURRENT`          | `4`     | Exports one server runs at once, and the size of the export pool (1 to 100).                                                                    |
-| `WARDEN_EXPORT_MAX_PER_USER`            | `2`     | Exports one user may run at once on a server.                                                                                                   |
-| `WARDEN_ACTION_DEADLINE`                | `60s`   | A custom action's run or preview is rolled back this long after it started, unless the action sets `deadlineMs`.                                |
-| `WARDEN_ACTION_MAX_CONCURRENT`          | `4`     | Action runs and previews one server runs at once, and the size of the action pool (1 to 100).                                                   |
-| `WARDEN_ACTION_MAX_PER_USER`            | `2`     | Action runs and previews one user may have going at once on a server.                                                                           |
+| Variable                                | Default | Description                                                                                                                                                 |
+| --------------------------------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `WARDEN_DB_IDLE_IN_TRANSACTION_TIMEOUT` | `60s`   | Postgres ends a session idle in a transaction this long (`30s`, `5m`, or seconds).                                                                          |
+| `WARDEN_EXPORT_IDLE_TIMEOUT`            | `30s`   | An export ends when its client hasn't read for this long. Must be shorter than `WARDEN_DB_IDLE_IN_TRANSACTION_TIMEOUT`, which would cut it off.             |
+| `WARDEN_EXPORT_DEADLINE`                | `15m`   | An export ends this long after it started, however it is going.                                                                                             |
+| `WARDEN_EXPORT_MAX_CONCURRENT`          | `4`     | Exports one server runs at once, and the size of the export pool (1 to 100).                                                                                |
+| `WARDEN_EXPORT_MAX_PER_USER`            | `2`     | Exports one user may run at once on a server.                                                                                                               |
+| `WARDEN_ACTION_DEADLINE`                | `60s`   | A custom action's run or preview is rolled back this long after it started, unless the action sets `deadlineMs`.                                            |
+| `WARDEN_ACTION_MAX_CONCURRENT`          | `4`     | Action runs and previews one server runs at once, and the size of the action pool (1 to 100).                                                               |
+| `WARDEN_ACTION_MAX_PER_USER`            | `2`     | Action runs and previews one user may have going at once on a server.                                                                                       |
+| `WARDEN_ACTION_MAX_STEPS`               | `5`     | Most steps a multi-step HTTP action may have (1 to 20); an action with more fails startup. See [Several endpoints](actions.md#several-endpoints-httpsteps). |
 
 To refuse exports over the 100,000-row limit cheaply, Warden counts at most 100,001 matching rows.
 

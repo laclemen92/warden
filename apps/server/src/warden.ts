@@ -32,7 +32,12 @@ import { buildApp, type AppOptions } from './app.js';
 import { createOidcClient } from './auth/oidc.js';
 import { createSessions } from './auth/session.js';
 import { parseAuthSettings, parseDuration } from './auth/settings.js';
-import { parseAllowHttp, prepareHttpActions, type UserTokenProvider } from './http-actions.js';
+import {
+  parseAllowHttp,
+  parseMaxSteps,
+  prepareHttpActions,
+  type UserTokenProvider,
+} from './http-actions.js';
 import type { ActionLimits } from './routes/actions.js';
 import type { ExportLimits } from './routes/export.js';
 
@@ -170,6 +175,7 @@ export async function createWarden({
   const dbSettings = parseDatabaseSettings(env);
   const version = env.WARDEN_VERSION?.trim() || 'dev';
   const allowHttp = parseAllowHttp(env.WARDEN_ACTION_ALLOW_HTTP);
+  const maxSteps = parseMaxSteps(env.WARDEN_ACTION_MAX_STEPS);
 
   const loaded = await loadConfig({ cwd, env });
   requireAccess(loaded);
@@ -255,6 +261,7 @@ export async function createWarden({
       {
         env,
         allowHttp,
+        maxSteps,
         userTokens: userTokens ?? {
           audience: oidc.audience,
           accessTokenFor: (req) => sessions.accessTokenFor(req),

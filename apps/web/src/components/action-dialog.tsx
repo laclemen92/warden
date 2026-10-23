@@ -31,10 +31,12 @@ import {
   PREVIEW_STALE_MESSAGE,
   actionFields,
   actionInput,
+  failedSteps,
   groupActionErrors,
   initialActionDrafts,
   useActionDefaults,
   usePreviewAction,
+  useRetryAction,
   useRunAction,
   type ActionChange,
   type ActionDescriptor,
@@ -43,6 +45,8 @@ import {
   type ActionPreview,
   type ActionRequest,
   type ActionRun,
+  type ActionStep,
+  type FailedSteps,
 } from '@/lib/actions';
 import { recordPath } from '@/lib/records';
 import { useSchema } from '@/lib/schema';
@@ -109,7 +113,9 @@ export function ActionDialog({
 type Step =
   | { kind: 'form' }
   | { kind: 'preview'; preview: ActionPreview; request: ActionRequest }
-  | { kind: 'done'; run: ActionRun };
+  | { kind: 'done'; run: ActionRun }
+  /** A multi-step run stopped at a failed step. */
+  | { kind: 'failed'; failure: FailedSteps; message: string };
 
 function ActionSteps({
   action,
@@ -131,6 +137,7 @@ function ActionSteps({
   const [stale, setStale] = useState(false);
   const preview = usePreviewAction(action);
   const run = useRunAction(action);
+  const retry = useRetryAction(action);
   const reasonId = useId();
 
   const error = (step.kind === 'preview' ? run.error : (preview.error ?? run.error)) ?? null;
@@ -164,7 +171,10 @@ function ActionSteps({
     run.mutate(body, {
       onSuccess: (data) => setStep({ kind: 'done', run: data }),
       onError: (err) => {
-        if (
+        const failure = failedSteps(err);
+        if (failure) {
+          setStep({ kind: 'failed', failure, message: err.message });
+        } else if (
           err instanceof ApiError &&
           err.status === 409 &&
           err.message === PREVIEW_STALE_MESSAGE
@@ -178,6 +188,43 @@ function ActionSteps({
     });
   };
 
+  if (step.kind === 'failed') {
+    const { failure } = step;
+    const doRetry = () =>
+      retry.mutate(failure.auditId, {
+        onSuccess: (data) => setStep({ kind: 'done', run: data }),
+        onError: (err) => {
+          const next = failedSteps(err);
+          if (next) setStep({ kind: 'failed', failure: next, message: err.message });
+        },
+      });
+    const retryError = retry.error && !failedSteps(retry.error) ? retry.error : null;
+    return (
+      <>
+        <p role="alert" className="text-sm text-destructive">
+          {step.message}
+        </p>
+        <StepList steps={failure.steps} />
+        <p className="text-sm text-muted-foreground">
+          {failure.retryable
+            ? 'Retrying sends the failed step and the ones after it again. Steps that completed are not repeated.'
+            : "This run can't be retried. Check what the completed steps did before running the action again."}
+        </p>
+        {retryError && <ErrorMessage error={retryError} grouped={{}} />}
+        <AlertDialogFooter>
+          <Button variant="outline" disabled={retry.isPending} onClick={onClose}>
+            Close
+          </Button>
+          {failure.retryable && (
+            <Button disabled={retry.isPending} onClick={doRetry}>
+              {retry.isPending ? 'Retrying…' : 'Retry remaining steps'}
+            </Button>
+          )}
+        </AlertDialogFooter>
+      </>
+    );
+  }
+
   if (step.kind === 'done') {
     const { message, redirect, records: outcomes } = step.run.result;
     const target = redirect && entities.get(redirect.entity);
@@ -188,6 +235,7 @@ function ActionSteps({
         <p role="status" className="text-sm">
           {message ?? 'Done.'}
         </p>
+        {step.run.result.steps && <StepList steps={step.run.result.steps} />}
         {failures.length > 0 && (
           <div className="space-y-1 text-sm">
             <p className="font-medium text-destructive">
@@ -306,6 +354,51 @@ function ActionSteps({
         )}
       </AlertDialogFooter>
     </form>
+  );
+}
+
+const STEP_TEXT: Record<ActionStep['result'], string> = {
+  ok: 'Done',
+  rejected: 'Rejected',
+  failed: 'Failed',
+  skipped: 'Skipped',
+  not_attempted: 'Not attempted',
+};
+const UNDO_TEXT: Record<NonNullable<ActionStep['compensation']>['result'], string> = {
+  ok: 'undone',
+  rejected: 'undo rejected',
+  failed: 'undo failed',
+};
+
+/** Each step of a multi-step run and how it went, including undo calls. */
+function StepList({ steps }: { steps: ActionStep[] }) {
+  return (
+    <ol aria-label="Steps" className="space-y-1 text-sm">
+      {steps.map((s) => (
+        <li key={s.name}>
+          <span
+            className={
+              s.result === 'rejected' || s.result === 'failed'
+                ? 'font-medium text-destructive'
+                : s.result === 'ok'
+                  ? 'font-medium'
+                  : 'text-muted-foreground'
+            }
+          >
+            {STEP_TEXT[s.result]}
+          </span>{' '}
+          <span className="font-mono">{s.name}</span>
+          {s.message && <span className="text-muted-foreground">: {s.message}</span>}
+          {s.compensation && (
+            <span className={s.compensation.result === 'ok' ? '' : 'text-destructive'}>
+              {' '}
+              · {UNDO_TEXT[s.compensation.result]}
+              {s.compensation.message && `: ${s.compensation.message}`}
+            </span>
+          )}
+        </li>
+      ))}
+    </ol>
   );
 }
 

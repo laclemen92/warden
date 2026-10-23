@@ -162,9 +162,10 @@ export interface ActionDefinition<
   run?: (ctx: RunContext<InputOf<I>, T>) => Promise<ActionResult | void>;
   /**
    * Delegate the action to your API instead of `run`. It can't be previewed (it is always
-   * `confirm: 'confirm'`), writes nothing through `tx`, and so takes no `permissions`.
+   * `confirm: 'confirm'`), writes nothing through `tx`, and so takes no `permissions`. Give one
+   * `url`, or `steps` to call several endpoints in order.
    */
-  http?: HttpCall<InputOf<I>, T>;
+  http?: HttpCall<InputOf<I>, T> | HttpSteps<InputOf<I>, T>;
 }
 
 /** What an HTTP action's `url` and `body` see. Nothing here has touched the database yet. */
@@ -201,6 +202,7 @@ export type HttpAuth =
   | { type: 'user'; audience: string };
 
 export interface HttpCall<I, T extends ActionTarget = ActionTarget> {
+  steps?: never;
   /** `https` only, except on loopback, unless `WARDEN_ACTION_ALLOW_HTTP=true`. */
   url: string | ((ctx: HttpContext<I, T>) => string);
   /** Default `POST`. */
@@ -214,6 +216,61 @@ export interface HttpCall<I, T extends ActionTarget = ActionTarget> {
   perRecord?: boolean;
   /** With `perRecord`, how many requests may be in flight at once. Default 4, at most 16. */
   concurrency?: number;
+}
+
+/** An earlier step's answer, as later steps see it. */
+export interface StepResponse {
+  status: number;
+  /** The parsed JSON body; undefined when it wasn't JSON or was larger than 64 KiB. */
+  body: unknown;
+}
+
+/** What the steps before this one answered, by step name. Skipped steps are absent. */
+export type StepResponses = Readonly<Record<string, StepResponse>>;
+
+/** One request of a multi-step HTTP action. */
+export interface HttpStep<I, T extends ActionTarget = ActionTarget> {
+  /**
+   * `^[a-z][a-zA-Z0-9_]*$`, unique within the action. Later steps read this step's answer as
+   * `prev.<name>`, and its `Idempotency-Key` is `<audit entry id>.<name>`.
+   */
+  name: string;
+  /** `https` only, except on loopback, unless `WARDEN_ACTION_ALLOW_HTTP=true`. */
+  url: string | ((ctx: HttpContext<I, T>, prev: StepResponses) => string);
+  /** Default `POST`. */
+  method?: 'POST' | 'PUT' | 'PATCH' | 'DELETE';
+  /** JSON body. Default `{ input, records }`. */
+  body?: (ctx: HttpContext<I, T>, prev: StepResponses) => unknown;
+  /** Skip the step when this returns false. Skips are recorded as `skipped`. */
+  when?: (ctx: HttpContext<I, T>, prev: StepResponses) => boolean;
+  /** Default: `http.timeoutMs`. */
+  timeoutMs?: number;
+  /**
+   * A call that undoes this step, made when a later step fails. Undo calls run in reverse order,
+   * best effort: their outcome is logged and shown, and they are not a transaction.
+   */
+  compensate?: {
+    url: string | ((ctx: HttpContext<I, T>, prev: StepResponses) => string);
+    method?: 'POST' | 'PUT' | 'PATCH' | 'DELETE';
+    body?: (ctx: HttpContext<I, T>, prev: StepResponses) => unknown;
+    timeoutMs?: number;
+  };
+  /**
+   * Keep this step's JSON response body in the audit log (it isn't kept by default). Values of
+   * the keys in `redact`, at any depth, are replaced with `[redacted]`.
+   */
+  auditBody?: true | { redact: string[] };
+}
+
+/** Several endpoints, called in order; the first failure stops the chain. */
+export interface HttpSteps<I, T extends ActionTarget = ActionTarget> {
+  url?: never;
+  /** At most 5 (`WARDEN_ACTION_MAX_STEPS`). */
+  steps: HttpStep<I, T>[];
+  /** Used by every step, with the same actor headers as a single call. */
+  auth: HttpAuth;
+  /** Each step's default timeout. Default 10 s; at most 60 s. */
+  timeoutMs?: number;
 }
 
 // Definitions differ in their input and target types, so a module's list holds any of them.
