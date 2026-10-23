@@ -1,6 +1,7 @@
 import { useQueryClient } from '@tanstack/react-query';
-import { ChevronsUpDown, LogOut } from 'lucide-react';
-import { useNavigate } from 'react-router';
+import { ChevronsUpDown, CircleHelp, Keyboard, LogOut } from 'lucide-react';
+import { Link, useNavigate } from 'react-router';
+import { useOpenShortcuts } from '@/components/shortcuts';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import {
   DropdownMenu,
@@ -8,11 +9,13 @@ import {
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
+  DropdownMenuShortcut,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { SidebarMenu, SidebarMenuButton, SidebarMenuItem } from '@/components/ui/sidebar';
 import { Skeleton } from '@/components/ui/skeleton';
 import { logout, useCurrentUser, type CurrentUser } from '@/lib/auth';
+import { HELP_PATH } from '@/lib/help';
 
 function displayName(user: CurrentUser): string {
   return user.name ?? user.email ?? 'Anonymous';
@@ -32,6 +35,7 @@ export function UserMenu() {
   const { data: user, isPending } = useCurrentUser();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  const openShortcuts = useOpenShortcuts();
 
   if (isPending) return <Skeleton className="h-12 w-full" />;
 
@@ -71,6 +75,18 @@ export function UserMenu() {
               <div className="truncate font-medium">{name}</div>
               {email && <div className="truncate text-xs text-muted-foreground">{email}</div>}
             </DropdownMenuLabel>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem asChild>
+              <Link to={HELP_PATH}>
+                <CircleHelp />
+                Help
+              </Link>
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={openShortcuts} aria-keyshortcuts="?">
+              <Keyboard />
+              Keyboard shortcuts
+              <DropdownMenuShortcut aria-hidden="true">?</DropdownMenuShortcut>
+            </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem onSelect={() => void onLogout()}>
               <LogOut />
