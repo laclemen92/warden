@@ -125,11 +125,17 @@ interface KeyLike {
   metaKey: boolean;
   ctrlKey: boolean;
   altKey: boolean;
+  shiftKey: boolean;
 }
 
-/** ⌘B or Ctrl+B. Either modifier works on every platform. */
+/** ⌘B or Ctrl+B. Either modifier works on every platform. Not with Shift: ⌘⇧B is the browser's bookmarks bar. */
 export function isSidebarToggle(event: KeyLike): boolean {
-  return event.key.toLowerCase() === 'b' && (event.metaKey || event.ctrlKey) && !event.altKey;
+  return (
+    event.key.toLowerCase() === 'b' &&
+    (event.metaKey || event.ctrlKey) &&
+    !event.altKey &&
+    !event.shiftKey
+  );
 }
 
 /** "?" with no command modifier (Shift is how most layouts type it). */

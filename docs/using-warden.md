@@ -62,9 +62,11 @@ A field that points at another record has a picker: type to search, then use <kb
 
 ## Deleting and restoring
 
-_Needs `delete` on the table._
+_Deleting needs `delete` on the table; restoring needs `update`._
 
-**Delete** on a record's page asks you to confirm. Some tables only mark rows as deleted: those rows drop out of the grid until you tick **Show deleted**, and **Restore** on the record brings one back (restoring counts as an edit). A record other records still point at can't be deleted.
+**Delete** on a record's page asks you to confirm. A record other records still point at can't be deleted.
+
+Some tables only mark rows as deleted: those rows drop out of the grid until you tick **Show deleted**, and **Restore** on the record brings one back. Restoring counts as an edit, so it needs `update` rather than `delete`.
 
 ## Internal notes
 

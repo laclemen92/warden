@@ -78,6 +78,7 @@ const key = (key: string, extra: Partial<KeyboardEventInit> = {}) => ({
   metaKey: false,
   ctrlKey: false,
   altKey: false,
+  shiftKey: false,
   ...extra,
 });
 
@@ -97,6 +98,8 @@ describe('shortcuts module', () => {
     expect(isSidebarToggle(key('b', { metaKey: true }))).toBe(true);
     expect(isSidebarToggle(key('b', { ctrlKey: true }))).toBe(true);
     expect(isSidebarToggle(key('b'))).toBe(false);
+    expect(isSidebarToggle(key('B', { metaKey: true, shiftKey: true }))).toBe(false);
+    expect(isSidebarToggle(key('B', { ctrlKey: true, shiftKey: true }))).toBe(false);
     expect(isMultiSortEvent({ shiftKey: true })).toBe(true);
     expect(isMultiSortEvent({ shiftKey: false })).toBe(false);
     expect(isMultiSortEvent(null)).toBe(false);
@@ -253,6 +256,28 @@ describe('help page', () => {
       expect(titles).toContain(shown);
     }
     expect(screen.getByText(/share your views/)).toBeInTheDocument();
+  });
+
+  it('shows delete help only with delete and restore help only with update', async () => {
+    capabilities = {
+      status: 200,
+      body: { entities: { orders: { actions: ['read', 'delete'], customActions: [] } } },
+    };
+    renderAt('/help');
+    await screen.findByRole('heading', { name: 'Deleting and restoring' });
+    expect(screen.getByText(/asks you to confirm/)).toBeInTheDocument();
+    expect(screen.queryByText(/brings one back/)).not.toBeInTheDocument();
+  });
+
+  it('shows restore help to a user who can update but not delete', async () => {
+    capabilities = {
+      status: 200,
+      body: { entities: { orders: { actions: ['read', 'update'], customActions: [] } } },
+    };
+    renderAt('/help');
+    await screen.findByRole('heading', { name: 'Deleting and restoring' });
+    expect(screen.getByText(/brings one back/)).toBeInTheDocument();
+    expect(screen.queryByText(/asks you to confirm/)).not.toBeInTheDocument();
   });
 
   it('hides write sections when capabilities fail to load', async () => {

@@ -141,14 +141,23 @@ const SECTIONS: Section[] = [
   {
     id: 'deleting',
     title: 'Deleting and restoring',
-    requires: ['delete'],
-    body: () => (
-      <p>
-        <em>Delete</em> on a record's page asks you to confirm. Some tables only mark rows as
-        deleted: those rows drop out of the grid until you tick <em>Show deleted</em>, and{' '}
-        <em>Restore</em> on the record brings one back (restoring counts as an edit). A record other
-        records still point at can't be deleted.
-      </p>
+    requires: ['delete', 'update'],
+    body: (features) => (
+      <>
+        {features.has('delete') && (
+          <p>
+            <em>Delete</em> on a record's page asks you to confirm. A record other records still
+            point at can't be deleted.
+          </p>
+        )}
+        {features.has('update') && (
+          <p>
+            Some tables only mark rows as deleted: those rows drop out of the grid until you tick{' '}
+            <em>Show deleted</em>, and <em>Restore</em> on the record brings one back. Restoring
+            counts as an edit, so it needs edit access rather than delete.
+          </p>
+        )}
+      </>
     ),
   },
   {
