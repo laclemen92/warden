@@ -67,8 +67,9 @@ jobs:
         timeout-minutes: 5
       - run: docker compose up -d --build --wait
         timeout-minutes: 10
-      # Browsers are cached per Playwright version; the system packages they need still come from
-      # apt. Network steps get short timeouts and retries, so a stuck mirror fails over in minutes.
+      # Browsers are cached per Playwright version. The download is retried with short timeouts;
+      # the system packages come from apt, which is slow but must not be killed mid-install (the
+      # orphaned apt-get would hold the dpkg lock), so the step timeout is its only limit.
       - id: playwright
         run: echo "version=$(pnpm --filter @wardenhq/e2e exec playwright --version | awk '{print $2}')" >> "$GITHUB_OUTPUT"
       - uses: actions/cache@v4
@@ -76,17 +77,18 @@ jobs:
         with:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}
-      - name: Install Playwright browser and system dependencies
-        timeout-minutes: 8
-        env:
-          BROWSERS_CACHED: ${{ steps.browsers.outputs.cache-hit }}
+      - name: Download Playwright browser
+        if: steps.browsers.outputs.cache-hit != 'true'
+        timeout-minutes: 5
         run: |
-          if [ "$BROWSERS_CACHED" = true ]; then what=(install-deps); else what=(install --with-deps); fi
           for attempt in 1 2 3; do
-            timeout 150 pnpm --filter @wardenhq/e2e exec playwright "${what[@]}" chromium && exit 0
-            echo "::warning::playwright ${what[*]} attempt $attempt failed or timed out"
+            timeout 90 pnpm --filter @wardenhq/e2e exec playwright install chromium && exit 0
+            echo "::warning::playwright browser download attempt $attempt failed or timed out"
           done
           exit 1
+      - name: Install Playwright system dependencies
+        timeout-minutes: 8
+        run: pnpm --filter @wardenhq/e2e exec playwright install-deps chromium
       - run: pnpm e2e
         timeout-minutes: 10
         env:
