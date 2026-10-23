@@ -34,6 +34,9 @@ jobs:
       - run: pnpm format:check
       - run: pnpm lint
       - run: pnpm build --cache-dir=.turbo
+      - name: Check warden.config.schema.json is up to date
+        run: pnpm --filter @wardenhq/config schema:check
+        timeout-minutes: 2
       - run: pnpm typecheck --cache-dir=.turbo
       - run: pnpm test --cache-dir=.turbo
         timeout-minutes: 12

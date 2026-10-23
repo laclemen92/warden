@@ -40,42 +40,62 @@ const actionName = z
   });
 
 const roleConfigSchema = z.strictObject({
-  /** Actions this role may perform, keyed by table, or `*` for every exposed table. */
   grants: z
     .record(
       z.string().regex(/^(\*|[^.*]+(\.[^.*]+)?)$/, 'Expected "*", "table" or "schema.table"'),
       actions,
     )
-    .default({}),
-  /** Admin areas this role may use. They show names that config hides, so grant them narrowly. */
-  admin: z.array(z.enum(ADMIN_AREAS)).default([]),
-  /**
-   * Custom actions this role may run, or `*` for all. Running one doesn't need the table grants
-   * it writes with, but a table `deny` still disables it.
-   */
-  actions: z.array(z.union([z.literal('*'), actionName])).default([]),
+    .default({})
+    .meta({
+      description:
+        'Actions this role may perform, keyed by table ("users", "billing.invoices") or "*" for ' +
+        'every exposed table. "*" can\'t grant delete.',
+    }),
+  /** They show names that config hides, so grant them narrowly. */
+  admin: z
+    .array(z.enum(ADMIN_AREAS))
+    .default([])
+    .meta({
+      description:
+        'Warden administration areas this role may use: schema (drift page), audit (audit log), ' +
+        'roles (assigning roles), views (sharing and managing shared views).',
+    }),
+  actions: z
+    .array(z.union([z.literal('*'), actionName]))
+    .default([])
+    .meta({
+      description:
+        'Custom actions this role may run, or "*" for all. Running one doesn\'t need the table ' +
+        "grants it writes with, but a table's deny still disables it.",
+    }),
 });
 
 const actionConfigSchema = z.strictObject({
-  /** Nobody may run it, whatever their roles grant. */
-  disabled: z.boolean().optional(),
-  /**
-   * Whether running it must say why. Overrides the action's own `requireReason` either way; a
-   * table's `requireReason` covering a write the action may make still requires one.
-   */
-  requireReason: z.boolean().optional(),
-  /** Overrides the action's own label. */
-  label: name.optional(),
+  disabled: z
+    .boolean()
+    .optional()
+    .meta({ description: 'Nobody may run it, whatever their roles grant.' }),
+  requireReason: z
+    .boolean()
+    .optional()
+    .meta({
+      description:
+        "Whether running it must say why. Overrides the action's own requireReason either way; a " +
+        "table's requireReason covering a write the action may make still requires one.",
+    }),
+  label: name.optional().meta({ description: "Overrides the action's own label." }),
 });
 
 const roleList = z.array(name).min(1);
 
 const accessConfigSchema = z.strictObject({
-  /** ID token claim holding the user's groups: a list of strings, or one string. */
-  groupsClaim: name.default('groups'),
-  /** Roles for each IdP group. */
-  groups: z.record(name, roleList).default({}),
-  /** Roles for everyone whose email is at each domain (exact match, not subdomains). */
+  groupsClaim: name.default('groups').meta({
+    description: "ID token claim holding the user's groups: a list of strings, or one string.",
+  }),
+  groups: z
+    .record(name, roleList)
+    .default({})
+    .meta({ description: 'Roles for each IdP group. Group names match exactly.' }),
   emailDomains: z
     .record(
       z
@@ -85,42 +105,66 @@ const accessConfigSchema = z.strictObject({
         .regex(/^[\x21-\x7e]+$/, 'Expected an ASCII domain; write internationalized ones as xn--'),
       roleList,
     )
-    .default({}),
-  /**
-   * Only match `emailDomains` and role assignments, and only record the email as the audit
-   * actor, when the IdP says it is verified (`email_verified: true`). Turn off only for IdPs
-   * that never send the claim and don't let users set their own email.
-   */
-  requireVerifiedEmail: z.boolean().default(true),
-  /**
-   * Let in everyone the IdP authenticates, with no roles unless a rule or assignment gives some.
-   * Only for IdPs that already restrict who can sign in.
-   */
-  allowAll: z.boolean().default(false),
+    .default({})
+    .meta({
+      description:
+        'Roles for everyone whose email is at each domain (exact match, not subdomains; ASCII, ' +
+        'punycode for internationalized domains).',
+    }),
+  requireVerifiedEmail: z
+    .boolean()
+    .default(true)
+    .meta({
+      description:
+        'Only match emailDomains and role assignments, and only record the email, when the IdP ' +
+        'says it is verified (email_verified: true). Turn off only for IdPs that never send the ' +
+        "claim and don't let users set their own email.",
+    }),
+  allowAll: z
+    .boolean()
+    .default(false)
+    .meta({
+      description:
+        'Let in everyone the IdP authenticates, with no roles unless a rule or assignment gives ' +
+        'some. Only for IdPs that already restrict who can sign in.',
+    }),
 });
 
-/** Maps the signed-in user to a row of the operator's own users table, by verified email. */
 const actorConfigSchema = z.strictObject({
-  /** The users table: `table` (in the first schema) or `schema.table`. It may be hidden. */
-  table: tableKey,
-  /** Text column matched, ignoring case, against the user's verified email. */
-  matchColumn: name,
-  /** Column whose value (as text) is recorded as the actor's user id. */
-  idColumn: name,
-  /** Deny sign-in to users with no single matching row, and to everyone if the mapping is broken. */
-  required: z.boolean().default(false),
+  table: tableKey.meta({
+    description:
+      'The users table: "table" (in the first schema) or "schema.table". It may be hidden.',
+  }),
+  matchColumn: name.meta({
+    description: "Text column matched, ignoring case, against the user's verified email.",
+  }),
+  idColumn: name.meta({
+    description: "Column whose value (as text) is recorded as the actor's user id.",
+  }),
+  required: z.boolean().default(false).meta({
+    description:
+      'Deny sign-in to users with no single matching row, and to everyone if the mapping is broken.',
+  }),
 });
 
 const columnConfigSchema = z.strictObject({
-  /** Never sent to the UI or returned by the API. */
-  hidden: z.boolean().optional(),
-  /** Shown but never writable. */
-  readOnly: z.boolean().optional(),
-  label: name.optional(),
-  /** Only these roles see the column; to everyone else it is hidden. */
-  readableBy: roleList.optional(),
-  /** Only these roles may write the column; everyone else sees it read-only. */
-  writableBy: roleList.optional(),
+  hidden: z.boolean().optional().meta({
+    description:
+      'Remove the column completely: never selected, returned, shown, or accepted as input.',
+  }),
+  readOnly: z
+    .boolean()
+    .optional()
+    .meta({ description: 'Show the column but never accept writes to it.' }),
+  label: name.optional().meta({ description: 'The name shown in the UI.' }),
+  readableBy: roleList.optional().meta({
+    description: 'Only these roles see the column; to everyone else it is hidden.',
+  }),
+  writableBy: roleList.optional().meta({
+    description:
+      'Only these roles may write the column; everyone else sees it read-only. Each must also be ' +
+      'in readableBy when both are set.',
+  }),
 });
 
 /** Config view keys: lowercase words joined by hyphens, as in `?view=config:fraud-review`. */
@@ -128,21 +172,30 @@ export const VIEW_KEY = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 
 /** A shared grid view defined in config. Fields are checked against the database at startup. */
 const viewConfigSchema = z.strictObject({
-  /** Stable id, unique across all tables. Links use `?view=config:<key>`. */
   key: z
     .string()
     .max(100)
-    .regex(VIEW_KEY, 'Expected lowercase letters, digits and hyphens, such as "fraud-review"'),
+    .regex(VIEW_KEY, 'Expected lowercase letters, digits and hyphens, such as "fraud-review"')
+    .meta({
+      description:
+        'Stable id, unique across all tables. Links use ?view=config:<key>, so keep it stable.',
+    }),
   name: z
     .string()
     .trim()
     .min(1)
     .max(100)
-    .refine((n) => !n.includes('\0'), 'Must not contain NUL'),
-  /** A filter, as the list endpoint takes it. */
-  filter: z.unknown().optional(),
-  /** Free-text search. */
-  search: z.string().trim().min(1).max(1000).optional(),
+    .refine((n) => !n.includes('\0'), 'Must not contain NUL')
+    .meta({ description: 'Shown in the Views menu and the sidebar.' }),
+  filter: z
+    .unknown()
+    .optional()
+    .meta({
+      description:
+        'A filter, as the list endpoint takes it: { field, op, value }, or { and: [...] }, ' +
+        '{ or: [...] }, { not: ... } around others. Checked at startup.',
+    }),
+  search: z.string().trim().min(1).max(1000).optional().meta({ description: 'Free-text search.' }),
   sort: z
     .array(
       z.strictObject({
@@ -151,70 +204,123 @@ const viewConfigSchema = z.strictObject({
       }),
     )
     .min(1)
-    .optional(),
-  /** Visible columns, in the grid's usual order. Without it, every column is shown. */
-  columns: z.array(name).min(1).optional(),
-  /** Give the view its own entry in the sidebar. */
-  sidebar: z.boolean().optional(),
-  /** Open this view when the table is opened without other grid state. */
-  default: z.boolean().optional(),
+    .optional()
+    .meta({ description: 'The sort, as { column, direction: asc | desc }.' }),
+  columns: z.array(name).min(1).optional().meta({
+    description: "Visible columns, in the grid's usual order. Without it, every column is shown.",
+  }),
+  sidebar: z
+    .boolean()
+    .optional()
+    .meta({ description: 'Give the view its own entry in the sidebar, under Queues.' }),
+  default: z.boolean().optional().meta({
+    description:
+      'Apply this view when the table is opened without other grid state. One per table.',
+  }),
 });
 
 const tableConfigSchema = z
   .strictObject({
-    hidden: z.boolean().optional(),
-    label: name.optional(),
-    /** Column used when this table's rows are referenced elsewhere (FK links, pickers). */
-    displayField: name.optional(),
+    hidden: z
+      .boolean()
+      .optional()
+      .meta({
+        description:
+          "Remove the table completely: it doesn't appear anywhere, and requesting it returns " +
+          "the same 404 as a table that doesn't exist.",
+      }),
+    label: name.optional().meta({ description: 'The name shown in the UI.' }),
+    displayField: name.optional().meta({
+      description:
+        "Column used to represent this table's rows elsewhere, such as foreign key links and pickers.",
+    }),
     defaultSort: z
       .strictObject({
         column: name,
         direction: z.enum(['asc', 'desc']).default('asc'),
       })
-      .optional(),
-    /** Columns the grid shows first, in this order; the rest follow in the default order. */
-    columnOrder: z.array(name).optional(),
-    /** Columns included in the grid's free-text search. */
-    searchable: z.array(name).optional(),
-    columns: z.record(name, columnConfigSchema).default({}),
-    /** Actions nobody may perform on this table, whatever their roles grant. */
-    deny: actions.optional(),
+      .optional()
+      .meta({
+        description:
+          "The grid's initial sort, and the order of API lists and exports that don't name one.",
+      }),
+    columnOrder: z.array(name).optional().meta({
+      description:
+        'Columns the grid shows first, left to right; the rest follow in the default order.',
+    }),
+    searchable: z.array(name).optional().meta({
+      description:
+        "Columns the grid's free-text search matches against. Default: every visible text column.",
+    }),
+    columns: z
+      .record(name, columnConfigSchema)
+      .default({})
+      .meta({ description: 'Per-column config, keyed by column name.' }),
+    deny: actions.optional().meta({
+      description:
+        'Actions nobody may perform on this table, whatever their roles grant. Beats every grant.',
+    }),
+    allowDelete: z
+      .boolean()
+      .optional()
+      .meta({
+        description:
+          'Turn hard delete on (true) or off (false) for this table, overriding defaults.delete. ' +
+          'A role still needs delete on the table by name, and a deny that includes delete wins.',
+      }),
+    requireReason: z
+      .array(z.enum(WRITE_ACTIONS))
+      .optional()
+      .meta({
+        description:
+          'Writes on this table that must say why, stored in the audit log. Overrides ' +
+          'defaults.requireReason either way ([] makes reasons optional here).',
+      }),
     /**
-     * Let roles granted `delete` on this table hard-delete its rows. Overrides `defaults.delete`
-     * for this table either way; a `deny` that includes `delete` still wins.
+     * Off by default: a new key gives the row a new record id and splits its audit history, and
+     * `on update cascade` foreign keys would change rows in other tables outside Warden's policy
+     * and audit.
      */
-    allowDelete: z.boolean().optional(),
+    updatablePrimaryKey: z
+      .boolean()
+      .optional()
+      .meta({
+        description:
+          'Let updates change primary key columns. A new key gives the row a new record id and ' +
+          'splits its audit history. Only for natural keys that really do change.',
+      }),
     /**
-     * Writes that must say why; the reason is stored in the audit log. Overrides
-     * `defaults.requireReason` for this table either way (`[]` turns it off).
+     * Off by default: an explicit key doesn't advance the sequence, so later inserts, Warden's or
+     * the application's, fail with unique violations when it reaches that key.
      */
-    requireReason: z.array(z.enum(WRITE_ACTIONS)).optional(),
-    /**
-     * Let updates change primary key columns. Off by default: a new key gives the row a new
-     * record id and splits its audit history, and `on update cascade` foreign keys would change
-     * rows in other tables outside Warden's policy and audit.
-     */
-    updatablePrimaryKey: z.boolean().optional(),
-    /**
-     * Let creates set primary key columns that have a default (sequence, identity, or default
-     * expression). Off by default: an explicit key doesn't advance the sequence, so later inserts,
-     * Warden's or the application's, fail with unique violations when it reaches that key.
-     */
-    insertablePrimaryKey: z.boolean().optional(),
-    /** Shared grid views of this table, read-only in the UI. */
-    views: z.array(viewConfigSchema).optional(),
-    /**
-     * Deleting a row sets `column` (a timestamp to `now()`, a boolean to `true`) instead of
-     * removing it, under the same `delete` grant. Rows with it set are left out of lists unless
-     * asked for, and roles granted `update` may restore them. Independent of `allowDelete`.
-     */
+    insertablePrimaryKey: z
+      .boolean()
+      .optional()
+      .meta({
+        description:
+          'Let creates set primary key columns that have a default (sequence, identity, or ' +
+          "default expression). An explicit key doesn't advance the sequence.",
+      }),
+    views: z
+      .array(viewConfigSchema)
+      .optional()
+      .meta({ description: 'Shared grid views of this table, read-only in the UI.' }),
     softDelete: z
       .strictObject({
-        column: name,
-        /** Set to the actor's user id (see `actor`) on delete, null without one; cleared on restore. */
-        by: name.optional(),
+        column: name.meta({
+          description: 'Set on delete: a timestamp to now(), a boolean to true.',
+        }),
+        by: name.optional().meta({
+          description:
+            "Set to the actor's user id (see actor) on delete, null without one; cleared on restore.",
+        }),
       })
-      .optional(),
+      .optional()
+      .meta({
+        description:
+          'Deleting a row sets column instead of removing it, under the same delete grant. ' +
+          'Deleted rows are left out of lists unless asked for; roles granted update may restore them.',
+      }),
   })
   .superRefine((table, ctx) => {
     for (const [column, config] of Object.entries(table.columns)) {
@@ -366,14 +472,21 @@ export const REQUIRED_AUDIT_FIELDS: readonly AuditField[] = [
 
 const auditConfigSchema = z
   .strictObject({
-    /** `warden`: `warden.audit_log`. `table`: a table you own, set by `table` and `columns`. */
-    store: z.enum(['warden', 'table']).default('warden'),
-    /** `table` or `schema.table`, for `store: table`. */
-    table: tableKey.optional(),
-    /** Field → column. Omitted, every field goes to the column `warden.audit_log` names it. */
-    columns: auditColumnsSchema.optional(),
-    /** Tags Warden's entries, for a table that also holds the application's own. */
-    source: z.strictObject({ column: name, value: name }).optional(),
+    store: z.enum(['warden', 'table']).default('warden').meta({
+      description: 'warden: warden.audit_log. table: a table you own, named by audit.table.',
+    }),
+    table: tableKey.optional().meta({
+      description:
+        '"table" (in the first of schemas) or "schema.table". Required with store: table.',
+    }),
+    columns: auditColumnsSchema.optional().meta({
+      description:
+        "The column each audit field is written to. Leave it out to use warden.audit_log's column names.",
+    }),
+    source: z.strictObject({ column: name, value: name }).optional().meta({
+      description:
+        "Tags Warden's entries (column = value), for a table that also holds the application's own.",
+    }),
   })
   .superRefine((audit, ctx) => {
     const issue = (path: (string | number)[], message: string) =>
@@ -410,46 +523,94 @@ const auditConfigSchema = z
 
 export const wardenConfigSchema = z
   .strictObject({
-    /** Database schemas to introspect. The first is the default for unqualified table keys. */
-    schemas: z.array(name).min(1).default(['public']),
+    // Lets a JSON config name its JSON Schema for editors. YAML uses a comment instead.
+    $schema: z
+      .string()
+      .optional()
+      .meta({ description: 'JSON Schema for editor completions. Ignored by Warden.' }),
+    schemas: z
+      .array(name)
+      .min(1)
+      .default(['public'])
+      .meta({
+        description:
+          'Postgres schemas Warden introspects. The first is the default schema: its tables are ' +
+          'referred to by bare name, others as "schema.table".',
+      }),
     defaults: z
       .strictObject({
-        /** `all` exposes every introspected table; `none` exposes only tables listed under `tables`. */
-        expose: z.enum(['all', 'none']).default('all'),
-        /** How columns not mentioned in config are treated. */
-        newColumns: z.enum(['visible', 'hidden', 'readOnly']).default('visible'),
-        /** `all`: anyone may read every exposed table. `granted`: reading requires a `read` grant. */
-        read: z.enum(['all', 'granted']).default('all'),
-        /**
-         * Hard deletes. `none`: refused on every table unless it sets `allowDelete: true`.
-         * `granted`: a role's `delete` grant on a table is honored. A `*` grant never includes
-         * `delete` either way.
-         */
-        delete: z.enum(['none', 'granted']).default('none'),
-        /**
-         * Writes that must say why (an internal note, stored in the audit log), on tables that
-         * don't set their own `requireReason`. `[]` makes reasons optional.
-         */
-        requireReason: z.array(z.enum(WRITE_ACTIONS)).default([...WRITE_ACTIONS]),
-        /** The shortest required reason, after trimming, so "." or "fix" doesn't count. */
-        reasonMinLength: z.number().int().min(1).max(MAX_REASON_LENGTH).default(10),
-        /**
-         * Where shared views come from. `config`: only `tables.<table>.views`; sharing in the UI is
-         * refused. `ui`: only views shared in the UI; config views are an error. `both`: either.
-         */
-        sharedViews: z.enum(['config', 'ui', 'both']).default('both'),
+        expose: z.enum(['all', 'none']).default('all').meta({
+          description:
+            'all: every introspected table, minus hidden ones. none: only tables listed under tables.',
+        }),
+        newColumns: z
+          .enum(['visible', 'hidden', 'readOnly'])
+          .default('visible')
+          .meta({
+            description:
+              'How columns with no entry under tables.<table>.columns are treated: visible, ' +
+              'hidden (as if hidden: true), or readOnly.',
+          }),
+        read: z
+          .enum(['all', 'granted'])
+          .default('all')
+          .meta({
+            description:
+              'all: everyone who can sign in may read every exposed table. granted: reading a ' +
+              'table requires a read grant.',
+          }),
+        delete: z
+          .enum(['none', 'granted'])
+          .default('none')
+          .meta({
+            description:
+              'Hard deletes. none: refused on every table unless it sets allowDelete: true. ' +
+              'granted: a role\'s delete grant on a table is honored. "*" never grants delete.',
+          }),
+        requireReason: z
+          .array(z.enum(WRITE_ACTIONS))
+          .default([...WRITE_ACTIONS])
+          .meta({
+            description:
+              'Writes that must say why (an internal note, stored in the audit log), on tables ' +
+              "that don't set their own requireReason. [] makes reasons optional.",
+          }),
+        reasonMinLength: z.number().int().min(1).max(MAX_REASON_LENGTH).default(10).meta({
+          description:
+            'The shortest required reason, in characters after trimming, so "." or "fix" doesn\'t count.',
+        }),
+        sharedViews: z
+          .enum(['config', 'ui', 'both'])
+          .default('both')
+          .meta({
+            description:
+              'Where shared grid views come from. config: only tables.<table>.views. ui: only ' +
+              'views shared in the UI. both: either.',
+          }),
       })
-      .prefault({}),
-    tables: z.record(tableKey, tableConfigSchema).default({}),
-    roles: z.record(name, roleConfigSchema).default({}),
-    /** Per custom action (from `WARDEN_ACTIONS`), settings that override the action's own. */
-    actions: z.record(actionName, actionConfigSchema).default({}),
-    /** Who may sign in, and with which roles. The server requires it (see `requireAccess`). */
-    access: accessConfigSchema.optional(),
-    /** Where the audit trail is written. */
-    audit: auditConfigSchema.prefault({}),
-    /** Who signed-in users are in the application's own users table. */
-    actor: actorConfigSchema.optional(),
+      .prefault({})
+      .meta({ description: 'Defaults for tables, columns, reads, deletes and reasons.' }),
+    tables: z.record(tableKey, tableConfigSchema).default({}).meta({
+      description: 'Per-table config, keyed by "table" (default schema) or "schema.table".',
+    }),
+    roles: z.record(name, roleConfigSchema).default({}).meta({
+      description:
+        'Roles grant actions on tables. Create, update and delete are denied unless a role grants them.',
+    }),
+    actions: z.record(actionName, actionConfigSchema).default({}).meta({
+      description:
+        "Per custom action (from WARDEN_ACTIONS), settings that override the action's own.",
+    }),
+    access: accessConfigSchema.optional().meta({
+      description:
+        'Required. Who may sign in, and which roles they get, from the claims in the ID token.',
+    }),
+    audit: auditConfigSchema.prefault({}).meta({ description: 'Where the audit log is written.' }),
+    actor: actorConfigSchema.optional().meta({
+      description:
+        'Maps each signed-in user to a row of your own users table, by verified email, so audit ' +
+        'entries record their internal user id.',
+    }),
   })
   .superRefine((config, ctx) => {
     const checkSchema = (key: string, path: string[]) => {
@@ -593,6 +754,10 @@ export const wardenConfigSchema = z
         domains.add(lower);
       }
     }
+  })
+  .meta({
+    title: 'Warden config',
+    description: 'warden.config.yaml or warden.config.json. See docs/config.md.',
   });
 
 export type WardenConfig = z.infer<typeof wardenConfigSchema>;

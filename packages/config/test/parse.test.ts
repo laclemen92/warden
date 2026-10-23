@@ -100,6 +100,18 @@ tables:
     ]);
   });
 
+  it('accepts a top-level $schema in JSON, and still rejects other unknown keys', () => {
+    const json = (extra: string) =>
+      `{\n  "$schema": "./warden.config.schema.json",${extra}\n  "defaults": { "expose": "none" }\n}`;
+    expect(parseConfig(json(''), 'warden.config.json').defaults.expose).toBe('none');
+    expect(issues(json('\n  "$schemas": "x",'))).toEqual([
+      { path: '$schemas', message: 'Unrecognized key: "$schemas"', line: 3, column: 3 },
+    ]);
+    expect(issues('tables:\n  users:\n    $schema: x\n').map((i) => i.path)).toEqual([
+      'tables.users.$schema',
+    ]);
+  });
+
   it('reports type and enum errors at the value', () => {
     const result = issues(`defaults:
   expose: everything

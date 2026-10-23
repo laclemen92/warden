@@ -240,6 +240,8 @@ jobs:
     permissions:
       contents: write
     steps:
+      # For the config JSON Schema attached below. CI checked it matches the zod schema.
+      - uses: actions/checkout@v4
       - env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           EVENT: ${{ github.event_name }}
@@ -266,6 +268,10 @@ jobs:
           ## Mock IdP (development only)
 
           \`$MOCK_OIDC_IMAGE:$VERSION\` (digest \`$MOCK_OIDC_DIGEST\`) signs anyone in as a test user, for [trying Warden locally](https://github.com/$GITHUB_REPOSITORY/blob/v$VERSION/docs/deployment.md#trying-it-locally-without-an-identity-provider). Never deploy it.
+
+          ## Config schema
+
+          \`warden.config.schema.json\` (attached) gives editors completions and validation for this version's config file. See [Editor support](https://github.com/$GITHUB_REPOSITORY/blob/v$VERSION/docs/config.md#editor-support).
           NOTES
           )"
           # A stable Release takes the upgrade notes from the Release draft (release-draft.yml) and
@@ -287,4 +293,4 @@ jobs:
             gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/$id"
           done
           if [ -n "${upgrade:-}" ]; then notes="$upgrade"$'\n\n'"$notes"; fi
-          gh release create "v$VERSION" "${args[@]}" --notes "$notes"
+          gh release create "v$VERSION" packages/config/warden.config.schema.json "${args[@]}" --notes "$notes"
