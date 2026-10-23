@@ -11,6 +11,7 @@ export default tseslint.config(
       '**/.turbo/**',
       'e2e/playwright-report/**',
       'e2e/test-results/**',
+      '.claude/worktrees/**',
     ],
   },
   js.configs.recommended,
