@@ -78,11 +78,13 @@ jobs:
           key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}
       - name: Install Playwright browser and system dependencies
         timeout-minutes: 8
+        env:
+          BROWSERS_CACHED: ${{ steps.browsers.outputs.cache-hit }}
         run: |
-          what=${{ steps.browsers.outputs.cache-hit == 'true' && 'install-deps' || 'install --with-deps' }}
+          if [ "$BROWSERS_CACHED" = true ]; then what=(install-deps); else what=(install --with-deps); fi
           for attempt in 1 2 3; do
-            timeout 150 pnpm --filter @wardenhq/e2e exec playwright $what chromium && exit 0
-            echo "::warning::playwright $what attempt $attempt failed or timed out"
+            timeout 150 pnpm --filter @wardenhq/e2e exec playwright "${what[@]}" chromium && exit 0
+            echo "::warning::playwright ${what[*]} attempt $attempt failed or timed out"
           done
           exit 1
       - run: pnpm e2e
