@@ -60,6 +60,145 @@ export interface ActionSpec {
   refs: InputRef[];
   /** Input fields marked `.meta({ sensitive: true })`, redacted in the audit log. */
   sensitive: string[];
+  /** Set for an action that calls an API (`http`) instead of `run`. */
+  http?: HttpActionSpec;
+}
+
+export type HttpAuthSpec =
+  | { type: 'hmac'; secretEnv: string }
+  | {
+      type: 'client_credentials';
+      tokenUrl: string;
+      clientIdEnv: string;
+      clientSecretEnv: string;
+      audience?: string;
+      scope?: string;
+      secretEnv: string;
+    }
+  | { type: 'user'; audience: string };
+
+/** An HTTP action's settings, checked. `url` and `body` stay on the definition. */
+export interface HttpActionSpec {
+  method: 'POST' | 'PUT' | 'PATCH' | 'DELETE';
+  /** The URL, when the definition gives a fixed one rather than a function. */
+  url?: string;
+  auth: HttpAuthSpec;
+  timeoutMs: number;
+  perRecord: boolean;
+  concurrency: number;
+}
+
+export const HTTP_METHODS: readonly HttpActionSpec['method'][] = ['POST', 'PUT', 'PATCH', 'DELETE'];
+export const DEFAULT_HTTP_TIMEOUT_MS = 10_000;
+export const MAX_HTTP_TIMEOUT_MS = 60_000;
+export const DEFAULT_HTTP_CONCURRENCY = 4;
+export const MAX_HTTP_CONCURRENCY = 16;
+const HTTP_KEYS = new Set([
+  'url',
+  'method',
+  'body',
+  'auth',
+  'timeoutMs',
+  'perRecord',
+  'concurrency',
+]);
+const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/** Check an action's `http`; problems go to `problem`. */
+function httpSpecOf(
+  http: unknown,
+  target: unknown,
+  problem: (message: string) => void,
+): HttpActionSpec | undefined {
+  if (!isObject(http)) {
+    problem('http must be an object');
+    return undefined;
+  }
+  let failed = 0;
+  const fail = (message: string) => {
+    failed++;
+    problem(`http.${message}`);
+  };
+  for (const key of Object.keys(http)) if (!HTTP_KEYS.has(key)) fail(`${key} is not a known key`);
+  const { url, method = 'POST', body, auth, timeoutMs = DEFAULT_HTTP_TIMEOUT_MS } = http;
+  const { perRecord = false, concurrency = DEFAULT_HTTP_CONCURRENCY } = http;
+  if (typeof url !== 'function' && (typeof url !== 'string' || !url)) {
+    fail('url must be a string or a function');
+  }
+  if (!HTTP_METHODS.includes(method as HttpActionSpec['method'])) {
+    fail('method must be POST, PUT, PATCH or DELETE');
+  }
+  if (body !== undefined && typeof body !== 'function') fail('body must be a function');
+  if (!positiveInt(timeoutMs) || (timeoutMs as number) > MAX_HTTP_TIMEOUT_MS) {
+    fail(`timeoutMs must be a positive integer of at most ${MAX_HTTP_TIMEOUT_MS}`);
+  }
+  if (typeof perRecord !== 'boolean') fail('perRecord must be a boolean');
+  else if (perRecord && target !== 'many') fail('perRecord needs target "many"');
+  if (!positiveInt(concurrency) || (concurrency as number) > MAX_HTTP_CONCURRENCY) {
+    fail(`concurrency must be a positive integer of at most ${MAX_HTTP_CONCURRENCY}`);
+  }
+  const authSpec = httpAuthOf(auth, fail);
+  if (failed > 0 || !authSpec) return undefined;
+  return {
+    method: method as HttpActionSpec['method'],
+    ...(typeof url === 'string' ? { url } : {}),
+    auth: authSpec,
+    timeoutMs: timeoutMs as number,
+    perRecord: perRecord as boolean,
+    concurrency: concurrency as number,
+  };
+}
+
+function httpAuthOf(auth: unknown, fail: (message: string) => void): HttpAuthSpec | undefined {
+  if (!isObject(auth)) {
+    fail('auth is required: { type: "hmac" | "client_credentials" | "user", ... }');
+    return undefined;
+  }
+  const allowed: Record<string, string[]> = {
+    hmac: ['secretEnv'],
+    client_credentials: [
+      'tokenUrl',
+      'clientIdEnv',
+      'clientSecretEnv',
+      'audience',
+      'scope',
+      'secretEnv',
+    ],
+    user: ['audience'],
+  };
+  const type = auth.type;
+  const keys = typeof type === 'string' ? allowed[type] : undefined;
+  if (!keys) {
+    fail('auth.type must be "hmac", "client_credentials" or "user"');
+    return undefined;
+  }
+  let ok = true;
+  for (const key of Object.keys(auth)) {
+    if (key !== 'type' && !keys.includes(key)) {
+      fail(`auth.${key} is not a known key for type "${type}"`);
+      ok = false;
+    }
+  }
+  const text = (key: string, required: boolean, env = false) => {
+    const value = auth[key];
+    if (value === undefined && !required) return;
+    if (typeof value !== 'string' || !value || (env && !ENV_NAME.test(value))) {
+      fail(`auth.${key} must be ${env ? 'an environment variable name' : 'a non-empty string'}`);
+      ok = false;
+    }
+  };
+  if (type === 'hmac') text('secretEnv', true, true);
+  if (type === 'client_credentials') {
+    text('tokenUrl', true);
+    text('clientIdEnv', true, true);
+    text('clientSecretEnv', true, true);
+    text('audience', false);
+    text('scope', false);
+    // Signs the actor: any client with a token for the audience could otherwise forge it.
+    text('secretEnv', true, true);
+  }
+  if (type === 'user') text('audience', true);
+  return ok ? (auth as unknown as HttpAuthSpec) : undefined;
 }
 
 const DEFINITION_KEYS = new Set([
@@ -78,6 +217,7 @@ const DEFINITION_KEYS = new Set([
   'timeoutMs',
   'deadlineMs',
   'run',
+  'http',
 ]);
 
 const isObject = (value: unknown): value is Record<string, unknown> =>
@@ -242,8 +382,11 @@ export function checkActionDefinitions(definitions: unknown): ActionDefinitionCh
       input,
       defaults,
       run,
+      http,
     } = definition;
-    const { confirm = 'preview', destructive = false, requireReason = true } = definition;
+    const isHttp = http !== undefined;
+    const { destructive = false, requireReason = true } = definition;
+    const confirm = definition.confirm ?? (isHttp ? 'confirm' : 'preview');
     const { maxAffectedRows = DEFAULT_MAX_AFFECTED_ROWS, timeoutMs, deadlineMs } = definition;
     if (typeof label !== 'string' || !label.trim()) problem('label is required');
     if (description !== undefined && typeof description !== 'string') {
@@ -254,7 +397,9 @@ export function checkActionDefinitions(definitions: unknown): ActionDefinitionCh
       problem('target must be "one", "many" or "none"');
     }
     const permitted: Record<string, WriteAction[]> = {};
-    if (!isObject(permissions)) {
+    if (isHttp && permissions === undefined) {
+      // An HTTP action writes nothing through `tx`.
+    } else if (!isObject(permissions)) {
       problem('permissions must map tables to create, update and delete');
     } else {
       for (const [table, actions] of Object.entries(permissions)) {
@@ -281,7 +426,17 @@ export function checkActionDefinitions(definitions: unknown): ActionDefinitionCh
     if (deadlineMs !== undefined && !positiveInt(deadlineMs)) {
       problem('deadlineMs must be a positive integer');
     }
-    if (typeof run !== 'function') problem('run must be a function');
+    let httpSpec: HttpActionSpec | undefined;
+    if (isHttp) {
+      if (run !== undefined) problem('give either run or http, not both');
+      if (confirm !== 'confirm') problem("http actions can't be previewed; leave confirm out");
+      if (Object.keys(permitted).length > 0) {
+        problem('http actions write nothing through tx, so they take no permissions');
+      }
+      httpSpec = httpSpecOf(http, target, problem);
+    } else if (typeof run !== 'function') {
+      problem('run must be a function');
+    }
     if (defaults !== undefined && typeof defaults !== 'function') {
       problem('defaults must be a function');
     }
@@ -313,6 +468,7 @@ export function checkActionDefinitions(definitions: unknown): ActionDefinitionCh
       ...(timeoutMs !== undefined ? { timeoutMs: timeoutMs as number } : {}),
       ...(deadlineMs !== undefined ? { deadlineMs: deadlineMs as number } : {}),
       ...converted,
+      ...(httpSpec ? { http: httpSpec } : {}),
     });
   });
   return errors.length > 0 ? { ok: false, errors } : { ok: true, specs };

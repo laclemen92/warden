@@ -45,6 +45,8 @@ export interface ActionResult {
   message?: string;
   /** Where the UI goes next, e.g. the record the action created. */
   redirect?: { entity: string; id: string };
+  /** HTTP actions on many records: how each one went. */
+  records?: { id: string; ok: boolean; message?: string }[];
 }
 
 /**
@@ -156,7 +158,62 @@ export interface ActionDefinition<
    * the user told it took too long. Default: the server's (`WARDEN_ACTION_DEADLINE`, 60 s).
    */
   deadlineMs?: number;
-  run: (ctx: RunContext<InputOf<I>, T>) => Promise<ActionResult | void>;
+  /** What the action does, in Warden's transaction. Exactly one of `run` and `http` is given. */
+  run?: (ctx: RunContext<InputOf<I>, T>) => Promise<ActionResult | void>;
+  /**
+   * Delegate the action to your API instead of `run`. It can't be previewed (it is always
+   * `confirm: 'confirm'`), writes nothing through `tx`, and so takes no `permissions`.
+   */
+  http?: HttpCall<InputOf<I>, T>;
+}
+
+/** What an HTTP action's `url` and `body` see. Nothing here has touched the database yet. */
+export interface HttpContext<I, T extends ActionTarget = ActionTarget> {
+  input: I;
+  /** The target record (`target: 'one'`, or each record with `perRecord`). */
+  record: T extends 'one' ? RecordRef : RecordRef | undefined;
+  /** The selected records (`target: 'many'`); with `perRecord`, just this request's one. */
+  records: T extends 'many' ? RecordRef[] : undefined;
+  actor: Actor;
+  reason?: string;
+}
+
+/**
+ * How Warden authenticates to the API. No mode takes a token from the user.
+ * - `hmac`: signs method, path, timestamp, body and the Warden context header with a shared
+ *   secret (`X-Warden-Signature`).
+ * - `client_credentials`: an M2M bearer token from your IdP, cached until it expires. The request
+ *   is HMAC-signed with `secretEnv` too, so the API can trust the actor it names.
+ * - `user`: the signed-in user's own access token for `audience`, so the API enforces its own
+ *   permissions.
+ */
+export type HttpAuth =
+  | { type: 'hmac'; secretEnv: string }
+  | {
+      type: 'client_credentials';
+      tokenUrl: string;
+      clientIdEnv: string;
+      clientSecretEnv: string;
+      audience?: string;
+      scope?: string;
+      secretEnv: string;
+    }
+  | { type: 'user'; audience: string };
+
+export interface HttpCall<I, T extends ActionTarget = ActionTarget> {
+  /** `https` only, except on loopback, unless `WARDEN_ACTION_ALLOW_HTTP=true`. */
+  url: string | ((ctx: HttpContext<I, T>) => string);
+  /** Default `POST`. */
+  method?: 'POST' | 'PUT' | 'PATCH' | 'DELETE';
+  /** JSON body. Default `{ input, records }`, with record ids for records. */
+  body?: (ctx: HttpContext<I, T>) => unknown;
+  auth: HttpAuth;
+  /** Default 10 s; at most 60 s. */
+  timeoutMs?: number;
+  /** `target: 'many'` only: one request per record instead of one for all. */
+  perRecord?: boolean;
+  /** With `perRecord`, how many requests may be in flight at once. Default 4, at most 16. */
+  concurrency?: number;
 }
 
 // Definitions differ in their input and target types, so a module's list holds any of them.

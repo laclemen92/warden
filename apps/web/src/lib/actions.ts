@@ -38,6 +38,8 @@ export interface ActionChange {
 export interface ActionResult {
   message?: string;
   redirect?: { entity: string; id: string };
+  /** HTTP actions on many records: how each one went. */
+  records?: { id: string; ok: boolean; message?: string }[];
 }
 
 export interface ActionPreview {

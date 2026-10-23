@@ -32,7 +32,7 @@ export interface AppOptions {
     definitions: ReadonlyMap<string, AnyActionDefinition>;
     /** The first configured schema, which unqualified table keys in actions refer to. */
     defaultSchema: string;
-  } & Pick<ActionRouteOptions, 'startTransaction' | 'limits'>;
+  } & Pick<ActionRouteOptions, 'startTransaction' | 'limits' | 'http'>;
   /** Login routes and the session check on /api. Required whenever data routes are served. */
   auth?: AuthOptions;
   /** Introspected model and config for the schema drift page; registered when `db` is given. */

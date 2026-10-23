@@ -90,6 +90,31 @@ export interface ActionDetails {
   records: string[];
   /** Set when input fields were left out because the caller can't read what they picked. */
   redacted?: true;
+  /** On an HTTP action's follow-up entry: what its API answered. */
+  outcome?: HttpActionOutcome;
+}
+
+/** How an HTTP action's call went: `rejected` is a 4xx; `failed` a 5xx, timeout or network error. */
+export type HttpCallResult = 'ok' | 'rejected' | 'failed';
+
+/**
+ * What an HTTP action's API answered. The action's own entry is written before the call, so this
+ * goes in a second entry for the same action and record, keeping the log append-only.
+ */
+export interface HttpActionOutcome {
+  /** The id of the action's own entry: the attempt this completes. */
+  attempt: string;
+  /** Method, origin and path; the query is left out. */
+  endpoint: string;
+  /** `partial` when some records failed (`rejected` for a batch whose API failed them all). */
+  result: HttpCallResult | 'partial';
+  status?: number;
+  /** A 2xx's or 4xx's message, as the user was shown it. */
+  message?: string;
+  /** The `id` the API's 2xx response named. */
+  resultId?: string;
+  /** Per record, for `perRecord` and APIs that report each record. */
+  records?: { id: string; result: HttpCallResult; status?: number; message?: string }[];
 }
 
 /** An action's details as the audit log stores them. */
@@ -190,7 +215,7 @@ function projectActionDetails(
   details: StoredActionDetails,
   entities: ReadonlySet<string>,
 ): ActionDetails {
-  const { input, records, refs } = details;
+  const { input, records, refs, outcome } = details;
   const kept = refs
     ? Object.fromEntries(
         Object.entries(input).filter(
@@ -199,7 +224,12 @@ function projectActionDetails(
       )
     : {};
   const redacted = Object.keys(kept).length < Object.keys(input).length;
-  return { input: kept, records, ...(redacted ? { redacted: true as const } : {}) };
+  return {
+    input: kept,
+    records,
+    ...(redacted ? { redacted: true as const } : {}),
+    ...(outcome ? { outcome } : {}),
+  };
 }
 
 // Creates and deletes change whether the row exists, which every reader of the entity can see.
