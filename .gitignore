@@ -9,3 +9,6 @@ coverage
 .DS_Store
 playwright-report
 test-results
+
+# Agent worktrees (Claude Code)
+.claude/worktrees/
