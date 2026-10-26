@@ -18,7 +18,7 @@ git tag v0.2.0
 git push origin v0.2.0
 ```
 
-Then watch the run under **Actions → Release**. The tag must be `vMAJOR.MINOR.PATCH`, optionally with a prerelease suffix.
+Then watch the run under **Actions → Release**. The tag must be `vMAJOR.MINOR.PATCH`, optionally with a prerelease suffix. If a tag push starts a second Release run (GitHub occasionally delivers the event twice), the second one waits for the first and then stops: a version that already has a published Release is never rebuilt or republished.
 
 You can also run the workflow from **Actions → Release → Run workflow** (or `gh workflow run release.yml -f version=0.2.0 --ref main`). Give the version without the `v`; the workflow tags the commit at the head of the branch you run it on. It refuses a version whose tag already exists.
 
