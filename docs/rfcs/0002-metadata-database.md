@@ -1,9 +1,9 @@
 # RFC 0002: Where Warden keeps its metadata
 
-| Status    | Accepted                                                                                                                 |
+| Status    | Accepted, deferred: not planned until someone needs it (see [#165](https://github.com/laclemen92/warden/issues/165))     |
 | --------- | ------------------------------------------------------------------------------------------------------------------------ |
 | Issue     | [#161](https://github.com/laclemen92/warden/issues/161), part of [#158](https://github.com/laclemen92/warden/issues/158) |
-| Implement | [#165](https://github.com/laclemen92/warden/issues/165)                                                                  |
+| Implement | [#165](https://github.com/laclemen92/warden/issues/165) (deferred; build the always-read-only split mode first)          |
 
 ## Summary
 
