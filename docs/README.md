@@ -17,13 +17,14 @@ Every doc in the repository, one line each. Contributors and agents: read [archi
 
 ## For contributors
 
-| Doc                                                    | What it covers                                                                                                            |
-| ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------- |
-| [Architecture](architecture.md)                        | How a request flows end to end, package boundaries, the `warden` schema, and where each security invariant is enforced.   |
-| [CLAUDE.md](../CLAUDE.md)                              | Commands, layout, the core security rules, conventions, and workflow for agents and contributors.                         |
-| [Contributing](../CONTRIBUTING.md)                     | Local setup, the checks to run before a PR, the E2E suite, and reporting security issues.                                 |
-| [Releasing](releasing.md)                              | Cutting a release by pushing a tag, what the release workflow checks and publishes, and prereleases.                      |
-| [RFC 0001: `defineAction`](rfcs/0001-define-action.md) | The design record for custom actions: goals, alternatives, and implementation notes. [actions.md](actions.md) is current. |
+| Doc                                                                         | What it covers                                                                                                            |
+| --------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| [Architecture](architecture.md)                                             | How a request flows end to end, package boundaries, the `warden` schema, and where each security invariant is enforced.   |
+| [CLAUDE.md](../CLAUDE.md)                                                   | Commands, layout, the core security rules, conventions, and workflow for agents and contributors.                         |
+| [Contributing](../CONTRIBUTING.md)                                          | Local setup, the checks to run before a PR, the E2E suite, and reporting security issues.                                 |
+| [Releasing](releasing.md)                                                   | Cutting a release by pushing a tag, what the release workflow checks and publishes, and prereleases.                      |
+| [RFC 0001: `defineAction`](rfcs/0001-define-action.md)                      | The design record for custom actions: goals, alternatives, and implementation notes. [actions.md](actions.md) is current. |
+| [RFC 0002: Where Warden keeps its metadata](rfcs/0002-metadata-database.md) | Decision on a separate metadata database, read-only replicas, and which database each audit entry is written to.          |
 
 ## Read before touching
 
