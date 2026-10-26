@@ -268,11 +268,11 @@ defineAction({
   input: z.object({ decision: z.enum(['fraudulent', 'not_fraudulent']) }),
   http: {
     url: (ctx) =>
-      `${process.env.SPOT_API_URL}/internal/payout-items/${segment(ctx.record.values.id)}/review`,
-    origins: [process.env.SPOT_API_URL],
+      `${process.env.PAYMENTS_API_URL}/internal/payout-items/${segment(ctx.record.values.id)}/review`,
+    origins: [process.env.PAYMENTS_API_URL],
     method: 'POST',
     body: ({ input, reason }) => ({ decision: input.decision, note: reason }),
-    auth: { type: 'hmac', secretEnv: 'SPOT_API_SECRET' },
+    auth: { type: 'hmac', secretEnv: 'PAYMENTS_API_SECRET' },
     timeoutMs: 10_000,
   },
 });
@@ -375,7 +375,7 @@ const app = express();
 app.use(express.json({ verify: (req, _res, buf) => void (req.rawBody = buf) }));
 app.post(
   '/internal/payout-items/:id/review',
-  wardenAuth(process.env.SPOT_API_SECRET, { host: 'api.example.com' }),
+  wardenAuth(process.env.PAYMENTS_API_SECRET, { host: 'api.example.com' }),
   async (req, res) => {
     const { actor, reason } = req.warden;
     const review = await resolveReview(req.params.id, req.body.decision, {
@@ -400,7 +400,7 @@ export class WardenGuard implements CanActivate {
     const req = context.switchToHttp().getRequest();
     try {
       req.warden = verifyWardenRequest({
-        secret: process.env.SPOT_API_SECRET!,
+        secret: process.env.PAYMENTS_API_SECRET!,
         host: 'api.example.com',
         method: req.method,
         path: req.originalUrl,
