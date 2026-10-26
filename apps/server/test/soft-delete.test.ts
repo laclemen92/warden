@@ -400,7 +400,7 @@ describe('the deny paths', () => {
     expect(await rowOf('drafts', id)).toBeDefined();
     expect(warnings).toContainEqual([
       'tables.drafts.softDelete.column',
-      'config: column "deleted_at" is text; expected a timestamp or boolean; soft delete is off for this table',
+      'config: column "deleted_at" is text; expected a timestamp or boolean; soft delete is off for this table, and roles may not delete its rows',
     ]);
     const schema = await app.inject({
       method: 'GET',

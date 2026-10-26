@@ -733,7 +733,7 @@ export function resolveActionPolicy(
     const denied = Object.entries(permissions).flatMap(([key, writes]) =>
       writes
         .filter(
-          (w) => policy.denied.get(key)?.has(w) && !(w === 'delete' && deleteOff.includes(key)),
+          (w) => deniesActionWrite(policy, key, w) && !(w === 'delete' && deleteOff.includes(key)),
         )
         .map((w) => `${w} on "${key}"`),
     );
@@ -788,6 +788,14 @@ export function resolveActionPolicy(
 }
 
 /**
+ * Whether config denies an action `write` on an entity. Where an unusable soft delete denies roles'
+ * delete, an action's hard delete still follows `allowDelete` (`deleteOff`) instead.
+ */
+const deniesActionWrite = (policy: Policy, key: string, write: WriteAction) =>
+  policy.denied.get(key)?.has(write) === true &&
+  !(write === 'delete' && policy.softDeleteUnusable.has(key));
+
+/**
  * The action, if someone holding `roles` may run it: it is enabled, one of their roles grants it,
  * no table `deny` covers what it writes, and they may read its entity and every entity its input
  * picks from. They don't need the table grants for what it writes: granting an action is a
@@ -807,7 +815,7 @@ export function canRunAction(
   });
   if (!granted) return undefined;
   const denied = Object.entries(action.permissions).some(([key, writes]) =>
-    writes.some((w) => policy.denied.get(key)?.has(w)),
+    writes.some((w) => deniesActionWrite(policy, key, w)),
   );
   if (denied) return undefined;
   const readable = [action.on, ...action.refs.map((r) => r.entity)];

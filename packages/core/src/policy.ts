@@ -14,7 +14,7 @@ export interface Policy {
   roles: Map<string, RoleGrants>;
   /**
    * Per entity, actions nobody may perform: the table's `deny`, plus `delete` wherever hard delete
-   * isn't enabled and the entity doesn't soft-delete.
+   * isn't enabled and the entity doesn't soft-delete, or its configured soft delete is unusable.
    */
   denied: Map<string, Set<Action>>;
   /**
@@ -23,6 +23,12 @@ export interface Policy {
    * actions may never hard-delete there.
    */
   deleteOff: Set<string>;
+  /**
+   * Entities whose configured `softDelete` didn't resolve, and the table doesn't deny delete. Roles'
+   * delete is denied there, so it can't silently become a hard delete; custom actions still follow
+   * `allowDelete`.
+   */
+  softDeleteUnusable: Set<string>;
   /** Per entity and field, the roles that may read or write it, where config restricts them. */
   fields: Map<string, Map<string, FieldRule>>;
 }
@@ -88,6 +94,7 @@ export function resolvePolicy(schema: EffectiveSchema, config: WardenConfig): Re
     ]),
   );
   const deleteOff = new Set<string>();
+  const softDeleteUnusable = new Set<string>();
   for (const entity of schema.entities) {
     const configured = tableConfigs.get(`${entity.schema}.${entity.name}`);
     const allowDelete = configured?.table.allowDelete ?? config.defaults.delete === 'granted';
@@ -98,10 +105,17 @@ export function resolvePolicy(schema: EffectiveSchema, config: WardenConfig): Re
           message: 'has no effect: the table denies delete',
         });
       }
-    } else if (!allowDelete) {
+      continue;
+    }
+    // resolveSchema has already warned why.
+    if (configured?.table.softDelete && !entity.softDelete) {
+      softDeleteUnusable.add(entity.key);
+      addAll(denied, entity.key, ['delete']);
+    }
+    if (!allowDelete) {
       deleteOff.add(entity.key);
-      // Its delete only sets a column, so the grant stands.
-      if (entity.softDelete) continue;
+      // A soft delete only sets a column, so the grant stands; an unusable one is denied above.
+      if (entity.softDelete || softDeleteUnusable.has(entity.key)) continue;
       addAll(denied, entity.key, ['delete']);
       for (const [role, { grants }] of Object.entries(config.roles)) {
         for (const [tableKey, actions] of Object.entries(grants)) {
@@ -156,6 +170,7 @@ export function resolvePolicy(schema: EffectiveSchema, config: WardenConfig): Re
       roles,
       denied,
       deleteOff,
+      softDeleteUnusable,
       fields,
     },
     warnings,
@@ -179,11 +194,13 @@ export function deleteCascadeWarnings(
 ): SchemaWarning[] {
   const warnings: SchemaWarning[] = [];
   for (const entity of schema.entities) {
-    if (policy.denied.get(entity.key)?.has('delete')) continue;
+    // An enabled action may still delete where roles can't (`softDeleteUnusable`).
+    const rolesDenied = policy.denied.get(entity.key)?.has('delete') === true;
     // A role's delete on a soft-deleting entity removes nothing; a custom action's still does.
     const granted =
       actionDeletes.has(entity.key) ||
-      (!entity.softDelete &&
+      (!rolesDenied &&
+        !entity.softDelete &&
         [...policy.roles.values()].some((g) => g.byEntity.get(entity.key)?.has('delete')));
     if (!granted) continue;
     const affected = cascadeTargets(model, entity.schema, entity.name);

@@ -354,6 +354,27 @@ describe('resolveActionPolicy', () => {
       }
     });
 
+    it('follows allowDelete where an unusable soft delete denies roles delete', () => {
+      const softDelete = { column: 'deleted_at' };
+      const allowed = resolve(deleter(), {
+        tables: { orders: { allowDelete: true, softDelete } },
+        roles: { ops: { actions: ['move-user'] } },
+      });
+      expect(allowed.policy.denied.get('orders')?.has('delete')).toBe(true);
+      expect(canRunAction(allowed.actionPolicy, allowed.policy, ['ops'], 'move-user')?.name).toBe(
+        'move-user',
+      );
+
+      const off = resolve(deleter(), { tables: { orders: { softDelete } } });
+      expect(off.actionPolicy.actions.size).toBe(0);
+      expect(off.warnings.at(-1)?.message).toMatch(/where hard delete is off/);
+      const denied = resolve(deleter(), {
+        tables: { orders: { allowDelete: true, softDelete, deny: ['delete'] } },
+      });
+      expect(denied.actionPolicy.actions.size).toBe(0);
+      expect(denied.warnings.at(-1)?.message).toMatch(/which config denies/);
+    });
+
     it('is disabled by a table deny even where the table allows delete', () => {
       const { actionPolicy, warnings } = resolve(deleter(), {
         tables: { orders: { allowDelete: true, deny: ['delete'] } },

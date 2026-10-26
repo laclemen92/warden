@@ -61,7 +61,8 @@ export interface Field {
   nullable: boolean;
   hasDefault: boolean;
   /**
-   * Never writable: configured read-only, identity `always`, generated, or a generated primary key
+   * Never writable: configured read-only, identity `always`, generated, a soft-delete or `actor`
+   * mapping column, or a generated primary key
    * (a single-column key with a default, or a sequence or identity column of a composite one)
    * unless the table sets `insertablePrimaryKey`.
    */
@@ -129,6 +130,12 @@ export function resolveSchema(model: SchemaModel, config: WardenConfig): Resolve
       tableConfigs.set(qualified, { path, config: tableConfig });
     }
   }
+
+  const actorTable =
+    config.actor &&
+    (config.actor.table.includes('.')
+      ? config.actor.table
+      : `${defaultSchema}.${config.actor.table}`);
 
   const enumValues = new Map(model.enums.map((e) => [`${e.schema}.${e.name}`, e.values]));
   const exposedTables: Table[] = [];
@@ -207,6 +214,16 @@ export function resolveSchema(model: SchemaModel, config: WardenConfig): Resolve
         if (softDelete.by && !config.actor) {
           warn(`${path}.softDelete.by`, 'is always set to null: `actor` is not configured');
         }
+      }
+    }
+    // Sign-in maps users to ids through these, so whoever could write them could take on
+    // another user's id.
+    if (config.actor && actorTable === `${table.schema}.${table.name}`) {
+      const { matchColumn, idColumn } = config.actor;
+      for (const field of fields) {
+        if (field.name !== matchColumn && field.name !== idColumn) continue;
+        field.readOnly = true;
+        delete field.createOnly;
       }
     }
 
@@ -321,7 +338,7 @@ const SOFT_DELETE_KINDS: Record<string, SoftDelete['kind']> = {
 
 /**
  * Check `softDelete` against the table. Any mismatch is a warning and leaves the table without
- * soft delete, so its delete falls back to the hard-delete rules.
+ * soft delete. `resolvePolicy` then denies roles' delete there, so it can't become a hard delete.
  */
 function resolveSoftDelete(
   config: NonNullable<TableConfig['softDelete']>,
@@ -330,7 +347,7 @@ function resolveSoftDelete(
   path: string,
   warn: (path: string, message: string) => void,
 ): SoftDelete | undefined {
-  const fallback = 'soft delete is off for this table';
+  const fallback = 'soft delete is off for this table, and roles may not delete its rows';
   const check = (name: string, key: string) => {
     const column = table.columns.find((c) => c.name === name);
     const field = fields.find((f) => f.name === name);

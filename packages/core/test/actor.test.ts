@@ -1,6 +1,16 @@
 import { wardenConfigSchema } from '@wardenhq/config';
 import { describe, expect, it } from 'vitest';
-import { resolveActor, type Column, type SchemaModel, type Table } from '../src/index.js';
+import {
+  entityFor,
+  resolveActor,
+  resolvePolicy,
+  resolveSchema,
+  schemaFor,
+  validateRecord,
+  type Column,
+  type SchemaModel,
+  type Table,
+} from '../src/index.js';
 
 const col = (name: string, overrides: Partial<Column> = {}): Column => ({
   name,
@@ -86,5 +96,73 @@ describe('resolveActor', () => {
       // `required` stays, so sign-in fails closed.
       expect(result).toEqual({ required, warnings: [{ path, message }] });
     }
+  });
+});
+
+describe('actor mapping columns', () => {
+  const schemaOf = (actor: Record<string, unknown> | undefined, extra: Record<string, unknown>) => {
+    const config = wardenConfigSchema.parse({
+      schemas: ['public', 'auth'],
+      ...extra,
+      ...(actor ? { actor } : {}),
+    });
+    const { schema } = resolveSchema(model, config);
+    return { schema, policy: resolvePolicy(schema, config).policy };
+  };
+  const writable = (fields: { name: string; readOnly: boolean }[]) =>
+    fields.filter((f) => !f.readOnly).map((f) => f.name);
+
+  it('are read-only on create and update, whatever column config says', () => {
+    const { schema } = schemaOf(
+      { table: 'users', matchColumn: 'email', idColumn: 'id' },
+      {
+        tables: {
+          users: { insertablePrimaryKey: true, columns: { email: { readOnly: false } } },
+          auth: { hidden: true },
+        },
+      },
+    );
+    const users = schema.entities.find((e) => e.key === 'users')!;
+    expect(writable(entityFor(users, 'create').fields)).toEqual(['emails', 'age']);
+    expect(writable(entityFor(users, 'update').fields)).toEqual(['emails', 'age']);
+    expect(users.fields.find((f) => f.name === 'id')).not.toHaveProperty('createOnly');
+    for (const mode of ['create', 'update'] as const) {
+      const result = validateRecord(
+        entityFor(users, mode),
+        { id: 'x', email: 'someone@example.com' },
+        mode,
+      );
+      expect(result.ok).toBe(false);
+      expect(result.ok ? [] : result.errors.filter((e) => e.message === 'is read-only')).toEqual([
+        { field: 'id', message: 'is read-only' },
+        { field: 'email', message: 'is read-only' },
+      ]);
+    }
+  });
+
+  it('stay read-only for roles writableBy names', () => {
+    const { schema, policy } = schemaOf(
+      { table: 'users', matchColumn: 'email', idColumn: 'id' },
+      {
+        roles: { ops: { grants: { users: ['read', 'update'] } } },
+        tables: { users: { columns: { email: { writableBy: ['ops'] } } } },
+      },
+    );
+    const users = schemaFor(schema, policy, ['ops']).entities.find((e) => e.key === 'users')!;
+    expect(users.fields.find((f) => f.name === 'email')?.readOnly).toBe(true);
+  });
+
+  it('only cover the mapped table, schema-qualified or not', () => {
+    const qualified = schemaOf({ table: 'auth.staff', matchColumn: 'mail', idColumn: 'id' }, {});
+    const entity = (key: string) => qualified.schema.entities.find((e) => e.key === key)!;
+    expect(writable(entity('auth.staff').fields)).toEqual([]);
+    expect(writable(entity('users').fields)).toEqual(['id', 'email', 'emails', 'age']);
+    const none = schemaOf(undefined, {});
+    expect(writable(none.schema.entities.find((e) => e.key === 'users')!.fields)).toEqual([
+      'id',
+      'email',
+      'emails',
+      'age',
+    ]);
   });
 });

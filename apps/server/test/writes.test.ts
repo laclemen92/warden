@@ -4,11 +4,17 @@ import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createWarden } from '../src/warden.js';
 import { authEnv, login, startTestIdp } from './helpers/auth.js';
-import { exampleConfigDeletingCompanies } from './helpers/config.js';
+import { exampleConfigWith } from './helpers/config.js';
 
 // Deleting companies needs allowDelete, which the example only sets on users.
-// Reasons are covered in require-reason.test.ts.
-const CONFIG = exampleConfigDeletingCompanies({ requireReason: [] });
+// Reasons are covered in require-reason.test.ts. Without `actor`, users.email (its matchColumn)
+// is writable, so creating users reaches the database.
+const CONFIG = exampleConfigWith((config) => {
+  config.tables.companies = { ...config.tables.companies!, allowDelete: true };
+  config.roles.admin!.grants.companies = ['delete'];
+  config.defaults.requireReason = [];
+  delete config.actor;
+});
 
 const FIXTURES = `
   create table order_tags (
