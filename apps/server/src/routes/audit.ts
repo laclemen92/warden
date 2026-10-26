@@ -82,14 +82,27 @@ export function registerAuditRoutes(
   app: FastifyInstance,
   { db, policy, views, roles: roleConfig, actionPolicy, audit }: AuditRouteOptions,
 ) {
-  /** Entity key → fields the caller can read, for every entity they may read. */
-  const visibleTo = (req: FastifyRequest): AuditQuery['visible'] => {
+  /**
+   * Entity key → fields the caller can read, for every entity they may read, and the entities
+   * where that is every field (no `readableBy` rule leaves one out).
+   */
+  const visibleTo = (req: FastifyRequest): Pick<AuditQuery, 'visible' | 'complete'> => {
     const roles = req.roles ?? [];
-    return Object.fromEntries(
+    const visible = Object.fromEntries(
       views(roles)
         .schema.entities.filter((e) => isAllowed(policy, roles, e.key, 'read'))
         .map((e) => [e.key, e.fields.map((f) => f.name)]),
     );
+    const complete = new Set(
+      Object.entries(visible)
+        .filter(([key, fields]) =>
+          [...(policy.fields.get(key) ?? [])].every(
+            ([field, rule]) => !rule.readableBy || fields.includes(field),
+          ),
+        )
+        .map(([key]) => key),
+    );
+    return { visible, complete };
   };
 
   const isAuditAdmin = (req: FastifyRequest) =>
@@ -130,7 +143,7 @@ export function registerAuditRoutes(
         {
           // Every readable entity, for action inputs that pick their records; the entity filter
           // keeps the entries to this one.
-          visible: visibleTo(req),
+          ...visibleTo(req),
           ...(auditAdmin
             ? {}
             : {
@@ -162,7 +175,7 @@ export function registerAuditRoutes(
     },
     async (req, reply) => {
       const { entity, actor, action, from, to, parent, source, cursor, limit } = req.query;
-      const visible = visibleTo(req);
+      const { visible, complete } = visibleTo(req);
       // Hidden and unreadable entities are rejected exactly like nonexistent ones.
       if (entity !== undefined && !Object.hasOwn(visible, entity)) {
         return reply
@@ -184,6 +197,7 @@ export function registerAuditRoutes(
       }
       return page({
         visible,
+        ...(complete ? { complete } : {}),
         // The route is only open to the audit area, which also covers who was given access.
         includeAccessEntries: true,
         limit,

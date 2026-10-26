@@ -1,7 +1,13 @@
 import { Writable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import type { MockOidc } from '@wardenhq/mock-oidc';
-import { readExampleSql, startPostgres, type TestDatabase } from '@wardenhq/testing';
+import {
+  readExampleSql,
+  startPostgres,
+  type TestDatabase,
+  uniqueRoleName,
+} from '@wardenhq/testing';
+import type { WardenConfig } from '@wardenhq/config';
 import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createWarden } from '../src/warden.js';
@@ -88,7 +94,11 @@ const capture = (lines: Record<string, unknown>[]) =>
     },
   });
 
-const start = (audit: unknown, lines: Record<string, unknown>[]) =>
+const start = (
+  audit: unknown,
+  lines: Record<string, unknown>[],
+  env: Record<string, string> = {},
+) =>
   createWarden({
     env: {
       DATABASE_URL: db.connectionString,
@@ -102,6 +112,7 @@ const start = (audit: unknown, lines: Record<string, unknown>[]) =>
       }),
       WARDEN_ACTIONS: EXAMPLE_ACTIONS,
       ...authEnv(idp),
+      ...env,
     },
     logger: { level: 'info', stream: capture(lines) },
   });
@@ -289,6 +300,28 @@ describe('audit.store: table', () => {
     expect(children.body.items[0].parent).toEqual({ id: parent.id, action: 'move-user' });
   });
 
+  it("hides an app update's reason from readers who can't see every field", async () => {
+    // Nothing says what changed, and viewers can't read users.last_login_at.
+    await query(
+      `insert into change_log (actor_sub, action, table_name, record_id, reason, source)
+       values ('login-job', 'update', 'users', '1', 'flagged for fraud review', 'app')`,
+    );
+    const reasonFor = async (cookie: string) => {
+      const res = await send(app, 'GET', '/api/entities/users/1/history', cookie);
+      expect(res.status, res.raw).toBe(200);
+      return res.body.items.find(
+        (e: { actor: { subject: string } }) => e.actor.subject === 'login-job',
+      ).reason;
+    };
+    // An earlier test signed the viewer out.
+    expect(await reasonFor(await login(app, 'viewer'))).toBeNull();
+    expect(await reasonFor(admin)).toBe('flagged for fraud review');
+    const search = await send(app, 'GET', '/api/audit?actor=login-job', admin);
+    expect(search.body.items.map((e: { reason: string }) => e.reason)).toEqual([
+      'flagged for fraud review',
+    ]);
+  });
+
   it('never exposes the audit table, however it is reached', async () => {
     const schema = await send(app, 'GET', '/api/schema', admin);
     expect(schema.body.entities.map((e: { key: string }) => e.key)).not.toContain('change_log');
@@ -371,5 +404,107 @@ describe('a misconfigured audit table', () => {
     expect(list.status, list.raw).toBe(200);
     expect(list.body.items).toHaveLength(5);
     expect((await send(broken, 'GET', '/api/entities/companies/1', brokenAdmin)).status).toBe(200);
+  });
+});
+
+describe('an audit table Warden can only partly write', () => {
+  const role = uniqueRoleName('warden_partial');
+  let partial: App;
+  const lines: Record<string, unknown>[] = [];
+  const store = {
+    store: 'table',
+    table: 'change_log',
+    columns: COLUMNS,
+    source: { column: 'source', value: 'warden' },
+  };
+
+  beforeAll(async () => {
+    // Everything it needs, except inserting into change_log.written.
+    const inserted = Object.values(COLUMNS)
+      .filter((c) => c !== 'id' && c !== 'written')
+      .concat('source');
+    await query(`
+      create role ${role} login password 'partial';
+      grant usage on schema warden, public to ${role};
+      grant select, insert, update, delete on all tables in schema warden to ${role};
+      grant select, insert, update, delete on all tables in schema public to ${role};
+      grant usage on all sequences in schema public to ${role};
+      revoke insert, update, delete on change_log from ${role};
+      grant insert (${inserted.join(', ')}) on change_log to ${role};`);
+    const url = new URL(db.connectionString);
+    url.username = role;
+    url.password = 'partial';
+    partial = await start(store, lines, { DATABASE_URL: url.href, WARDEN_MIGRATE: 'false' });
+  });
+
+  afterAll(async () => {
+    await partial?.close();
+  });
+
+  it('warns naming the column, and refuses changes with a 503', async () => {
+    const warnings = lines.filter((l) => l.configPath === 'audit').map((l) => String(l.msg));
+    expect(warnings).toEqual([
+      `config: audit table "public.change_log": Warden's role can't insert into "written"; changes are refused until fixed`,
+    ]);
+    const cookie = await login(partial, 'admin');
+    const res = await send(partial, 'POST', '/api/entities/companies', cookie, {
+      values: { name: 'Half audited' },
+    });
+    expect(res.status, res.raw).toBe(503);
+    expect(await query(`select 1 from companies where name = 'Half audited'`)).toEqual([]);
+  });
+});
+
+describe('an audit table without a reason column', () => {
+  const withoutReason = Object.fromEntries(
+    Object.entries(COLUMNS).filter(([field]) => field !== 'reason'),
+  );
+
+  /** The `audit.columns` warnings Warden logs at startup. */
+  const reasonWarnings = async (edit: (config: WardenConfig) => void) => {
+    const lines: Record<string, unknown>[] = [];
+    const started = await createWarden({
+      env: {
+        DATABASE_URL: db.connectionString,
+        WARDEN_CONFIG: exampleConfigWith((config) => {
+          Object.assign(config, {
+            audit: { store: 'table', table: 'change_log', columns: withoutReason },
+          });
+          edit(config);
+        }),
+        WARDEN_ACTIONS: EXAMPLE_ACTIONS,
+        ...authEnv(idp),
+      },
+      logger: { level: 'warn', stream: capture(lines) },
+    });
+    await started.close();
+    return lines.filter((l) => l.configPath === 'audit.columns').map((l) => String(l.msg));
+  };
+
+  it('warns that required reasons would be discarded', async () => {
+    const [warning, ...rest] = await reasonWarnings(() => {});
+    expect(rest).toEqual([]);
+    expect(warning).toMatch(
+      /^config: tables (?=.*companies)(?=.*users)(?=.*orders).* and actions /,
+    );
+    expect(warning).toContain('cancel-stale-orders');
+    expect(warning).toContain("audit.columns doesn't map reason");
+  });
+
+  it('names only the actions when tables no longer require one', async () => {
+    const [warning] = await reasonWarnings((config) => {
+      config.defaults.requireReason = [];
+    });
+    expect(warning).toMatch(/^config: actions (?=.*deactivate-users)(?=.*cancel-stale-orders)/);
+  });
+
+  it('stays quiet when nothing requires a reason', async () => {
+    const warnings = await reasonWarnings((config) => {
+      config.defaults.requireReason = [];
+      for (const name of ['move-user', 'deactivate-users', 'cancel-stale-orders']) {
+        config.actions[name] = { ...config.actions[name], requireReason: false };
+      }
+    });
+    expect(warnings).toEqual([]);
   });
 });

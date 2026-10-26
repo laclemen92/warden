@@ -102,6 +102,16 @@ describe('projectAuditEntry', () => {
       expect(reason(raise, ['id', 'salary', 'updated_at'], null)).toBe(raise.reason);
     });
 
+    it('needs every field of the entity readable when an update records no changes', () => {
+      // An application's entry in a shared audit table, with no diff and no written fields.
+      const bare: AuditEntry = { ...raise, before: null, after: null, diff: {} };
+      const project = (e: AuditEntry, fields: string[], complete?: boolean) =>
+        projectAuditEntry(e, fields, null, new Set(), complete).reason;
+      expect(project(bare, ['id', 'updated_at'])).toBeNull();
+      expect(project(bare, ['id', 'updated_at'], false)).toBeNull();
+      expect(project(bare, ['id', 'salary', 'updated_at'], true)).toBe(raise.reason);
+    });
+
     it('is kept on creates and deletes, which every reader sees happen', () => {
       expect(reason({ ...raise, action: 'create' }, ['id'], ['salary'])).toBe(raise.reason);
       expect(reason({ ...raise, action: 'delete' }, ['id'], null)).toBe(raise.reason);

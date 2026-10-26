@@ -77,6 +77,7 @@ export function registerSchemaDriftRoutes(
         actor: {
           subject: session.subject,
           ...(session.email ? { email: session.email } : {}),
+          ...(session.userId ? { userId: session.userId } : {}),
           roles: req.roles!,
           requestId: req.id,
           ...(audit ? { store: audit } : {}),

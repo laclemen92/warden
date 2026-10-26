@@ -84,6 +84,8 @@ let minimal: AuditStore;
 /** `audit_copy`: the published DDL, every field under its default name. */
 let full: AuditStore;
 
+type TableStore = Extract<AuditStore, { kind: 'table' }>;
+
 const actor = { subject: 'sub-1', email: 'ed@example.com', roles: ['ops'] };
 const WARDEN: AuditStore = { kind: 'warden' };
 const UNAVAILABLE: AuditStore = { kind: 'unavailable' };
@@ -484,22 +486,67 @@ describe('auditTableAccess', () => {
   });
 
   it('says whether the role can append to, read, or tamper with the table', async () => {
-    const table = { schema: 'public', name: 'change_log' };
     // The test connection owns it (and is a superuser).
-    expect(await auditTableAccess(handle.db, table)).toEqual({
-      insert: true,
-      select: true,
+    expect(await auditTableAccess(handle.db, minimal as TableStore)).toEqual({
+      cantInsert: [],
+      cantRead: [],
       tamper: true,
     });
-    expect(await auditTableAccess(restricted.db, table)).toEqual({
-      insert: true,
-      select: true,
+    expect(await auditTableAccess(restricted.db, minimal as TableStore)).toEqual({
+      cantInsert: [],
+      cantRead: [],
       tamper: false,
     });
-    expect(await auditTableAccess(restricted.db, { schema: 'public', name: 'audit_copy' })).toEqual(
-      { insert: false, select: false, tamper: false },
-    );
-    expect(await auditTableAccess(handle.db, { schema: 'public', name: 'nope' })).toBeUndefined();
+    // No grants at all. Its id is an identity, which needs no sequence grant.
+    const columns = Object.values((full as TableStore).columns);
+    expect(await auditTableAccess(restricted.db, full as TableStore)).toEqual({
+      cantInsert: columns.filter((c) => c !== 'id'),
+      cantRead: columns,
+      tamper: false,
+    });
+    expect(
+      await auditTableAccess(handle.db, { ...(minimal as TableStore), name: 'nope' }),
+    ).toBeUndefined();
+  });
+
+  it('checks each column Warden writes or reads, and the id sequence', async () => {
+    await sql
+      .raw(
+        `
+      create table partial_log (
+        log_id        serial primary key,
+        actor_sub     text not null,
+        "Reason Text" text,
+        source        text not null default 'app'
+      );
+      grant insert (actor_sub, "Reason Text"), select (log_id, actor_sub) on partial_log to ${role};
+    `,
+      )
+      .execute(handle.db);
+    const store: TableStore = {
+      kind: 'table',
+      schema: 'public',
+      name: 'partial_log',
+      columns: { id: 'log_id', actorSubject: 'actor_sub', reason: 'Reason Text' },
+      source: { column: 'source', value: 'warden' },
+    };
+    expect(await auditTableAccess(restricted.db, store)).toEqual({
+      cantInsert: ['source'],
+      cantRead: ['Reason Text', 'source'],
+      cantUseSequence: 'partial_log_log_id_seq',
+      tamper: false,
+    });
+    await sql
+      .raw(
+        `grant insert (source), select ("Reason Text", source) on partial_log to ${role};
+         grant usage on sequence partial_log_log_id_seq to ${role};`,
+      )
+      .execute(handle.db);
+    expect(await auditTableAccess(restricted.db, store)).toEqual({
+      cantInsert: [],
+      cantRead: [],
+      tamper: false,
+    });
   });
 
   it('lets an insert-only role audit through the mapped table', async () => {
