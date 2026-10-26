@@ -118,8 +118,9 @@ describe('resolving softDelete', () => {
       deleted_by: true,
     });
     expect(readOnly('notes')).toMatchObject({ is_deleted: true, body: false });
+    // `plain` holds the actor mapping, whose columns are read-only too.
+    expect(readOnly('plain')).toEqual({ id: true, name: true });
     // Without soft delete they stay ordinary columns.
-    expect(readOnly('plain')).toEqual({ id: false, name: false });
     expect(
       Object.fromEntries(entity({}, 'certificates').fields.map((f) => [f.name, f.readOnly])),
     ).toMatchObject({ deleted_at: false, deleted_by: false });
@@ -170,7 +171,8 @@ describe('resolving softDelete', () => {
     expect(warnings).toEqual([
       {
         path: 'tables.certificates.softDelete.column',
-        message: 'column "deleted_at" is not visible; soft delete is off for this table',
+        message:
+          'column "deleted_at" is not visible; soft delete is off for this table, and roles may not delete its rows',
       },
     ]);
   });
@@ -251,6 +253,60 @@ describe('soft delete and the delete policy', () => {
       tables: { certificates: { softDelete: { column: 'name' } } },
     });
     expect(isAllowed(policy, ['ops'], 'certificates', 'delete')).toBe(false);
+  });
+
+  it('denies delete when soft delete is unusable, even where hard delete is on', () => {
+    // Missing, the wrong type, and hidden by newColumns.
+    const unusable: [object, object][] = [
+      [{}, { softDelete: { column: 'gone' } }],
+      [{}, { softDelete: { column: 'name' } }],
+      [{ newColumns: 'hidden' }, { softDelete: { column: 'deleted_at' }, columns: { name: {} } }],
+    ];
+    const deletesOn: [object, object][] = [
+      [{}, { allowDelete: true }],
+      [{ delete: 'granted' }, {}],
+    ];
+    for (const [defaults, certificates] of unusable) {
+      for (const [deleteDefaults, deleteTable] of deletesOn) {
+        const merged = {
+          roles: ROLES,
+          defaults: { ...defaults, ...deleteDefaults },
+          tables: { certificates: { ...certificates, ...deleteTable } },
+        };
+        const { policy, policyWarnings } = resolve(merged);
+        expect(isAllowed(policy, ['ops'], 'certificates', 'delete')).toBe(false);
+        expect(allowedActions(policy, ['ops'], 'certificates')).toEqual(['read', 'update']);
+        expect(policy.softDeleteUnusable.has('certificates')).toBe(true);
+        // Custom actions still follow allowDelete.
+        expect(policy.deleteOff.has('certificates')).toBe(false);
+        expect(policyWarnings.map((w) => w.path)).not.toContain('roles.ops.grants.certificates');
+      }
+    }
+  });
+
+  it('marks nothing unusable where soft delete works or the table denies delete', () => {
+    const working = resolve({
+      roles: ROLES,
+      tables: { certificates: { softDelete: { column: 'deleted_at' }, allowDelete: true } },
+    });
+    expect(working.policy.softDeleteUnusable.size).toBe(0);
+    expect(isAllowed(working.policy, ['ops'], 'certificates', 'delete')).toBe(true);
+    const denied = resolve({
+      roles: ROLES,
+      tables: { certificates: { softDelete: { column: 'gone' }, deny: ['delete'] } },
+    });
+    expect(denied.policy.softDeleteUnusable.size).toBe(0);
+  });
+
+  it("warns about the cascades only a custom action's delete can trigger", () => {
+    const config = parse({
+      roles: ROLES,
+      tables: { certificates: { softDelete: { column: 'gone' }, allowDelete: true } },
+    });
+    const { schema } = resolveSchema(model, config);
+    const { policy } = resolvePolicy(schema, config);
+    expect(deleteCascadeWarnings(model, schema, policy)).toEqual([]);
+    expect(deleteCascadeWarnings(model, schema, policy, new Set(['certificates']))).toHaveLength(1);
   });
 
   it("doesn't warn about cascades a role's soft delete never triggers", () => {
