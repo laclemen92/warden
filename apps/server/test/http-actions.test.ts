@@ -32,7 +32,8 @@ roles:
   viewer: { grants: { '*': [read] } }
   ops:
     grants: { users: [read], companies: [read] }
-    actions: [review-user, review-many, review-slow, review-batch, m2m-ping, as-user, off-site]
+    actions:
+      [review-user, review-many, review-slow, review-batch, m2m-ping, as-user, off-site, pinned]
   admin:
     grants: { '*': [read] }
     admin: [audit]
@@ -230,15 +231,29 @@ describe('HTTP actions: a real run', () => {
       email: expect.stringMatching(/^user1@/),
       note: REASON,
     });
-    expect(call.headers['idempotency-key']).toBe(res.body.auditId);
+    // A random key per attempt, so keys never repeat across audit stores or deployments.
+    const key = call.headers['idempotency-key'];
+    expect(key).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$/);
     expect(call.headers.authorization).toBeUndefined();
-    const context = verifyWardenRequest({
+    const signed = {
       secret: SECRET,
+      host: new URL(apiUrl).host,
       method: call.method,
       path: call.url,
       headers: call.headers,
       rawBody: call.body,
-    });
+    };
+    const context = verifyWardenRequest(signed);
+    // The key and the host are signed: a replay under a new key, or to another API, fails.
+    expect(() =>
+      verifyWardenRequest({
+        ...signed,
+        headers: { ...call.headers, 'idempotency-key': `${key}-replayed` },
+      }),
+    ).toThrow('signature does not match');
+    expect(() => verifyWardenRequest({ ...signed, host: 'other-api.test' })).toThrow(
+      'signature does not match',
+    );
     expect(context).toEqual({
       action: 'review-user',
       auditId: res.body.auditId,
@@ -257,7 +272,7 @@ describe('HTTP actions: a real run', () => {
       record_id: '1',
       actor_subject: 'editor',
       reason: REASON,
-      details: { input: { decision: 'approve' }, records: ['1'] },
+      details: { input: { decision: 'approve' }, records: ['1'], http: { key } },
     });
     expect(answer).toMatchObject({
       action: 'review-user',
@@ -335,6 +350,8 @@ describe('HTTP actions: a real run', () => {
     const answer = (await entries(since))[1]!;
     expect(answer.details).toMatchObject({ outcome: { result: 'failed', status: 500 } });
     expect(JSON.stringify(answer.details)).not.toContain('hunter2');
+    // The body isn't logged either: an API may echo credentials in it.
+    expect(logLines.some((l) => l.includes('hunter2'))).toBe(false);
   });
 
   it('gives a generic error when the API is too slow', async () => {
@@ -353,6 +370,29 @@ describe('HTTP actions: a real run', () => {
     const res = await run('review-user', { records: ['1'], input: { decision: 'approve' } });
     expect(res.status).toBe(502);
     expect(calls('/elsewhere')).toHaveLength(0);
+  });
+
+  it('calls a URL built from data only on an origin in http.origins', async () => {
+    const ok = await run('pinned', { input: { to: `${apiUrl}/pinned/a` } });
+    expect(ok.status).toBe(200);
+    expect(calls('/pinned')).toHaveLength(1);
+
+    const before = await auditCount();
+    received.splice(0);
+    // Loopback http passes the scheme check, so only the origin rule stops these.
+    const port = Number(new URL(apiUrl).port);
+    for (const to of [
+      `http://localhost:${port}/pinned/b`,
+      `http://127.0.0.1:${port + 1}/pinned/c`,
+      `http://user:pw@127.0.0.2:${port}/pinned/d`,
+    ]) {
+      const res = await run('pinned', { input: { to } });
+      expect(res.status).toBe(500);
+      expect(JSON.stringify(res.body)).not.toContain('origins');
+    }
+    expect(received).toHaveLength(0);
+    expect(await auditCount()).toBe(before);
+    expect(logLines.some((l) => l.includes('which is not in http.origins'))).toBe(true);
   });
 
   it('refuses a non-https URL before writing anything or calling out', async () => {
@@ -385,10 +425,13 @@ describe('HTTP actions on many records', () => {
     });
     expect(received).toHaveLength(3);
     const keys = received.map((r) => r.headers['idempotency-key']).sort();
-    expect(keys).toEqual([1, 2, 3].map((i) => `${res.body.auditId}.${i}`));
+    const [attempt] = await entries(since);
+    const { key } = (attempt!.details as { http: { key: string } }).http;
+    expect(keys).toEqual([1, 2, 3].map((i) => `${key}.${i}`));
     for (const call of received) {
       const context = verifyWardenRequest({
         secret: SECRET,
+        host: new URL(apiUrl).host,
         method: call.method,
         path: call.url,
         headers: call.headers,
@@ -509,6 +552,7 @@ describe('HTTP actions on many records', () => {
       plans: [{ url: `${apiUrl}/batch`, body, records: ids }],
       credentials: { secret: SECRET },
       auditId: '1',
+      attemptKey: crypto.randomUUID(),
       deadlineMs: 10_000,
       context: {
         action: 'review-batch',
@@ -524,6 +568,7 @@ describe('HTTP actions on many records', () => {
     expect(String(call.headers['x-warden-context']).length).toBeLessThan(8192);
     const context = verifyWardenRequest({
       secret: SECRET,
+      host: new URL(apiUrl).host,
       method: call.method,
       path: call.url,
       headers: call.headers,
@@ -571,6 +616,7 @@ describe('HTTP action auth', () => {
     expect(
       verifyWardenRequest({
         secret: SECRET,
+        host: new URL(apiUrl).host,
         method: signed.method,
         path: signed.url,
         headers: signed.headers,
@@ -715,6 +761,47 @@ describe('HTTP actions at startup', () => {
       expect(sent).not.toContain('user-token-');
     } finally {
       await app.close();
+    }
+  });
+
+  it('refuses http.origins that are not bare origins, and fixed URLs outside them', async () => {
+    const hmac = `auth: { type: 'hmac', secretEnv: 'TEST_HMAC_SECRET' }`;
+    const bad = await start({
+      WARDEN_ACTIONS: action(
+        `{ url: 'https://api.example.com/x', ${hmac}, origins: ['https://api.example.com/v1'] }`,
+      ),
+    }).catch((e: unknown) => e);
+    expect(bad).toBeInstanceOf(ActionsError);
+    expect((bad as ActionsError).problems.join('\n')).toMatch(
+      /http\.origins\[0\] must be just a scheme, host and port/,
+    );
+    const outside = await start({
+      WARDEN_ACTIONS: action(
+        `{ url: 'https://evil.example.com/x', ${hmac}, origins: ['https://api.example.com'] }`,
+      ),
+    }).catch((e: unknown) => e);
+    expect((outside as ActionsError).problems).toContain(
+      'action "hook": http.url has origin https://evil.example.com, which is not in http.origins',
+    );
+    const plain = await start({
+      WARDEN_ACTIONS: action(`{ url: () => 'x', ${hmac}, origins: ['http://api.example.com'] }`),
+    }).catch((e: unknown) => e);
+    expect((plain as ActionsError).problems.join('\n')).toMatch(
+      /http\.origins: http:\/\/api\.example\.com must use https/,
+    );
+  });
+
+  it("refuses credentials from Warden's own environment variables", async () => {
+    for (const name of ['WARDEN_SESSION_SECRET', 'DATABASE_URL', 'OIDC_CLIENT_SECRET']) {
+      const err = await start({
+        WARDEN_ACTIONS: action(
+          `{ url: 'https://api.example.com/x', auth: { type: 'hmac', secretEnv: '${name}' } }`,
+        ),
+      }).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ActionsError);
+      expect((err as ActionsError).problems.join('\n')).toMatch(
+        /http\.auth\.secretEnv must not name Warden's own settings/,
+      );
     }
   });
 

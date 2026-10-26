@@ -4,6 +4,7 @@ import { z } from 'zod';
 import type { AuditDiff } from './audit.js';
 import type { EffectiveSchema, SchemaWarning } from './effective-schema.js';
 import { isAllowed, type Policy } from './policy.js';
+import { normalizeOrigin, reservedEnvName } from './http-action.js';
 import type { FieldError } from './validation.js';
 
 export type ActionTarget = 'one' | 'many' | 'none';
@@ -88,6 +89,8 @@ export interface HttpActionSpec {
   concurrency: number;
   /** Set when the action calls several endpoints in order instead of `url`. */
   steps?: HttpStepSpec[];
+  /** The only origins its URLs (steps and undo calls included) may have, normalized. */
+  origins?: string[];
 }
 
 /** One step of a multi-step HTTP action, checked. Its functions stay on the definition. */
@@ -106,7 +109,7 @@ export interface HttpStepSpec {
 
 /** Step names: also `prev.<name>` and part of the step's Idempotency-Key. */
 export const STEP_NAME = /^[a-z][a-zA-Z0-9_]{0,39}$/;
-const STEPS_HTTP_KEYS = new Set(['steps', 'auth', 'timeoutMs']);
+const STEPS_HTTP_KEYS = new Set(['steps', 'auth', 'timeoutMs', 'origins']);
 const STEP_KEYS = new Set([
   'name',
   'url',
@@ -132,6 +135,7 @@ const HTTP_KEYS = new Set([
   'timeoutMs',
   'perRecord',
   'concurrency',
+  'origins',
 ]);
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
@@ -170,6 +174,7 @@ function httpSpecOf(
     fail(`concurrency must be a positive integer of at most ${MAX_HTTP_CONCURRENCY}`);
   }
   const authSpec = httpAuthOf(auth, fail);
+  const origins = httpOriginsOf(http.origins, fail);
   if (failed > 0 || !authSpec) return undefined;
   return {
     method: method as HttpActionSpec['method'],
@@ -178,6 +183,7 @@ function httpSpecOf(
     timeoutMs: timeoutMs as number,
     perRecord: perRecord as boolean,
     concurrency: concurrency as number,
+    ...(origins ? { origins } : {}),
   };
 }
 
@@ -208,6 +214,7 @@ function httpStepsSpecOf(
     fail(`timeoutMs must be a positive integer of at most ${MAX_HTTP_TIMEOUT_MS}`);
   }
   const authSpec = httpAuthOf(auth, fail);
+  const origins = httpOriginsOf(http.origins, fail);
   if (!Array.isArray(steps) || steps.length === 0) {
     fail('steps must be a non-empty array');
     return undefined;
@@ -307,7 +314,27 @@ function httpStepsSpecOf(
     perRecord: false,
     concurrency: 1,
     steps: specs,
+    ...(origins ? { origins } : {}),
   };
+}
+
+/** Check `http.origins`: a non-empty list of bare origins. Returns them normalized. */
+function httpOriginsOf(value: unknown, fail: (message: string) => void): string[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length === 0) {
+    fail('origins must be a non-empty array of origins, like ["https://api.example.com"]');
+    return undefined;
+  }
+  const origins = new Set<string>();
+  for (const [i, item] of value.entries()) {
+    const normalized =
+      typeof item === 'string'
+        ? normalizeOrigin(item)
+        : ({ ok: false, message: 'must be a string' } as const);
+    if (normalized.ok) origins.add(normalized.origin);
+    else fail(`origins[${i}] ${normalized.message}`);
+  }
+  return [...origins];
 }
 
 function httpAuthOf(auth: unknown, fail: (message: string) => void): HttpAuthSpec | undefined {
@@ -345,6 +372,11 @@ function httpAuthOf(auth: unknown, fail: (message: string) => void): HttpAuthSpe
     if (value === undefined && !required) return;
     if (typeof value !== 'string' || !value || (env && !ENV_NAME.test(value))) {
       fail(`auth.${key} must be ${env ? 'an environment variable name' : 'a non-empty string'}`);
+      ok = false;
+    } else if (env && reservedEnvName(value)) {
+      fail(
+        `auth.${key} must not name Warden's own settings (WARDEN_*, DATABASE_URL, OIDC_CLIENT_SECRET)`,
+      );
       ok = false;
     }
   };

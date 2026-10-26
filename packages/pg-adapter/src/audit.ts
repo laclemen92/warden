@@ -510,7 +510,8 @@ export interface ActionAttempt {
 
 /**
  * The entry action `action` wrote as attempt `id` (not an outcome or a retry's entry), with its
- * outcomes. Undefined when there is no such entry.
+ * outcomes. Undefined when there is no such entry. In a table shared with the application (one
+ * with `source`), only Warden's own rows count, so the application's can't pose as attempts.
  */
 export async function loadActionAttempt(
   db: Database,
@@ -518,6 +519,10 @@ export async function loadActionAttempt(
   store: AuditStore = WARDEN_STORE,
 ): Promise<ActionAttempt | undefined> {
   const relation = auditRelation(store);
+  const ours =
+    store.kind === 'table' && store.source
+      ? sql<SqlBool>`a.source = ${store.source.value}`
+      : sql<SqlBool>`true`;
   const { rows } = await sql<{
     id: string;
     actor_subject: string;
@@ -531,7 +536,7 @@ export async function loadActionAttempt(
     from ${relation} as a
     where a.id = ${id}::bigint and a.action = ${action} and a.parent_id is null
       and coalesce(a.details ? 'input', false)
-      and not (a.details ? 'outcome') and not (a.details ? 'retryOf')`.execute(db);
+      and not (a.details ? 'outcome') and not (a.details ? 'retryOf') and ${ours}`.execute(db);
   const row = rows[0];
   if (!row) return undefined;
   // Outcomes are written after their attempt, so the scan starts at its id.
@@ -539,13 +544,13 @@ export async function loadActionAttempt(
     select a.details -> 'outcome' as outcome
     from ${relation} as a
     where a.id > ${id}::bigint and a.action = ${action}
-      and a.details -> 'outcome' ->> 'attempt' = ${id}
+      and a.details -> 'outcome' ->> 'attempt' = ${id} and ${ours}
     order by a.id`.execute(db);
   const { rows: retries } = await sql<{ id: string }>`
     select a.id::text as id
     from ${relation} as a
     where a.id > ${id}::bigint and a.action = ${action}
-      and a.details ->> 'retryOf' = ${id}
+      and a.details ->> 'retryOf' = ${id} and ${ours}
     order by a.id`.execute(db);
   return {
     id: row.id,

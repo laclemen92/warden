@@ -3,7 +3,9 @@ import { ActionError, type Actor, type StepResponse } from '@wardenhq/actions';
 import {
   apiBodyMessage,
   auditedBody,
+  callIdempotencyKey,
   checkActionUrl,
+  checkOrigin,
   cleanApiMessage,
   compensationIdempotencyKey,
   guardRedacted,
@@ -48,7 +50,7 @@ const TOKEN_TIMEOUT_MS = 10_000;
 /** A cached M2M token is renewed this long before it expires. */
 const TOKEN_MARGIN_MS = 60_000;
 
-export const SIGNATURE_VERSION = 'v1';
+export const SIGNATURE_VERSION = 'v2';
 export const HEADERS = {
   context: 'x-warden-context',
   timestamp: 'x-warden-timestamp',
@@ -95,11 +97,17 @@ function contextRecords(ids: readonly string[]): string[] {
   return kept;
 }
 
-/** The string an HMAC signature covers. */
+/**
+ * The string an HMAC signature covers. The host keeps a request from being replayed to another API
+ * that shares the secret, and the idempotency key from being replayed under a new key.
+ */
 export function signingString(parts: {
   method: string;
+  /** Host and port as in the URL (`URL#host`): the port only when it isn't the default. */
+  host: string;
   path: string;
   timestamp: string;
+  idempotencyKey: string;
   context: string;
   body: string;
 }): string {
@@ -107,8 +115,10 @@ export function signingString(parts: {
   return [
     SIGNATURE_VERSION,
     parts.method.toUpperCase(),
+    parts.host.toLowerCase(),
     parts.path,
     parts.timestamp,
+    parts.idempotencyKey,
     parts.context,
     bodyHash,
   ].join('\n');
@@ -264,8 +274,13 @@ export function prepareHttpActions(
       if (!value) problem(`environment variable ${name} is not set`);
       return value ?? '';
     };
+    for (const origin of http.origins ?? []) {
+      const bad = checkOrigin(origin, allowHttp);
+      if (bad) problem(`http.origins: ${origin} ${bad}`);
+    }
+    const origins = http.origins;
     if (http.url !== undefined) {
-      const bad = checkActionUrl(http.url, allowHttp);
+      const bad = checkActionUrl(http.url, allowHttp, origins);
       if (bad) problem(`http.url ${bad}`);
     }
     if (http.steps && http.steps.length > maxSteps) {
@@ -275,10 +290,10 @@ export function prepareHttpActions(
       );
     }
     for (const [i, step] of (http.steps ?? []).entries()) {
-      const bad = step.url !== undefined ? checkActionUrl(step.url, allowHttp) : undefined;
+      const bad = step.url !== undefined ? checkActionUrl(step.url, allowHttp, origins) : undefined;
       if (bad) problem(`http.steps[${i}].url ${bad}`);
       const undo = step.compensate?.url;
-      const badUndo = undo !== undefined ? checkActionUrl(undo, allowHttp) : undefined;
+      const badUndo = undo !== undefined ? checkActionUrl(undo, allowHttp, origins) : undefined;
       if (badUndo) problem(`http.steps[${i}].compensate.url ${badUndo}`);
     }
     const auth = http.auth;
@@ -453,8 +468,10 @@ async function callOnce(
     if (credentials.secret) {
       headers[HEADERS.signature] = signRequest(credentials.secret, {
         method,
+        host: url.host,
         path: `${url.pathname}${url.search}`,
         timestamp,
+        idempotencyKey,
         context: contextHeader,
         body: plan.body,
       });
@@ -523,9 +540,10 @@ async function callOnce(
       log.info({ endpoint: endpointOf(method, plan.url), status }, 'action API rejected the call');
       return { result: 'rejected', status, ...(message ? { message } : {}) };
     }
-    // 5xx, and redirects, which aren't followed.
+    // 5xx, and redirects, which aren't followed. The body isn't logged: an API may echo the
+    // request's credentials in it.
     log.error(
-      { endpoint: endpointOf(method, plan.url), status, body: text.slice(0, 2000) },
+      { endpoint: endpointOf(method, plan.url), status },
       status >= 300 && status < 400 ? 'action API redirected; not followed' : 'action API failed',
     );
     return { result: 'failed', status };
@@ -561,9 +579,14 @@ const SKIPPED_MESSAGE = 'not attempted: the action ran out of time';
  * starts after `deadlineMs`, so a run takes at most that plus one request's timeout.
  */
 export async function runHttpAction(
-  options: HttpRunOptions & { auditId: string; deadlineMs: number },
+  options: HttpRunOptions & {
+    auditId: string;
+    /** The attempt's key, which starts every request's `Idempotency-Key`. */
+    attemptKey: string;
+    deadlineMs: number;
+  },
 ): Promise<HttpRunResult> {
-  const { action, method, plans, auditId } = options;
+  const { action, method, plans, auditId, attemptKey } = options;
   const endpoint = endpointOf(method, plans[0]?.url ?? '');
   const perRecord = action.spec.perRecord;
   const stopAt = Date.now() + options.deadlineMs;
@@ -573,7 +596,7 @@ export async function runHttpAction(
     while (next < plans.length && Date.now() < stopAt) {
       const i = next++;
       // One key per request, so retrying any of them is safe.
-      const key = perRecord ? `${auditId}.${i + 1}` : auditId;
+      const key = callIdempotencyKey(attemptKey, perRecord ? i + 1 : undefined);
       outcomes[i] = await callOnce(options, plans[i]!, key, {
         method,
         timeoutMs: action.spec.timeoutMs,
@@ -717,8 +740,10 @@ export interface StepRunner {
 
 export interface StepsRunOptions extends CallOptions {
   steps: readonly StepRunner[];
-  /** The attempt's entry: steps' keys derive from it, on retries too. */
+  /** The attempt's entry. */
   auditId: string;
+  /** The attempt's key: steps' `Idempotency-Key`s start with it, on retries too. */
+  attemptKey: string;
   deadlineMs: number;
   /** Steps that completed in earlier tries of the attempt. They aren't sent again. */
   done: StepsProgress['done'];
@@ -784,7 +809,7 @@ function restoredResponse(name: string, done: { status?: number; body?: unknown;
  * in flight is cut off at it.
  */
 export async function runHttpSteps(options: StepsRunOptions): Promise<HttpRunResult> {
-  const { steps, auditId, log, done } = options;
+  const { steps, auditId, attemptKey, log, done } = options;
   const stopAt = Date.now() + options.deadlineMs;
   const prev: Record<string, StepResponse> = {};
   for (const [name, d] of done) if (d.result === 'ok') prev[name] = restoredResponse(name, d);
@@ -851,7 +876,7 @@ export async function runHttpSteps(options: StepsRunOptions): Promise<HttpRunRes
       continue;
     }
     const started = Date.now();
-    const o = await callOnce(options, plan, stepIdempotencyKey(auditId, name), {
+    const o = await callOnce(options, plan, stepIdempotencyKey(attemptKey, name), {
       method: spec.method,
       timeoutMs: spec.timeoutMs,
       stopAt,
@@ -896,7 +921,7 @@ export async function runHttpSteps(options: StepsRunOptions): Promise<HttpRunRes
         continue;
       }
       const started = Date.now();
-      const o = await callOnce(options, plan, compensationIdempotencyKey(auditId, spec.name), {
+      const o = await callOnce(options, plan, compensationIdempotencyKey(attemptKey, spec.name), {
         method: spec.compensate.method,
         timeoutMs: spec.compensate.timeoutMs,
       });
