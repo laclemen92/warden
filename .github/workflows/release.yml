@@ -29,11 +29,13 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
       prerelease: ${{ steps.version.outputs.prerelease }}
+      skip: ${{ steps.version.outputs.skip }}
     steps:
       - uses: actions/checkout@v4
       - id: version
         env:
           EVENT: ${{ github.event_name }}
+          GH_TOKEN: ${{ github.token }}
           INPUT: ${{ inputs.version }}
           REF_NAME: ${{ github.ref_name }}
         run: |
@@ -46,19 +48,33 @@ jobs:
             echo "::error::Tag v$version already exists"
             exit 1
           fi
+          # GitHub occasionally delivers a tag push twice. The concurrency group holds the duplicate
+          # until the first run ends; rebuilding then would move the tags off the published digests.
+          # releases/tags/<tag> only finds published releases, so the stable-version draft doesn't count.
+          skip=false
+          if gh api "repos/$GITHUB_REPOSITORY/releases/tags/v$version" --silent 2> /dev/null; then
+            echo "::notice::v$version is already released; nothing to do"
+            skip=true
+          fi
           prerelease=false
           if [[ "$version" == *-* ]]; then prerelease=true; fi
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
+          {
+            echo "version=$version"
+            echo "prerelease=$prerelease"
+            echo "skip=$skip"
+          } >> "$GITHUB_OUTPUT"
 
   # Same jobs as PR CI. Nothing below runs unless every one of them passes.
   checks:
+    needs: prepare
+    if: needs.prepare.outputs.skip != 'true'
     uses: ./.github/workflows/ci.yml
     permissions:
       contents: read
 
   image:
     needs: [prepare, checks]
+    if: needs.prepare.outputs.skip != 'true'
     runs-on: ubuntu-latest
     # Multi-arch builds run arm64 under emulation.
     timeout-minutes: 45
@@ -108,6 +124,7 @@ jobs:
 
   mock-oidc-image:
     needs: [prepare, checks]
+    if: needs.prepare.outputs.skip != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
