@@ -1,19 +1,64 @@
 import type { HttpStepSpec } from './actions.js';
 import type { HttpActionOutcome } from './audit.js';
 
-/** Why an HTTP action may not call `url`, if it may not. */
-export function checkActionUrl(url: string, allowHttp: boolean): string | undefined {
+/**
+ * Why an HTTP action may not call `url`, if it may not. With `origins` (normalized by
+ * `normalizeOrigin`), the URL's origin must be one of them.
+ */
+export function checkActionUrl(
+  url: string,
+  allowHttp: boolean,
+  origins?: readonly string[],
+): string | undefined {
   let parsed: URL;
   try {
     parsed = new URL(url);
   } catch {
     return 'is not a valid URL';
   }
+  const scheme = checkScheme(parsed, allowHttp);
+  if (scheme) return scheme;
+  if (origins && !origins.includes(parsed.origin)) {
+    return `has origin ${parsed.origin}, which is not in http.origins`;
+  }
+  return undefined;
+}
+
+function checkScheme(parsed: URL, allowHttp: boolean): string | undefined {
   if (parsed.protocol === 'https:') return undefined;
   if (parsed.protocol !== 'http:') return 'must use https';
   if (allowHttp || isLoopback(parsed.hostname)) return undefined;
   return 'must use https (http is allowed only on loopback, or with WARDEN_ACTION_ALLOW_HTTP=true)';
 }
+
+/**
+ * An `http.origins` entry as `URL#origin` writes it (`https://api.example.com`), or why it isn't
+ * one: it must be just a scheme, host and optional port.
+ */
+export function normalizeOrigin(
+  value: string,
+): { ok: true; origin: string } | { ok: false; message: string } {
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return { ok: false, message: 'is not a valid URL' };
+  }
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+    return { ok: false, message: 'must be an https (or http) origin' };
+  }
+  if (/[?#@]/.test(value) || !/^[a-z]+:\/\/[^/]+\/?$/i.test(value)) {
+    return {
+      ok: false,
+      message: 'must be just a scheme, host and port, like https://api.example.com',
+    };
+  }
+  return { ok: true, origin: parsed.origin };
+}
+
+/** Why a normalized origin may not be called, if it may not: `checkActionUrl`'s scheme rule. */
+export const checkOrigin = (origin: string, allowHttp: boolean) =>
+  checkScheme(new URL(origin), allowHttp);
 
 function isLoopback(hostname: string): boolean {
   const host = hostname.toLowerCase();
@@ -56,12 +101,40 @@ export function apiBodyMessage(body: unknown): string | undefined {
   return cleanApiMessage(message) ?? cleanApiMessage(error);
 }
 
+/**
+ * The `Idempotency-Key` of a single-call request. Keys start with the attempt's key, a random
+ * UUID stored with the attempt, so they never repeat across audit stores or deployments. With
+ * `perRecord`, `n` is the record's position, from 1.
+ */
+export const callIdempotencyKey = (attemptKey: string, n?: number) =>
+  n === undefined ? attemptKey : `${attemptKey}.${n}`;
+
 /** The `Idempotency-Key` of a multi-step action's step: the same on every retry of the attempt. */
-export const stepIdempotencyKey = (auditId: string, step: string) => `${auditId}.${step}`;
+export const stepIdempotencyKey = (attemptKey: string, step: string) => `${attemptKey}.${step}`;
 
 /** The `Idempotency-Key` of a step's undo call. */
-export const compensationIdempotencyKey = (auditId: string, step: string) =>
-  `${auditId}.${step}.compensate`;
+export const compensationIdempotencyKey = (attemptKey: string, step: string) =>
+  `${attemptKey}.${step}.compensate`;
+
+/** An attempt key as Warden writes it (`crypto.randomUUID()`). */
+export const ATTEMPT_KEY = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/** What an attempt stores about its steps, so a retry can tell they were renamed or reordered. */
+export const stepsFingerprint = (steps: readonly HttpStepSpec[]): string[] =>
+  steps.map((s) => s.name);
+
+/** Whether the steps an attempt ran with (`stored`) are the action's steps now, in order. */
+export const sameSteps = (stored: unknown, steps: readonly HttpStepSpec[]): boolean =>
+  Array.isArray(stored) &&
+  stored.length === steps.length &&
+  steps.every((s, i) => stored[i] === s.name);
+
+/**
+ * Environment variables an HTTP action may not take credentials from: Warden's own secrets, which
+ * would otherwise be sent to the API or used to sign its requests.
+ */
+export const reservedEnvName = (name: string): boolean =>
+  name.startsWith('WARDEN_') || name === 'DATABASE_URL' || name === 'OIDC_CLIENT_SECRET';
 
 /** Largest response body a step keeps in the audit log, as JSON, after redaction. */
 export const MAX_AUDIT_BODY_BYTES = 8 * 1024;

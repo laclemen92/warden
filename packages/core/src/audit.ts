@@ -161,6 +161,11 @@ export interface StoredActionDetails extends ActionDetails {
    * it was recorded.
    */
   refs?: Record<string, string>;
+  /**
+   * On an HTTP action's own entry: the attempt's `key` (a random UUID that starts every
+   * `Idempotency-Key` it sends, on retries too) and, with steps, their names in order.
+   */
+  http?: { key: string; steps?: string[] };
 }
 
 export const isActionDetails = (details: AuditEntry['details']): details is ActionDetails =>

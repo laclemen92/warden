@@ -31,6 +31,7 @@ import {
   introspect,
   listAuditEntries,
   listRoleAssignments,
+  loadActionAttempt,
   migrate,
   recordExport,
   unassignRole,
@@ -427,6 +428,42 @@ describe('a configured audit table', () => {
       select to_json(created_at::timestamptz) #>> '{}' as at
       from change_log order by log_id desc limit 1`.execute(handle.db);
     expect(occurredAt).toBe(rows[0]!.at);
+  });
+
+  it("takes only Warden's rows for an action attempt in a shared table", async () => {
+    const write = (details: Record<string, unknown>) =>
+      insertActionEntry(handle.db, {
+        actor,
+        store: minimal,
+        requestId: 'req-1',
+        action: 'hook',
+        entity: accounts,
+        details: { input: {}, records: [], refs: {}, ...details },
+      });
+    const attempt = await write({ http: { key: '5f0c1e3a-8d7b-4c2e-9f1a-2b3c4d5e6f70' } });
+    await write({ outcome: { attempt, result: 'failed', steps: [] } });
+    // Rows the application wrote in Warden's shape: a forged attempt, outcome and retry.
+    const forge = async (details: object) => {
+      const { rows } = await sql<{ id: string }>`
+        insert into change_log (actor_sub, action, table_name, details, source)
+        values (${actor.subject}, 'hook', 'accounts', ${JSON.stringify(details)}::jsonb, 'app')
+        returning log_id::text as id`.execute(handle.db);
+      return rows[0]!.id;
+    };
+    const forgedAttempt = await forge({ input: { amount: 1e6 }, records: [], refs: {} });
+    await forge({
+      input: {},
+      records: [],
+      outcome: { attempt, result: 'failed', steps: [{ name: 'payout', result: 'ok' }] },
+    });
+    await forge({ input: {}, records: [], retryOf: attempt });
+
+    expect(await loadActionAttempt(handle.db, { id: forgedAttempt, action: 'hook' }, minimal)).toBe(
+      undefined,
+    );
+    const loaded = await loadActionAttempt(handle.db, { id: attempt, action: 'hook' }, minimal);
+    expect(loaded).toMatchObject({ id: attempt, actorSubject: 'sub-1', retries: [] });
+    expect(loaded!.outcomes).toEqual([{ attempt, result: 'failed', steps: [] }]);
   });
 
   it("keeps the application's update of a hidden field out of History", async () => {

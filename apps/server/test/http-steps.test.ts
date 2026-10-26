@@ -30,6 +30,7 @@ const STEP_ACTIONS = [
   'uses-redacted',
   'reads-unredacted',
   'm2m-steps',
+  'pinned-steps',
 ];
 const CONFIG = `
 defaults: { read: granted }
@@ -167,6 +168,15 @@ const entries = (since: number) =>
 const paths = () => received.map((r) => `${r.method} ${r.url}`);
 const results = (steps: StepView[]) => steps.map((s) => `${s.name}:${s.result}`);
 const keys = () => received.map((r) => r.headers['idempotency-key']);
+/** The random key attempt `auditId` stored, which starts its steps' keys. */
+const attemptKey = async (auditId: string) =>
+  String(
+    (
+      await query(`select details -> 'http' ->> 'key' as key from warden.audit_log where id = $1`, [
+        auditId,
+      ])
+    )[0]!.key,
+  );
 
 describe('multi-step HTTP actions: a run', () => {
   it('calls the steps in order, each with its own key, and hands earlier answers on', async () => {
@@ -189,7 +199,9 @@ describe('multi-step HTTP actions: a run', () => {
       ],
     });
     expect(paths()).toEqual(['POST /payouts/1/review', 'POST /claims/c-9/resolve', 'PUT /notify']);
-    expect(keys()).toEqual([`${auditId}.payout`, `${auditId}.claim`, `${auditId}.notify`]);
+    const key = await attemptKey(auditId);
+    expect(key).toMatch(/^[0-9a-f-]{36}$/);
+    expect(keys()).toEqual([`${key}.payout`, `${key}.claim`, `${key}.notify`]);
     expect(JSON.parse(received[0]!.body)).toEqual({ decision: 'fraudulent', note: REASON });
     expect(JSON.parse(received[1]!.body)).toEqual({ decision: 'fraudulent', payoutStatus: 200 });
     expect(JSON.parse(received[2]!.body)).toEqual({ claimed: true });
@@ -197,6 +209,7 @@ describe('multi-step HTTP actions: a run', () => {
     for (const call of received) {
       const context = verifyWardenRequest({
         secret: SECRET,
+        host: new URL(apiUrl).host,
         method: call.method,
         path: call.url,
         headers: call.headers,
@@ -212,7 +225,12 @@ describe('multi-step HTTP actions: a run', () => {
     }
 
     const [attempt, answer] = await entries(since);
-    expect(attempt).toMatchObject({ id: auditId, action: 'resolve-review', reason: REASON });
+    expect(attempt).toMatchObject({
+      id: auditId,
+      action: 'resolve-review',
+      reason: REASON,
+      details: { http: { key, steps: ['payout', 'claim', 'notify'] } },
+    });
     const outcome = (answer!.details as { outcome: Record<string, unknown> }).outcome;
     expect(outcome).toMatchObject({
       attempt: auditId,
@@ -344,10 +362,8 @@ describe('multi-step HTTP actions: compensate', () => {
       'POST /second/undo/s-7',
       'DELETE /first/undo',
     ]);
-    expect(keys().slice(3)).toEqual([
-      `${auditId}.second.compensate`,
-      `${auditId}.first.compensate`,
-    ]);
+    const key = await attemptKey(auditId);
+    expect(keys().slice(3)).toEqual([`${key}.second.compensate`, `${key}.first.compensate`]);
     expect(JSON.parse(received[3]!.body)).toEqual({ undo: true });
     expect(res.body.steps).toEqual([
       { name: 'first', result: 'ok', compensation: { result: 'ok' } },
@@ -421,8 +437,9 @@ describe('multi-step HTTP actions: retry remaining steps', () => {
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body.auditId).toBe(auditId);
     expect(paths()).toEqual(['POST /claims/c-5/resolve', 'PUT /notify']);
-    expect(keys()).toEqual([firstKeys[1], `${auditId}.notify`]);
-    expect(keys()[0]).toBe(`${auditId}.claim`);
+    const key = await attemptKey(auditId);
+    expect(keys()).toEqual([firstKeys[1], `${key}.notify`]);
+    expect(keys()[0]).toBe(`${key}.claim`);
     // The same request as the first try: rebuilt from the attempt's entry.
     expect(JSON.parse(received[0]!.body)).toEqual({ decision: 'fraudulent', payoutStatus: 200 });
     expect(results(res.body.result.steps)).toEqual(['payout:ok', 'claim:ok', 'notify:ok']);
@@ -504,6 +521,17 @@ const copyEntry = async (id: string, details: object, ago = '0 seconds') =>
         [id, JSON.stringify(details), ago],
       )
     )[0]!.id,
+  );
+
+/** A copy of attempt `from`'s outcome entries, as outcomes of attempt `to`. */
+const copyOutcome = (from: string, to: string) =>
+  query(
+    `insert into warden.audit_log (occurred_at, request_id, actor_subject, actor_email,
+       actor_roles, action, entity, record_id, primary_key, reason, details)
+     select now(), request_id, actor_subject, actor_email, actor_roles, action, entity, record_id,
+       primary_key, reason, jsonb_set(details, '{outcome,attempt}', to_jsonb($2::text))
+     from warden.audit_log where details -> 'outcome' ->> 'attempt' = $1`,
+    [from, to],
   );
 
 describe('multi-step HTTP actions: retry failure paths', () => {
@@ -621,10 +649,43 @@ describe('multi-step HTTP actions: retry failure paths', () => {
     const third = await retry('resolve-review', auditId);
     expect(third.status, JSON.stringify(third.body)).toBe(200);
     expect(paths()).toEqual(['PUT /notify']);
-    expect(keys()).toEqual([`${auditId}.notify`]);
+    expect(keys()).toEqual([`${await attemptKey(auditId)}.notify`]);
     const done = await retry('resolve-review', auditId);
     expect(done.status).toBe(409);
     expect(done.body.message).toMatch(/already completed/);
+  });
+
+  it('refuses a retry when the steps were renamed or reordered since the run', async () => {
+    const auditId = await failedRun();
+    const [attempt] = await query('select details from warden.audit_log where id = $1', [auditId]);
+    const { key } = (attempt!.details as { http: { key: string } }).http;
+    for (const steps of [
+      ['payout', 'claimV2', 'notify'],
+      ['payout', 'notify', 'claim'],
+      ['payout', 'claim'],
+      null,
+    ]) {
+      // As the attempt would be had the definition differed when it ran.
+      const changed = await copyEntry(auditId, { http: steps ? { key, steps } : { key } });
+      await copyOutcome(auditId, changed);
+      const res = await retry('resolve-review', changed);
+      expect(res.status).toBe(409);
+      expect(res.body.message).toMatch(/steps changed/);
+    }
+    expect(received).toHaveLength(0);
+  });
+
+  it('refuses a retry of a run whose idempotency key is missing or malformed', async () => {
+    const auditId = await failedRun();
+    const steps = ['payout', 'claim', 'notify'];
+    for (const http of [{ steps }, { key: '1042', steps }, { key: 7, steps }]) {
+      const changed = await copyEntry(auditId, { http });
+      await copyOutcome(auditId, changed);
+      const res = await retry('resolve-review', changed);
+      expect(res.status).toBe(409);
+      expect(res.body.message).toMatch(/idempotency key/);
+    }
+    expect(received).toHaveLength(0);
   });
 
   it('refuses a retry of a run more than 24 hours old', async () => {
@@ -634,6 +695,26 @@ describe('multi-step HTTP actions: retry failure paths', () => {
     expect(res.status).toBe(409);
     expect(res.body.message).toMatch(/too old/);
     expect(received).toHaveLength(0);
+  });
+});
+
+describe('multi-step HTTP actions: http.origins', () => {
+  it('builds no step or undo call for an origin outside http.origins, and sends nothing there', async () => {
+    const port = Number(new URL(apiUrl).port);
+    const res = await run('pinned-steps', { input: { to: `http://localhost:${port}/pinned/b` } });
+    expect(res.status).toBe(500);
+    expect(results(res.body.steps)).toEqual(['a:ok', 'b:failed']);
+    expect(res.body.steps[0].compensation).toEqual({
+      result: 'failed',
+      message: 'undoing this step failed',
+    });
+    expect(paths()).toEqual(['POST /pinned/a']);
+    expect(logLines.some((l) => l.includes('which is not in http.origins'))).toBe(true);
+
+    received.splice(0);
+    const ok = await run('pinned-steps', { input: { to: `${apiUrl}/pinned/b` } });
+    expect(ok.status).toBe(200);
+    expect(paths()).toEqual(['POST /pinned/a', 'POST /pinned/b']);
   });
 });
 

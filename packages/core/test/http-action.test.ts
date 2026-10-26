@@ -4,10 +4,17 @@ import {
   apiBodyMessage,
   auditedBody,
   checkActionDefinitions,
+  callIdempotencyKey,
   checkActionUrl,
   cleanApiMessage,
+  compensationIdempotencyKey,
   guardRedacted,
+  normalizeOrigin,
   redactJson,
+  reservedEnvName,
+  sameSteps,
+  stepIdempotencyKey,
+  stepsFingerprint,
   stepsProgress,
   type HttpStepSpec,
 } from '../src/index.js';
@@ -91,6 +98,81 @@ describe('HTTP action definitions', () => {
     expect(httpAction({ auth: { type: 'token' } }).ok).toBe(false);
   });
 
+  it("refuses credentials from Warden's own environment variables", () => {
+    for (const name of [
+      'WARDEN_SESSION_SECRET',
+      'WARDEN_X',
+      'DATABASE_URL',
+      'OIDC_CLIENT_SECRET',
+    ]) {
+      expect(httpAction({ auth: { type: 'hmac', secretEnv: name } })).toMatchObject({
+        ok: false,
+        errors: [
+          'action "review": http.auth.secretEnv must not name Warden\'s own settings (WARDEN_*, DATABASE_URL, OIDC_CLIENT_SECRET)',
+        ],
+      });
+    }
+    const m2m = httpAction({
+      auth: {
+        type: 'client_credentials',
+        tokenUrl: 'https://idp.example.com/token',
+        clientIdEnv: 'OIDC_CLIENT_SECRET',
+        clientSecretEnv: 'WARDEN_SESSION_SECRET',
+        secretEnv: 'DATABASE_URL',
+      },
+    });
+    expect(m2m.ok ? [] : m2m.errors.map((e) => e.split(' must ')[0])).toEqual([
+      'action "review": http.auth.clientIdEnv',
+      'action "review": http.auth.clientSecretEnv',
+      'action "review": http.auth.secretEnv',
+    ]);
+    expect(reservedEnvName('API_WARDEN_SECRET')).toBe(false);
+    expect(reservedEnvName('OIDC_CLIENT_ID')).toBe(false);
+  });
+
+  it('takes http.origins as bare origins, normalized', () => {
+    const result = httpAction({
+      origins: ['https://API.example.com', 'https://api.example.com:443/', 'http://localhost:8080'],
+    });
+    expect(result.ok && result.specs[0]!.http!.origins).toEqual([
+      'https://api.example.com',
+      'http://localhost:8080',
+    ]);
+    const steps = checkActionDefinitions([
+      {
+        name: 'review',
+        label: 'Review',
+        on: 'users',
+        http: {
+          auth: hmac,
+          steps: [{ name: 'a', url: 'https://api.example.com/a' }],
+          origins: ['https://api.example.com'],
+        },
+      },
+    ]);
+    expect(steps.ok && steps.specs[0]!.http!.origins).toEqual(['https://api.example.com']);
+    const bad = httpAction({
+      origins: [
+        'https://api.example.com/v1',
+        'https://api.example.com?x',
+        'https://user@api.example.com',
+        'ftp://api.example.com',
+        'api.example.com',
+        7,
+      ],
+    });
+    expect(bad.ok ? [] : bad.errors.map((e) => e.split(' ')[2])).toEqual([
+      'http.origins[0]',
+      'http.origins[1]',
+      'http.origins[2]',
+      'http.origins[3]',
+      'http.origins[4]',
+      'http.origins[5]',
+    ]);
+    expect(httpAction({ origins: [] }).ok).toBe(false);
+    expect(httpAction({ origins: 'https://api.example.com' }).ok).toBe(false);
+  });
+
   it('still requires run without http', () => {
     const result = checkActionDefinitions([
       { name: 'x', label: 'X', on: 'users', permissions: {} },
@@ -110,6 +192,45 @@ describe('checkActionUrl', () => {
     expect(checkActionUrl('http://api.example.com/x', true)).toBeUndefined();
     expect(checkActionUrl('ftp://api.example.com/x', true)).toBe('must use https');
     expect(checkActionUrl('not a url', true)).toBe('is not a valid URL');
+  });
+
+  it('with origins, allows only those origins', () => {
+    const origins = ['https://api.example.com'];
+    expect(checkActionUrl('https://api.example.com/a/b?c=1', false, origins)).toBeUndefined();
+    expect(checkActionUrl('https://API.EXAMPLE.COM:443/a', false, origins)).toBeUndefined();
+    for (const url of [
+      'https://api.example.com.evil.com/a',
+      'https://api.example.com:8443/a',
+      'https://evil.com/https://api.example.com',
+      'https://api.example.com@evil.com/a',
+      'http://api.example.com/a',
+    ]) {
+      expect(checkActionUrl(url, true, origins)).toMatch(/not in http.origins/);
+    }
+    expect(normalizeOrigin('https://api.example.com/')).toEqual({
+      ok: true,
+      origin: 'https://api.example.com',
+    });
+  });
+});
+
+describe('idempotency keys and step fingerprints', () => {
+  const key = '5f0c1e3a-8d7b-4c2e-9f1a-2b3c4d5e6f70';
+
+  it('start with the attempt key', () => {
+    expect(callIdempotencyKey(key)).toBe(key);
+    expect(callIdempotencyKey(key, 3)).toBe(`${key}.3`);
+    expect(stepIdempotencyKey(key, 'payout')).toBe(`${key}.payout`);
+    expect(compensationIdempotencyKey(key, 'payout')).toBe(`${key}.payout.compensate`);
+  });
+
+  it('tell renamed, reordered, added or removed steps apart', () => {
+    const steps = [{ name: 'a' }, { name: 'b' }] as HttpStepSpec[];
+    expect(stepsFingerprint(steps)).toEqual(['a', 'b']);
+    expect(sameSteps(['a', 'b'], steps)).toBe(true);
+    for (const stored of [['b', 'a'], ['a', 'c'], ['a'], ['a', 'b', 'c'], undefined, 'a,b']) {
+      expect(sameSteps(stored, steps)).toBe(false);
+    }
   });
 });
 

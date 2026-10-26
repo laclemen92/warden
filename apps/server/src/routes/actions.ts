@@ -1,4 +1,4 @@
-import { createHmac, timingSafeEqual } from 'node:crypto';
+import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 import {
   ActionError,
   ActionValidationError,
@@ -14,6 +14,7 @@ import {
   type StepResponse,
 } from '@wardenhq/actions';
 import {
+  ATTEMPT_KEY,
   MAX_ACTION_RECORDS,
   MAX_REASON_LENGTH,
   auditDiff,
@@ -27,6 +28,8 @@ import {
   previewTokenPayload,
   redactInput,
   runnableActions,
+  sameSteps,
+  stepsFingerprint,
   stepsProgress,
   toFieldErrors,
   type ActionChange,
@@ -98,6 +101,10 @@ export const RETRY_WINDOW_MS = 24 * 60 * 60 * 1000;
  */
 function retryRefusal(steps: readonly HttpStepSpec[], attempt: ActionAttempt): string | undefined {
   const { outcomes, retries } = attempt;
+  // Progress is matched by step name, so renamed or reordered steps could resend one that applied.
+  if (!sameSteps(attempt.details?.http?.steps, steps)) {
+    return "the action's steps changed since this run; run it again";
+  }
   const settled = (retry: string | undefined) => outcomes.some((o) => o.retry === retry);
   if (!settled(undefined) || !retries.every(settled)) {
     return "this run is still calling the API, or how it ended wasn't recorded; check the API, then run the action again if needed";
@@ -455,7 +462,7 @@ export function registerActionRoutes(app: FastifyInstance, options: ActionRouteO
       if (typeof url !== 'string') {
         throw new Error(`action "${action.name}": http.url must return a string`);
       }
-      const bad = checkActionUrl(url, http?.allowHttp ?? false);
+      const bad = checkActionUrl(url, http?.allowHttp ?? false, action.http!.origins);
       if (bad) throw new Error(`action "${action.name}": http.url ${bad}`);
       const value: unknown = call.body ? call.body(ctx) : { input, records };
       return { url, body: value === undefined ? '' : JSON.stringify(value), records };
@@ -496,7 +503,7 @@ export function registerActionRoutes(app: FastifyInstance, options: ActionRouteO
       if (typeof target !== 'string') {
         throw new Error(`action "${action.name}": ${what}.url must return a string`);
       }
-      const bad = checkActionUrl(target, http?.allowHttp ?? false);
+      const bad = checkActionUrl(target, http?.allowHttp ?? false, action.http!.origins);
       if (bad) throw new Error(`action "${action.name}": ${what}.url ${bad}`);
       const value: unknown = body ? body(ctx, prev) : { input, records };
       return { url: target, body: value === undefined ? '' : JSON.stringify(value), records };
@@ -600,6 +607,7 @@ export function registerActionRoutes(app: FastifyInstance, options: ActionRouteO
       records: string[];
       steps: StepRunner[];
       auditId: string;
+      attemptKey: string;
       done: StepsProgress['done'];
       /** The retry's own entry. */
       retry?: string;
@@ -614,6 +622,7 @@ export function registerActionRoutes(app: FastifyInstance, options: ActionRouteO
         credentials: run.credentials,
         steps: run.steps,
         auditId,
+        attemptKey: run.attemptKey,
         deadlineMs: action.deadlineMs ?? deadlineMs,
         done: run.done,
         retryable: canRetry(action),
@@ -770,6 +779,7 @@ export function registerActionRoutes(app: FastifyInstance, options: ActionRouteO
     const log = req.log.child({ action: action.name }) as unknown as Logger;
 
     let txHandle: ActionTxHandle | undefined;
+    const attemptKey = randomUUID();
     /** Everything the run does in its transaction; the caller commits or rolls back. */
     const work = async (trx: Database): Promise<Outcome> => {
       await setActorSettings(trx, actor);
@@ -825,6 +835,14 @@ export function registerActionRoutes(app: FastifyInstance, options: ActionRouteO
           input: redactInput(input, action.sensitive),
           records,
           refs: Object.fromEntries(action.refs.map((r) => [r.field, r.entity])),
+          ...(action.http
+            ? {
+                http: {
+                  key: attemptKey,
+                  ...(action.http.steps ? { steps: stepsFingerprint(action.http.steps) } : {}),
+                },
+              }
+            : {}),
         },
       });
       if (action.http) {
@@ -977,6 +995,7 @@ export function registerActionRoutes(app: FastifyInstance, options: ActionRouteO
           records: outcome.records ?? [],
           steps: outcome.steps,
           auditId: outcome.auditId,
+          attemptKey,
           done: new Map(),
         },
         releaseApi,
@@ -991,6 +1010,7 @@ export function registerActionRoutes(app: FastifyInstance, options: ActionRouteO
           plans: outcome.plans,
           credentials,
           auditId: outcome.auditId,
+          attemptKey,
           deadlineMs: action.deadlineMs ?? deadlineMs,
           context: {
             action: action.name,
@@ -1171,6 +1191,10 @@ export function registerActionRoutes(app: FastifyInstance, options: ActionRouteO
     }
     const refused = retryRefusal(steps, attempt);
     if (refused) return conflict(reply, refused);
+    const attemptKey = attempt.details.http?.key;
+    if (typeof attemptKey !== 'string' || !ATTEMPT_KEY.test(attemptKey)) {
+      return conflict(reply, "this run's idempotency key wasn't recorded; run the action again");
+    }
 
     // The definition may have changed since: input that no longer fits it isn't sent.
     const changed = () =>
@@ -1249,6 +1273,7 @@ export function registerActionRoutes(app: FastifyInstance, options: ActionRouteO
         records: ids,
         steps: runners,
         auditId: attempt.id,
+        attemptKey,
         done: reserved.done,
         retry: reserved.retryId,
       },

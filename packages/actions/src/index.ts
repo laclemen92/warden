@@ -181,8 +181,8 @@ export interface HttpContext<I, T extends ActionTarget = ActionTarget> {
 
 /**
  * How Warden authenticates to the API. No mode takes a token from the user.
- * - `hmac`: signs method, path, timestamp, body and the Warden context header with a shared
- *   secret (`X-Warden-Signature`).
+ * - `hmac`: signs method, host, path, timestamp, `Idempotency-Key`, body and the Warden context
+ *   header with a shared secret (`X-Warden-Signature`).
  * - `client_credentials`: an M2M bearer token from your IdP, cached until it expires. The request
  *   is HMAC-signed with `secretEnv` too, so the API can trust the actor it names.
  * - `user`: the signed-in user's own access token for `audience`, so the API enforces its own
@@ -216,6 +216,11 @@ export interface HttpCall<I, T extends ActionTarget = ActionTarget> {
   perRecord?: boolean;
   /** With `perRecord`, how many requests may be in flight at once. Default 4, at most 16. */
   concurrency?: number;
+  /**
+   * The only origins `url` may have, like `['https://api.example.com']`, checked on every URL
+   * before credentials are attached. Recommended when `url` is built from data.
+   */
+  origins?: string[];
 }
 
 /** An earlier step's answer, as later steps see it. */
@@ -232,7 +237,7 @@ export type StepResponses = Readonly<Record<string, StepResponse>>;
 export interface HttpStep<I, T extends ActionTarget = ActionTarget> {
   /**
    * `^[a-z][a-zA-Z0-9_]*$`, unique within the action. Later steps read this step's answer as
-   * `prev.<name>`, and its `Idempotency-Key` is `<audit entry id>.<name>`.
+   * `prev.<name>`, and its `Idempotency-Key` is `<attempt key>.<name>`.
    */
   name: string;
   /** `https` only, except on loopback, unless `WARDEN_ACTION_ALLOW_HTTP=true`. */
@@ -271,6 +276,8 @@ export interface HttpSteps<I, T extends ActionTarget = ActionTarget> {
   auth: HttpAuth;
   /** Each step's default timeout. Default 10 s; at most 60 s. */
   timeoutMs?: number;
+  /** The only origins step and undo URLs may have, as for a single call. */
+  origins?: string[];
 }
 
 // Definitions differ in their input and target types, so a module's list holds any of them.

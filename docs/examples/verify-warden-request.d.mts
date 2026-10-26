@@ -12,6 +12,8 @@ export class WardenSignatureError extends Error {}
 
 export function verifyWardenRequest(options: {
   secret: string;
+  /** This API's host as Warden's URL names it, from configuration, never the Host header. */
+  host: string | readonly string[];
   method: string;
   path: string;
   headers: Record<string, string | string[] | undefined>;
@@ -22,5 +24,5 @@ export function verifyWardenRequest(options: {
 
 export function wardenAuth(
   secret: string,
-  options?: { toleranceSeconds?: number },
+  options: { host: string | readonly string[]; toleranceSeconds?: number },
 ): (req: unknown, res: unknown, next: (err?: unknown) => void) => void;

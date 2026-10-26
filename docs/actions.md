@@ -253,6 +253,13 @@ Some operations belong to your application, not to Warden. Resolving a fraud-hel
 An HTTP action delegates to an endpoint instead:
 
 ```js
+// One path segment from a value: encoded, and never `.` or `..`, which URLs resolve away.
+const segment = (value) => {
+  const text = String(value);
+  if (text === '' || text === '.' || text === '..') throw new ActionError('invalid id');
+  return encodeURIComponent(text);
+};
+
 defineAction({
   name: 'review-payout',
   label: 'Resolve review',
@@ -261,10 +268,11 @@ defineAction({
   input: z.object({ decision: z.enum(['fraudulent', 'not_fraudulent']) }),
   http: {
     url: (ctx) =>
-      `${process.env.SPOT_API_URL}/internal/payout-items/${ctx.record.values.id}/review`,
+      `${process.env.SPOT_API_URL}/internal/payout-items/${segment(ctx.record.values.id)}/review`,
+    origins: [process.env.SPOT_API_URL],
     method: 'POST',
     body: ({ input, reason }) => ({ decision: input.decision, note: reason }),
-    auth: { type: 'hmac', secretEnv: 'WARDEN_API_SECRET' },
+    auth: { type: 'hmac', secretEnv: 'SPOT_API_SECRET' },
     timeoutMs: 10_000,
   },
 });
@@ -279,13 +287,16 @@ defineAction({
 | `timeoutMs`   | positive integer, at most 60000  | `10000`              | Per request.                                                                                           |
 | `perRecord`   | boolean                          | `false`              | `target: 'many'` only: one request per record instead of one for all.                                  |
 | `concurrency` | positive integer, at most 16     | `4`                  | With `perRecord`, how many requests are in flight at once.                                             |
+| `origins`     | array of origins                 | any                  | The only origins (`https://api.example.com`) the URL may have. Recommended when `url` uses data.       |
 
 `url` and `body` get `{ input, record, records, actor, reason }`, with picked records and target records loaded as for `run` (with `perRecord`, `record` is that request's record). An HTTP action has no `run` and no `permissions`, since it writes nothing through `tx`; defining `run` too fails startup.
+
+**Building URLs from data is the module's job.** Warden checks only the scheme, and the origin when `origins` is set; it can't tell which path you meant. A record value or input put into a URL unencoded can change it: `../` climbs the path, `?` or `#` cuts it short, and the signature then covers the path as normalized, so your API sees a valid request for the wrong endpoint. Encode every value with `encodeURIComponent` and reject `.` and `..` (the `segment` helper above does both). Set `origins` whenever a URL is built from data: Warden checks every URL it builds (each step's and undo call's included) against it before attaching any credentials, and a URL outside it fails the run (or the step, or the undo call) without sending anything. Each entry is a bare origin: a scheme, host and port, with no path; a fixed `url` outside the list, or an `http:` origin off loopback without `WARDEN_ACTION_ALLOW_HTTP`, fails startup.
 
 ### What happens on a run
 
 - **No preview.** An HTTP action is always `confirm: 'confirm'` (setting `preview` fails startup), the UI offers only a confirmation, and `POST /preview` is a `400`. The endpoint is never called during a preview.
-- **Audit first, then call once.** Warden validates the request, loads the target records, writes the action's audit entry (who, input, reason, records) and commits it, then calls the endpoint once. A `url` or `body` that throws, or a URL that isn't allowed, fails the run before the entry is written, and nothing is called. `ActionError`s thrown there are `400`s, as in `run`.
+- **Audit first, then call once.** Warden validates the request, loads the target records, writes the action's audit entry (who, input, reason, records) and commits it, then calls the endpoint once. A `url` or `body` that throws, or a URL that isn't allowed (its scheme, or an origin not in `origins`), fails the run before the entry is written, and nothing is called. `ActionError`s thrown there are `400`s, as in `run`.
 - **The answer:**
 
 | API answers                               | User gets                                                                                                                           |
@@ -297,7 +308,7 @@ defineAction({
 
 Redirects are never followed. Only the first 64 KiB of a response is read. Error responses carry the `auditId` too.
 
-- **Idempotency.** Every request carries `Idempotency-Key`: the action entry's id (with `perRecord`, `<id>.<n>` for the nth record). Make your endpoint apply a key once, so a retried request can't apply twice.
+- **Idempotency.** Every request carries `Idempotency-Key`: a random UUID Warden makes for the attempt and stores with its entry (with `perRecord`, `<uuid>.<n>` for the nth record), so keys never repeat, even across audit stores or Warden deployments that call the same API. Make your endpoint apply a key once, so a retried request can't apply twice. The key is signed (below), so it can't be swapped to replay a request.
 - **Many records.** By default one request carries every record id. Its `2xx` body may report each one as `records: [{ id, ok, message? }]` (Warden's ids, as sent), and the UI lists those that failed; the audit log then records the call as `partial`, or `rejected` when every record failed. With `perRecord: true` Warden sends one request per record, at most `concurrency` at a time, and answers `200` with `result.records` saying how each went; a `5xx` for one record gets the generic message.
 - **Limits.** While it calls the API a run holds no database connection and none of the server's action slots, but it counts toward the user's limit (`WARDEN_ACTION_MAX_PER_USER`, see [Limits](#limits)). With `perRecord`, no request starts after the action's deadline (`deadlineMs`, or `WARDEN_ACTION_DEADLINE`, counted from the first request); records not reached fail with "not attempted: the action ran out of time".
 
@@ -331,7 +342,7 @@ Users never paste tokens. Pick one mode per action:
 | `client_credentials` | `tokenUrl`, `clientIdEnv`, `clientSecretEnv`, `secretEnv`, `audience?`, `scope?` | `Authorization: Bearer <M2M token>` from your IdP, and the HMAC signature (keyed with `secretEnv`).   |
 | `user`               | `audience`                                                                       | `Authorization: Bearer <the signed-in user's access token>`, so your API applies its own permissions. |
 
-- Secrets are read from the named environment variables at startup. A variable that isn't set fails startup, as does a `tokenUrl` that isn't https (with the same loopback exception).
+- Secrets are read from the named environment variables at startup. A variable that isn't set fails startup, as does a `tokenUrl` that isn't https (with the same loopback exception). Warden's own settings can't be named (`WARDEN_*`, `DATABASE_URL`, `OIDC_CLIENT_SECRET`), so a module can't send them to an API; give each API a secret of its own.
 - `client_credentials` needs `secretEnv` too: the M2M token only says the caller is Warden (any client with a token for the audience could send it), so the signature is what vouches for the actor in `X-Warden-Context`.
 - `client_credentials` posts `grant_type=client_credentials` with the client id and secret (and `audience`, `scope`) to `tokenUrl`, caches the token until a minute before it expires, and on a `401` from your API fetches a new one and retries once.
 - `user` sends the access token Warden keeps from sign-in for `OIDC_AUDIENCE` (see [Auth0](auth0.md) for setting up an API audience and refresh tokens), refreshed first if it is about to expire. An action whose `audience` isn't `OIDC_AUDIENCE`, or any `user` action when `OIDC_AUDIENCE` isn't set, fails startup. When the token can't be had or refreshed, the run is a `401` "Sign in again to continue" and the API isn't called.
@@ -339,18 +350,20 @@ Users never paste tokens. Pick one mode per action:
 
 ### Verifying the signature
 
-The signature is `v1=` and the hex HMAC-SHA256, keyed with the secret, of these lines joined with `\n`:
+The signature is `v2=` and the hex HMAC-SHA256, keyed with the secret, of these lines joined with `\n`:
 
 ```
-v1
+v2
 <METHOD>
+<host, lowercase, with the port only when it isn't the scheme's default>
 <path and query, as requested>
 <X-Warden-Timestamp, Unix seconds>
+<Idempotency-Key, as sent>
 <X-Warden-Context, as sent>
 <hex SHA-256 of the raw body>
 ```
 
-[`docs/examples/verify-warden-request.mjs`](examples/verify-warden-request.mjs) is a reference verifier with no dependencies: copy it into your API. It rejects a tampered body, path, method or context, a timestamp more than five minutes off, and the wrong secret, and returns the context. Verify against the raw body, before JSON parsing, and the path as Warden requested it (behind a proxy that rewrites paths, the original one). Within the five minutes a captured request could be replayed, so dedupe on `Idempotency-Key`.
+[`docs/examples/verify-warden-request.mjs`](examples/verify-warden-request.mjs) is a reference verifier with no dependencies: copy it into your API. It rejects a tampered body, host, path, method, `Idempotency-Key` or context, a timestamp more than five minutes off, and the wrong secret, and returns the context. Verify against the raw body, before JSON parsing, and the path as Warden requested it (behind a proxy that rewrites paths, the original one). Pass your API's own host (`host`, as Warden's URL names it, from your configuration): never the request's `Host` header, which whoever sends the request chooses. Signing the host stops a request from being replayed to another API that shares the secret. Within the five minutes a captured request could be replayed to the same API, but only with the same `Idempotency-Key`, so dedupe on it.
 
 Express:
 
@@ -362,7 +375,7 @@ const app = express();
 app.use(express.json({ verify: (req, _res, buf) => void (req.rawBody = buf) }));
 app.post(
   '/internal/payout-items/:id/review',
-  wardenAuth(process.env.WARDEN_API_SECRET),
+  wardenAuth(process.env.SPOT_API_SECRET, { host: 'api.example.com' }),
   async (req, res) => {
     const { actor, reason } = req.warden;
     const review = await resolveReview(req.params.id, req.body.decision, {
@@ -387,7 +400,8 @@ export class WardenGuard implements CanActivate {
     const req = context.switchToHttp().getRequest();
     try {
       req.warden = verifyWardenRequest({
-        secret: process.env.WARDEN_API_SECRET!,
+        secret: process.env.SPOT_API_SECRET!,
+        host: 'api.example.com',
         method: req.method,
         path: req.originalUrl,
         headers: req.headers,
@@ -403,7 +417,7 @@ export class WardenGuard implements CanActivate {
 
 ### In the audit log
 
-The action's own entry is written before the call, and the log is append-only, so the API's answer goes in a second entry for the same action and record, with no input. Its `details.outcome` holds `attempt` (the first entry's id), `endpoint` (method, origin and path; the query is left out, since it may hold secrets), `result` (`ok`, `rejected`, `failed`, or `partial` when some records failed), the HTTP `status`, the message the user was shown and the `id` a `2xx` named, and with many records each record's result. A `5xx`'s body is only logged. Both entries are shown to the same people as any action entry (see [Audit log](#audit-log)).
+The action's own entry is written before the call, and the log is append-only, so the API's answer goes in a second entry for the same action and record, with no input. Its `details.outcome` holds `attempt` (the first entry's id), `endpoint` (method, origin and path; the query is left out, since it may hold secrets), `result` (`ok`, `rejected`, `failed`, or `partial` when some records failed), the HTTP `status`, the message the user was shown and the `id` a `2xx` named, and with many records each record's result. A `5xx`'s body is neither kept nor logged, since an API may echo the request's credentials in it. The first entry's `details.http.key` is the attempt's idempotency key (and, with steps, `details.http.steps` their names in order). Both entries are shown to the same people as any action entry (see [Audit log](#audit-log)).
 
 ## Several endpoints: `http.steps`
 
@@ -438,10 +452,12 @@ defineAction({
   input: z.object({ decision: z.enum(['fraudulent', 'not_fraudulent']) }),
   http: {
     auth: { type: 'user', audience: 'https://api.example.com' },
+    origins: [process.env.API, process.env.CLAIMS_API],
     steps: [
       {
         name: 'payout',
-        url: (ctx) => `${process.env.API}/internal/payout-items/${ctx.record.values.id}/review`,
+        url: (ctx) =>
+          `${process.env.API}/internal/payout-items/${segment(ctx.record.values.id)}/review`,
         body: ({ input, reason }) => ({ decision: input.decision, note: reason }),
         // Keep this response in the audit log, so a retry can rebuild the next step.
         auditBody: { redact: ['accountNumber'] },
@@ -449,12 +465,12 @@ defineAction({
       {
         name: 'claim',
         url: (ctx, prev) =>
-          `${process.env.CLAIMS_API}/internal/claims/${prev.payout.body.claimId}/resolve`,
+          `${process.env.CLAIMS_API}/internal/claims/${segment(prev.payout.body.claimId)}/resolve`,
         body: ({ input }) => ({ decision: input.decision }),
         when: ({ input }) => input.decision === 'fraudulent',
         compensate: {
           url: (ctx, prev) =>
-            `${process.env.CLAIMS_API}/internal/claims/${prev.payout.body.claimId}/reopen`,
+            `${process.env.CLAIMS_API}/internal/claims/${segment(prev.payout.body.claimId)}/reopen`,
         },
       },
     ],
@@ -467,12 +483,13 @@ defineAction({
 | `steps`     | array                           | required | The steps, in order. At most 5 (`WARDEN_ACTION_MAX_STEPS`, 1 to 20). |
 | `auth`      | object                          | required | As for a single call ([`http.auth`](#httpauth)); every step uses it. |
 | `timeoutMs` | positive integer, at most 60000 | `10000`  | Each step's default timeout.                                         |
+| `origins`   | array of origins                | any      | As for a single call; checked on every step's and undo call's URL.   |
 
 `url`, `method`, `body`, `perRecord` and `concurrency` can't be set on `http` with `steps`; set them on each step (`perRecord` isn't available).
 
 | Step key     | Type                                  | Default              | Description                                                                                                                 |
 | ------------ | ------------------------------------- | -------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `name`       | `^[a-z][a-zA-Z0-9_]*$`, unique        | required             | Later steps read its answer as `prev.<name>`; the audit log and its `Idempotency-Key` use it.                               |
+| `name`       | `^[a-z][a-zA-Z0-9_]*$`, unique        | required             | Later steps read its answer as `prev.<name>`; the audit log, its `Idempotency-Key` and retries use it.                      |
 | `url`        | string, or `(ctx, prev) => string`    | required             | As for a single call.                                                                                                       |
 | `method`     | `POST`, `PUT`, `PATCH`, `DELETE`      | `POST`               |                                                                                                                             |
 | `body`       | `(ctx, prev) => value`                | `{ input, records }` |                                                                                                                             |
@@ -485,7 +502,7 @@ defineAction({
 
 - **In order, stopping at the first failure.** Each step starts after the one before it answered with a `2xx`. A `4xx`, `5xx`, timeout or network error stops the chain, and later steps aren't called; the user gets the failed step's answer as for a single call (a `400` with its message, or a generic `502`/`504`), plus `steps` and `retryable` (below). A `url`, `body` or `when` that throws stops it too (an `ActionError`'s message is shown; anything else is a generic error and is logged). The first step's request is built before the action's entry is written, so a module error there leaves no attempt behind.
 - **Same auth and headers.** Every step is sent with the action's auth mode, `X-Warden-Context` (with the action entry's id as `auditId`) and, with `hmac` and `client_credentials`, its own signature.
-- **One `Idempotency-Key` per step:** `<audit entry id>.<step name>`, the same on every retry. Undo calls use `<audit entry id>.<step name>.compensate`.
+- **One `Idempotency-Key` per step:** `<attempt uuid>.<step name>`, the same on every retry. Undo calls use `<attempt uuid>.<step name>.compensate`. The UUID is random per attempt and stored with its entry.
 - **Deadline.** The steps share one deadline, the action's `deadlineMs` (or `WARDEN_ACTION_DEADLINE`), counted from the first step. No step starts after it, and a step still running when it passes (including its retry after a `401`) is cut off and fails as a timeout (`504`).
 - **`compensate` isn't a transaction.** When a step fails, the steps that completed are undone in reverse order where they have `compensate`. Undo calls are best effort: each is made once with its own timeout (not the deadline), and its outcome is logged, recorded in the audit log and shown to the user ("undone", "undo failed"). An undo that fails leaves your system half-changed; the audit log says which.
 
@@ -517,6 +534,7 @@ After a failure, running the action again is the way to recover, and the UI offe
 A retry (`POST /api/actions/:name/retry` with `{ auditId }`) rebuilds the requests from the attempt's audit entry: its input, records and reason, with the records loaded as they are now. Later steps get `prev` from the steps' kept bodies (`auditBody`); a step that reads the body of an earlier step that didn't keep it, or a value that body's `redact` removed, fails with a `409` saying so, without being sent. A retry is refused with a `409`, and `retryable` is false, when:
 
 - any undo call was made, since the steps that completed may have been undone;
+- the action's steps were renamed, reordered, added or removed since the run (which steps completed is matched by name, so a renamed step could be sent twice);
 - the action has [sensitive](#input-forms) input fields, which the audit log doesn't keep;
 - the audit store doesn't keep details or the actor;
 - the run is more than 24 hours old (APIs commonly forget idempotency keys after a day);
@@ -529,7 +547,7 @@ Only the user who ran it may retry a run, and only while they may run the action
 
 ### Steps in the audit log
 
-The action's entry is written before the first step. When the steps finish, a second entry records each step's `name`, `result`, `endpoint`, `status`, `durationMs`, the message shown and the `id` a `2xx` named, plus its undo call's outcome. Response bodies aren't stored unless a step sets `auditBody` (a kept body larger than 8 KiB is left out and marked `bodyOmitted`). A retry writes its own entry (`details.retryOf`: the attempt's id) before sending anything, then an outcome entry with `outcome.retry` set; the steps it didn't resend are marked `earlier`. Entries are never updated.
+The action's entry is written before the first step. When the steps finish, a second entry records each step's `name`, `result`, `endpoint`, `status`, `durationMs`, the message shown and the `id` a `2xx` named, plus its undo call's outcome. Response bodies aren't stored unless a step sets `auditBody` (a kept body larger than 8 KiB is left out and marked `bodyOmitted`). A retry writes its own entry (`details.retryOf`: the attempt's id) before sending anything, then an outcome entry with `outcome.retry` set; the steps it didn't resend are marked `earlier`. Entries are never updated. In an audit table shared with your application (one with [`source`](config.md#audit-log)), a retry reads only the rows Warden wrote, so rows the application writes can't pose as attempts or outcomes.
 
 ## Audit log
 

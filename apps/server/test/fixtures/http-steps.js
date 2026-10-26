@@ -192,6 +192,25 @@ export default ({ defineAction, z, ActionError }) => [
     },
   }),
   defineAction({
+    name: 'pinned-steps',
+    label: 'Step and undo URLs from input, origin pinned',
+    on: 'companies',
+    target: 'none',
+    input: z.object({ to: z.string() }),
+    http: {
+      auth: hmac,
+      origins: [api()],
+      steps: [
+        {
+          name: 'a',
+          url: () => `${api()}/pinned/a`,
+          compensate: { url: ({ input }) => `${input.to}/undo` },
+        },
+        { name: 'b', url: ({ input }) => input.to },
+      ],
+    },
+  }),
+  defineAction({
     name: 'steps-not-granted',
     label: 'Not granted',
     on: 'companies',

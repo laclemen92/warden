@@ -96,6 +96,18 @@ export default ({ defineAction, z }) => [
     },
   }),
   defineAction({
+    name: 'pinned',
+    label: 'URL from input, origin pinned',
+    on: 'companies',
+    target: 'none',
+    input: z.object({ to: z.string() }),
+    http: {
+      url: ({ input }) => input.to,
+      auth: { type: 'hmac', secretEnv: 'TEST_HMAC_SECRET' },
+      origins: [api()],
+    },
+  }),
+  defineAction({
     name: 'not-granted',
     label: 'Not granted',
     on: 'companies',
