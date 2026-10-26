@@ -1,6 +1,6 @@
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createOidcClient } from '../src/auth/oidc.js';
 import { RefreshRejectedError } from '../src/auth/session.js';
 import { parseAuthSettings } from '../src/auth/settings.js';
@@ -53,7 +53,13 @@ const client = () =>
   );
 
 describe('refresh', () => {
+  afterEach(() => vi.useRealTimers());
+
   it('returns the new tokens', async () => {
+    // openid-client floors the seconds left until expiry, so a millisecond passing between the
+    // response and expiresIn() turns 300 into 299. Freeze the clock (only Date, so the IdP's
+    // socket timers still run).
+    vi.useFakeTimers({ toFake: ['Date'] });
     tokenResponse = {
       status: 200,
       body: { access_token: 'at', refresh_token: 'rt', token_type: 'Bearer', expires_in: 300 },
