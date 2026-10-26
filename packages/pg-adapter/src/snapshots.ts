@@ -21,6 +21,8 @@ export interface SchemaSnapshot {
 export interface SnapshotActor {
   subject: string;
   email?: string;
+  /** The internal user id config's `actor` mapped them to at sign-in. */
+  userId?: string;
   roles: readonly string[];
   requestId?: string;
   /** Where the acknowledgement is audited; `warden.audit_log` when absent. */
@@ -78,6 +80,7 @@ export async function acknowledgeSchemaSnapshot(
       requestId: actor.requestId ?? null,
       actorSubject: actor.subject,
       actorEmail: actor.email ?? null,
+      actorUserId: actor.userId ?? null,
       actorRoles: [...actor.roles],
       action: 'acknowledge',
       entity: 'warden.schema_snapshots',

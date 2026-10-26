@@ -268,6 +268,12 @@ export interface AuditQuery {
    */
   visible: Record<string, readonly string[]>;
   /**
+   * Entity keys whose every field the caller can read (none restricted from them by
+   * `readableBy`). An update entry that records neither a diff nor the fields it set (an
+   * application's own, in a shared audit table) shows its reason only on these.
+   */
+  complete?: ReadonlySet<string>;
+  /**
    * Custom actions whose own entries (what was asked for: the input and reason) are returned, by
    * name. Other actions' entries are left out, and the rows they changed lose their link to them,
    * so the action's name doesn't show either. Omit for every action.
@@ -386,7 +392,8 @@ export async function listAuditEntries(
   query: AuditQuery,
   store: AuditStore = WARDEN_STORE,
 ): Promise<AuditPage> {
-  const { visible, actions, includeAccessEntries, entity, recordId, actor, action } = query;
+  const { visible, complete, actions, includeAccessEntries, entity, recordId, actor, action } =
+    query;
   const { from, to, parentId, before, source, limit } = query;
   const relation = auditRelation(store);
   const withSource = store.kind === 'table' && store.source !== undefined;
@@ -471,7 +478,13 @@ export async function listAuditEntries(
       };
       // An entity's entry, or (only when asked for) an access entry, which is shown in full.
       if (Object.hasOwn(visible, row.entity)) {
-        return projectAuditEntry(entry, visible[row.entity]!, row.written, readable);
+        return projectAuditEntry(
+          entry,
+          visible[row.entity]!,
+          row.written,
+          readable,
+          complete?.has(row.entity) ?? false,
+        );
       }
       return row.action === 'revoke_sessions' ? { ...entry, details: revokeDetails(row) } : entry;
     }),
@@ -566,9 +579,12 @@ export async function withActionAttempt<T>(
 
 /** What the connected role may do to a configured audit table. */
 export interface AuditTableAccess {
-  /** It can insert entries (into at least some columns; an insert that fails is rolled back). */
-  insert: boolean;
-  select: boolean;
+  /** Mapped columns (and the source column) it can't insert into. */
+  cantInsert: string[];
+  /** Mapped columns (and the source column) it can't read. Inserts read back the id. */
+  cantRead: string[];
+  /** The sequence the id column's default draws from, when the role can't use it. */
+  cantUseSequence?: string;
   /**
    * It could change or remove entries: it may update, delete, or truncate, or it owns the table
    * (directly or through a role it belongs to), or is a superuser.
@@ -576,14 +592,42 @@ export interface AuditTableAccess {
   tamper: boolean;
 }
 
-/** The connected role's access to `table`; undefined when the table doesn't exist. */
+type TableStore = Extract<AuditStore, { kind: 'table' }>;
+
+/**
+ * The connected role's access to `store`'s table, checked column by column for what Warden
+ * writes and reads; undefined when the table doesn't exist. Its columns must exist (the store
+ * was resolved against the database).
+ */
 export async function auditTableAccess(
   db: Database,
-  table: { schema: string; name: string },
+  store: Pick<TableStore, 'schema' | 'name' | 'columns' | 'source'>,
 ): Promise<AuditTableAccess | undefined> {
-  const { rows } = await sql<AuditTableAccess>`
-    select has_any_column_privilege(c.oid, 'INSERT') as insert,
-           has_any_column_privilege(c.oid, 'SELECT') as select,
+  const { id, ...written } = store.columns;
+  const source = store.source ? [store.source.column] : [];
+  const inserted = [...Object.values(written), ...source];
+  const read = [...(id !== undefined ? [id] : []), ...inserted];
+  const { rows } = await sql<{
+    cantInsert: string[];
+    cantRead: string[];
+    sequence: string | null;
+    tamper: boolean;
+  }>`
+    select array(select col from unnest(${inserted}::text[]) as col
+                 where not has_column_privilege(c.oid, col, 'INSERT')) as "cantInsert",
+           array(select col from unnest(${read}::text[]) as col
+                 where not has_column_privilege(c.oid, col, 'SELECT')) as "cantRead",
+           -- nextval needs usage or update; an identity column's sequence needs neither.
+           (select s.oid::regclass::text
+            from pg_attribute a
+            join pg_attrdef ad on ad.adrelid = a.attrelid and ad.adnum = a.attnum
+            join pg_depend d on d.classid = 'pg_attrdef'::regclass and d.objid = ad.oid
+              and d.refclassid = 'pg_class'::regclass
+            join pg_class s on s.oid = d.refobjid and s.relkind = 'S'
+            where a.attrelid = c.oid and a.attname = ${id ?? null} and a.attidentity = ''
+              -- The case keeps the check off rows the planner hasn't filtered to sequences yet.
+              and case when s.relkind = 'S' then not has_sequence_privilege(s.oid, 'USAGE, UPDATE') end
+            limit 1) as sequence,
            r.rolsuper
              or pg_has_role(current_user, c.relowner, 'MEMBER')
              or has_any_column_privilege(c.oid, 'UPDATE')
@@ -592,6 +636,13 @@ export async function auditTableAccess(
     from pg_class c
     join pg_namespace n on n.oid = c.relnamespace
     join pg_roles r on r.rolname = current_user
-    where n.nspname = ${table.schema} and c.relname = ${table.name}`.execute(db);
-  return rows[0];
+    where n.nspname = ${store.schema} and c.relname = ${store.name}`.execute(db);
+  const row = rows[0];
+  if (!row) return undefined;
+  return {
+    cantInsert: row.cantInsert,
+    cantRead: row.cantRead,
+    ...(row.sequence !== null ? { cantUseSequence: row.sequence } : {}),
+    tamper: row.tamper,
+  };
 }

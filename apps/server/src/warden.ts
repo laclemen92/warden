@@ -11,7 +11,11 @@ import {
   resolvePolicy,
   resolveSchema,
   sessionEmail,
+  WARDEN_AUDIT_COLUMNS,
+  type ActionPolicy,
+  type EffectiveSchema,
   type SchemaModel,
+  type SchemaWarning,
 } from '@wardenhq/core';
 import {
   assignedRoles,
@@ -142,18 +146,58 @@ async function checkAuditStore(
     ? model
     : await introspectSchema(target.schema);
   const resolved = resolveAuditStore(config, getTable(tables, target.name, target.schema));
-  const access = resolved.store.kind === 'table' ? await auditTableAccess(db, target) : undefined;
+  const access =
+    resolved.store.kind === 'table' ? await auditTableAccess(db, resolved.store) : undefined;
   const problems = [...resolved.problems];
-  if (access && !access.insert)
-    problems.push(`audit table "${label}": Warden's role can't insert into it`);
-  if (access && !access.select)
-    problems.push(`audit table "${label}": Warden's role can't read it`);
+  const columns = (names: string[]) => names.map((n) => `"${n}"`).join(', ');
+  if (access?.cantInsert.length) {
+    problems.push(
+      `audit table "${label}": Warden's role can't insert into ${columns(access.cantInsert)}`,
+    );
+  }
+  if (access?.cantRead.length) {
+    problems.push(`audit table "${label}": Warden's role can't read ${columns(access.cantRead)}`);
+  }
+  if (access?.cantUseSequence) {
+    problems.push(
+      `audit table "${label}": Warden's role can't use sequence ${access.cantUseSequence}, which generates its ids`,
+    );
+  }
   return {
     store: problems.length > 0 ? ({ kind: 'unavailable' } as const) : resolved.store,
     problems,
     tamperable: access?.tamper ?? false,
     label,
   };
+}
+
+/** Reasons that are required but would be thrown away, as the audit table has no column for them. */
+function droppedReasonWarnings(
+  config: WardenConfig,
+  schema: EffectiveSchema,
+  actionPolicy: ActionPolicy,
+): SchemaWarning[] {
+  const mapping = config.audit.columns ?? WARDEN_AUDIT_COLUMNS;
+  if (!auditTableName(config) || mapping.reason !== undefined) return [];
+  const tables = schema.entities.filter((e) => e.requireReason?.length).map((e) => e.key);
+  const actions = [...actionPolicy.actions.values()]
+    .filter((a) => a.requireReason)
+    .map((a) => a.name);
+  if (tables.length === 0 && actions.length === 0) return [];
+  const list = (kind: string, names: string[]) => {
+    const shown = names.slice(0, 5).join(', ');
+    return `${kind} ${shown}${names.length > 5 ? ` and ${names.length - 5} more` : ''}`;
+  };
+  const what = [
+    ...(tables.length > 0 ? [list('tables', tables)] : []),
+    ...(actions.length > 0 ? [list('actions', actions)] : []),
+  ].join(' and ');
+  return [
+    {
+      path: 'audit.columns',
+      message: `${what} require a reason, but audit.columns doesn't map reason, so the reasons users give are discarded; map reason to a column, or set requireReason: [] (or false) to stop asking`,
+    },
+  ];
 }
 
 /**
@@ -292,6 +336,7 @@ export async function createWarden({
       ...deleteCascadeWarnings(model, schema, policy, actionDeletes),
       ...actor.warnings,
       ...configViews.warnings,
+      ...droppedReasonWarnings(config, schema, actionPolicy),
     ];
     // The first start records the schema drift baseline.
     await ensureSchemaSnapshot(db, model);

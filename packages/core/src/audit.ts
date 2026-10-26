@@ -217,18 +217,24 @@ const pick = <T>(values: Record<string, T>, fields: ReadonlySet<string>): Record
  * database changed itself (defaults, triggers, generated columns). The reason is kept only when
  * the caller can read a field the update was asked to change. Entries from before `written` was
  * recorded (null) can't tell the two apart, so their reason is kept only when the caller can read
- * every changed field.
+ * every changed field. One with neither (such as an application's own entry in a shared audit
+ * table) says nothing about what it changed, so its reason is kept only when `complete`: the
+ * caller can read every field of the entity.
  */
 export function projectAuditEntry(
   entry: AuditEntry,
   fields: readonly string[],
   written: readonly string[] | null = null,
   entities: ReadonlySet<string> = new Set(),
+  complete = false,
 ): AuditEntry {
   const visible = new Set(fields);
   return {
     ...entry,
-    reason: entry.reason !== null && reasonVisible(entry, visible, written) ? entry.reason : null,
+    reason:
+      entry.reason !== null && reasonVisible(entry, visible, written, complete)
+        ? entry.reason
+        : null,
     before: entry.before && pick(entry.before, visible),
     after: entry.after && pick(entry.after, visible),
     diff: pick(entry.diff, visible),
@@ -275,10 +281,11 @@ function reasonVisible(
   { action, diff }: AuditEntry,
   visible: ReadonlySet<string>,
   written: readonly string[] | null,
+  complete: boolean,
 ): boolean {
   if (action !== 'update') return true;
   const changed = Object.keys(diff);
-  if (written === null) return changed.every((f) => visible.has(f));
+  if (written === null) return changed.length > 0 ? changed.every((f) => visible.has(f)) : complete;
   return changed.some((f) => written.includes(f) && visible.has(f));
 }
 

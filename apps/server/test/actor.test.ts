@@ -64,7 +64,7 @@ tables:
 roles:
   admin:
     grants: { '*': [read, create, update, export], notes: [delete] }
-    admin: [audit, roles]
+    admin: [audit, roles, schema]
     actions: ['*']
 access:
   groups:
@@ -254,10 +254,18 @@ describe('actor mapping', () => {
     expect(child.rows).toEqual([{ actor_user_id: ADA }]);
   });
 
-  it('records the id on exports and role and session events', async () => {
+  it('records the id on exports, schema acknowledgements, and role and session events', async () => {
     const exported = await send(app, admin, 'GET', '/api/export/notes');
     expect(exported.statusCode).toBe(200);
     expect(await lastAudit('export')).toEqual({ actor_subject: 'admin', actor_user_id: ADA });
+
+    const drift = await send(app, admin, 'GET', '/api/admin/schema-drift');
+    const { baseline } = drift.json<{ baseline: { id: string } }>();
+    const acknowledged = await send(app, admin, 'POST', '/api/admin/schema-drift/acknowledge', {
+      baselineId: baseline.id,
+    });
+    expect(acknowledged.statusCode, acknowledged.body).toBe(200);
+    expect(await lastAudit('acknowledge')).toEqual({ actor_subject: 'admin', actor_user_id: ADA });
 
     const assigned = await send(app, admin, 'POST', '/api/admin/roles/assignments', {
       email: 'someone@example.com',
